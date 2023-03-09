@@ -15,6 +15,9 @@ const HEAD = @bitCast(u32, [4]u8{'H', 'E', 'A', 'D'});
 const PATC = @bitCast(u32, [4]u8{'P', 'A', 'T', 'C'});
 const DELE = @bitCast(u32, [4]u8{'D', 'E', 'L', 'E'});
 const OPTI = @bitCast(u32, [4]u8{'O', 'P', 'T', 'I'});
+const HTTP = @bitCast(u32, [4]u8{'H', 'T', 'T', 'P'});
+const V1P0 = @bitCast(u32, [4]u8{'/', '1', '.', '0'});
+const V1P1 = @bitCast(u32, [4]u8{'/', '1', '.', '1'});
 
 pub const Config = struct {
 	max_body_size: usize = 1_048_576,
@@ -98,6 +101,14 @@ pub const Request = struct {
 			}
 
 			if (step == .Protocol) {
+				pos += self.parseProtocol(buf[pos..buf_end]) catch |err| switch (err) {
+					error.NeedMoreData => continue,
+					else => return err,
+				};
+				step = .Headers;
+			}
+
+			if (step == .Headers) {
 				return;
 			}
 		}
@@ -179,7 +190,7 @@ pub const Request = struct {
 			'/' => {
 				if (std.mem.indexOfScalar(u8, buf, ' ')) |end_index| {
 					self.uri = buf[0..end_index];
-					return end_index;
+					return end_index + 1; // +1 to consume the space
 				}
 				return error.NeedMoreData;
 			},
@@ -191,11 +202,31 @@ pub const Request = struct {
 					return error.InvalidRequestTarget;
 				}
 				self.uri = "*";
-				return 1;
+				return 2;
 			},
 			// TODO: Support absolute-form target (e.g. http://....)
 			else => return error.InvalidRequestTarget,
 		}
+	}
+
+	fn parseProtocol(self: *Self, buf: []const u8) Error!usize {
+		if (buf.len < 10) {
+			return error.NeedMoreData;
+		}
+		if (@bitCast(u32, buf[0..4].*) != HTTP) {
+			return error.UnknownProtocol;
+		}
+		switch (@bitCast(u32, buf[4..8].*)) {
+			V1P1 => self.protocol = http.Protocol.HTTP11,
+			V1P0 => self.protocol = http.Protocol.HTTP10,
+			else => return error.UnsupportedProtocol,
+		}
+
+		if (buf[8] != '\r' or buf [9] != '\n') {
+			return error.UnknownProtocol;
+		}
+
+		return 10;
 	}
 };
 
@@ -263,6 +294,8 @@ const Error = error {
 	ConnectionClosed,
 	UnknownMethod,
 	InvalidRequestTarget,
+	UnknownProtocol,
+	UnsupportedProtocol,
 };
 
 test "request: parse method" {
@@ -347,6 +380,28 @@ test "request: parse request target" {
 		const r = try testParse("PUT * HTTP/1.1\r\n\r\n");
 		defer cleanupRequest(r);
 		try t.expectString("*", r.uri);
+	}
+}
+
+test "request: parse protocol" {
+	{
+		try expectParseError(Error.ConnectionClosed, "GET / ");
+		try expectParseError(Error.ConnectionClosed, "GET /  ");
+		try expectParseError(Error.ConnectionClosed, "GET / H\r\n");
+		try expectParseError(Error.UnknownProtocol, "GET / http/1.1\r\n");
+		try expectParseError(Error.UnsupportedProtocol, "GET / HTTP/2.0\r\n");
+	}
+
+	{
+		const r = try testParse("PUT / HTTP/1.0\r\n\r\n");
+		defer cleanupRequest(r);
+		try t.expectEqual(http.Protocol.HTTP10, r.protocol);
+	}
+
+	{
+		const r = try testParse("PUT / HTTP/1.1\r\n\r\n");
+		defer cleanupRequest(r);
+		try t.expectEqual(http.Protocol.HTTP11, r.protocol);
 	}
 }
 
