@@ -53,6 +53,18 @@ pub const Request = struct {
 
 	const Self = @This();
 
+	// Each parsing step (method, target, protocol, headers, body)
+	// return (a) how much data they've read from the socket and
+	// (b) how much data they've consumed. This informs the next step
+	// about what's available and where to start.
+	const ParseResult = struct {
+		// how much the step used of the buffer
+		used: usize,
+
+		// total data read from the socket (by a particular step)
+		buf_len: usize,
+	};
+
 	pub fn deinit(self: *Self) void {
 		self.headers.deinit();
 		self.buffer.deinit();
@@ -66,152 +78,132 @@ pub const Request = struct {
 		// Header always fits inside the static portion of our buffer
 		const buf = self.buffer.static;
 
-		// We've read buf[0..buf_end] from the stream
-		var buf_end: usize = 0;
+		var res = try self.parseMethod(S, stream, buf);
+		var pos = res.used;
+		var buf_len = res.buf_len;
 
-		// What we're trying to parse
-		var step = ParseStep.Method;
+		res = try self.parseUri(S, stream, buf[pos..], buf_len - pos);
+		pos += res.used;
+		buf_len += res.buf_len;
 
-		// Position in buf that we're currently interested in. For example,
-		// if buf[0..buf_end] contains: "GET /hello HTTP/1.1\r\n", and we're at
-		// step == Uri, we'd expect pos == 3, since we've already parsed the method.
-		var pos: usize = 0;
+		res = try self.parseProtocol(S, stream, buf[pos..], buf_len - pos);
+		pos += res.used;
+		buf_len += res.buf_len;
+
+		while (try self.parseHeaders(S, stream, buf[pos..], buf_len - pos)) |r| {
+			pos += r.used;
+			buf_len += r.buf_len;
+		}
+
+		return;
+	}
+
+	fn parseMethod(self: *Self, comptime S: type, stream: S, buf: []u8) !ParseResult {
+		var buf_len: usize = 0;
+		while (buf_len < 4) {
+			buf_len += try read(S, stream, buf[buf_len..]);
+		}
 
 		while (true) {
-			const n = try stream.read(buf[buf_end..]);
-			if (n == 0) {
-				return error.ConnectionClosed;
-			}
-			buf_end += n;
+			const used = switch (@bitCast(u32, buf[0..4].*)) {
+				GET_ => {
+					self.method = .GET;
+					return .{.buf_len = buf_len, .used = 4};
+				},
+				PUT_ => {
+					self.method = .PUT;
+					return .{.buf_len = buf_len, .used = 4};
+				},
+				POST => {
+					// only need 1 more byte, so at most, we need 1 more read
+					if (buf_len < 5) buf_len += try read(S, stream, buf[buf_len..]);
+					if (buf[4] != ' ') {
+						return error.UnknownMethod;
+					}
+					self.method = .POST;
+					return .{.buf_len = buf_len, .used = 5};
+				},
+				HEAD => {
+					// only need 1 more byte, so at most, we need 1 more read
+					if (buf_len < 5) buf_len += try read(S, stream, buf[buf_len..]);
+					if (buf[4] != ' ') {
+						return error.UnknownMethod;
+					}
+					self.method = .HEAD;
+					return .{.buf_len = buf_len, .used = 5};
+				},
+				PATC => {
+					while (buf_len < 6)  buf_len += try read(S, stream, buf[buf_len..]);
+					if (buf[4] != 'H' or buf[5] != ' ') {
+						return error.UnknownMethod;
+					}
+					self.method = .PATCH;
+					return .{.buf_len = buf_len, .used = 6};
+				},
+				DELE => {
+					while (buf_len < 7) buf_len += try read(S, stream, buf[buf_len..]);
+					if (buf[4] != 'T' or buf[5] != 'E' or buf[6] != ' ' ) {
+						return error.UnknownMethod;
+					}
+					self.method = .DELETE;
+					return .{.buf_len = buf_len, .used = 7};
+				},
+				OPTI => {
+					while (buf_len < 8) buf_len += try read(S, stream, buf[buf_len..]);
+					if (buf[4] != 'O' or buf[5] != 'N' or buf[6] != 'S' or buf[7] != ' ' ) {
+						return error.UnknownMethod;
+					}
+					self.method = .OPTIONS;
+					return .{.buf_len = buf_len, .used = 8};
+				},
+				else => return error.UnknownMethod,
+			};
 
-			if (step == .Method) {
-				pos = self.parseMethod(buf[0..buf_end]) catch |err| switch (err) {
-					error.NeedMoreData => continue,
-					else => return err,
-				};
-				step = .Uri;
-			}
-
-			if (step == .Uri) {
-				pos += self.parseUri(buf[pos..buf_end]) catch |err| switch (err) {
-					error.NeedMoreData => continue,
-					else => return err,
-				};
-				step = .Protocol;
-			}
-
-			if (step == .Protocol) {
-				pos += self.parseProtocol(buf[pos..buf_end]) catch |err| switch (err) {
-					error.NeedMoreData => continue,
-					else => return err,
-				};
-				step = .Headers;
-			}
-
-			if (step == .Headers) {
-				return;
-			}
+			return ParseResult{
+				.used = used,
+				.read = buf_len,
+			};
 		}
 	}
 
-	fn parseMethod(self: *Self, buf: []const u8) Error!usize {
-		if (buf.len < 4) {
-			return error.NeedMoreData;
+	fn parseUri(self: *Self, comptime S: type, stream: S, buf: []u8, len: usize) !ParseResult {
+		var buf_len = len;
+		if (buf_len == 0) {
+			buf_len += try read(S, stream, buf);
 		}
 
-		switch (@bitCast(u32, buf[0..4].*)) {
-			GET_ => {
-				self.method = .GET;
-				return 4;
-			},
-			PUT_ => {
-				self.method = .PUT;
-				return 4;
-			},
-			POST => {
-				if (buf.len < 5) {
-					return error.NeedMoreData;
-				}
-				if (buf[4] != ' ') {
-					return error.UnknownMethod;
-				}
-				self.method = .POST;
-				return 5;
-			},
-			HEAD => {
-				if (buf.len < 5) {
-					return error.NeedMoreData;
-				}
-				if (buf[4] != ' ') {
-					return error.UnknownMethod;
-				}
-				self.method = .HEAD;
-				return 5;
-			},
-			PATC => {
-				if (buf.len < 6) {
-					return error.NeedMoreData;
-				}
-				if (buf[4] != 'H' or buf[5] != ' ') {
-					return error.UnknownMethod;
-				}
-				self.method = .PATCH;
-				return 6;
-			},
-			DELE => {
-				if (buf.len < 7) {
-					return error.NeedMoreData;
-				}
-				if (buf[4] != 'T' or buf[5] != 'E' or buf[6] != ' ' ) {
-					return error.UnknownMethod;
-				}
-				self.method = .DELETE;
-				return 7;
-			},
-			OPTI => {
-				if (buf.len < 8) {
-					return error.NeedMoreData;
-				}
-				if (buf[4] != 'O' or buf[5] != 'N' or buf[6] != 'S' or buf[7] != ' ' ) {
-					return error.UnknownMethod;
-				}
-				self.method = .OPTIONS;
-				return 8;
-			},
-			else => return error.UnknownMethod,
-		}
-	}
-
-	fn parseUri(self: *Self, buf: []const u8) Error!usize {
-		if (buf.len == 0) {
-			return error.NeedMoreData;
-		}
 		switch (buf[0]) {
 			'/' => {
-				if (std.mem.indexOfScalar(u8, buf, ' ')) |end_index| {
-					self.uri = buf[0..end_index];
-					return end_index + 1; // +1 to consume the space
+				while (true) {
+					if (std.mem.indexOfScalar(u8, buf, ' ')) |end_index| {
+						self.uri = buf[0..end_index];
+						// +1 to consume the space
+						return .{.used = end_index + 1, .buf_len = buf_len - len};
+					}
+					buf_len += try read(S, stream, buf[buf_len..]);
 				}
-				return error.NeedMoreData;
 			},
 			'*' => {
-				if (buf.len == 1) {
-					return error.NeedMoreData;
+				// must be a "* ", so we need at least 1 more byte
+				if (buf_len == 1) {
+					buf_len += try read(S, stream, buf[buf_len..]);
 				}
+				// Read never returns 0, so if we're here, buf.len >= 1
 				if (buf[1] != ' ') {
 					return error.InvalidRequestTarget;
 				}
 				self.uri = "*";
-				return 2;
+				return .{.used = 2, .buf_len = buf_len - len};
 			},
 			// TODO: Support absolute-form target (e.g. http://....)
 			else => return error.InvalidRequestTarget,
 		}
 	}
 
-	fn parseProtocol(self: *Self, buf: []const u8) Error!usize {
-		if (buf.len < 10) {
-			return error.NeedMoreData;
+	fn parseProtocol(self: *Self, comptime S: type, stream: S, buf: []u8, len: usize) !ParseResult {
+		var buf_len = len;
+		while (buf_len < 10) {
+			buf_len += try read(S, stream, buf[buf_len..]);
 		}
 		if (@bitCast(u32, buf[0..4].*) != HTTP) {
 			return error.UnknownProtocol;
@@ -226,10 +218,44 @@ pub const Request = struct {
 			return error.UnknownProtocol;
 		}
 
-		return 10;
+		return .{.buf_len = buf_len - len, .used = 10};
+	}
+
+	fn parseHeaders(self: *Self, comptime S: type, stream: S, buf: []u8, len: usize) !?ParseResult {
+		var buf_len = len;
+
+		while (true) {
+			if (std.mem.indexOfScalar(u8, buf, '\r')) |header_end| {
+
+				const next = header_end + 1;
+				if (next == buf_len) buf_len += try read(S, stream, buf[buf_len..]);
+
+				if (buf[next] != '\n') {
+					return error.InvalidHeaderLine;
+				}
+
+				if (header_end == 0) {
+					return null;
+				}
+
+				if (std.mem.indexOfScalar(u8, buf[0..header_end], ':')) |name_end| {
+					self.headers.add(buf[0..name_end], trimLeadingSpace(buf[name_end+1..header_end]));
+					return .{.buf_len = buf_len - len, .used = next + 1};
+				} else {
+					return error.InvalidHeaderLine;
+				}
+			}
+			buf_len += try read(S, stream, buf[buf_len..]);
+		}
 	}
 };
 
+fn trimLeadingSpace(in: []const u8) []const u8 {
+	for (in, 0..) |b, i| {
+		if (b != ' ') return in[i..];
+	}
+	return "";
+}
 
 const Buffer = struct {
 	allocator: Allocator,
@@ -277,17 +303,25 @@ const Buffer = struct {
 		self.* = undefined;
 	}
 
-	// Reads as much as it can from stream into the current buf (self.buf).
-	// Returns the amount read
-	pub fn read(self: *Self, comptime S: type, stream: S) !usize {
-		var len = self.len;
-		var buf = self.buf;
+	// // Reads as much as it can from stream into the current buf (self.buf).
+	// // Returns the amount read
+	// pub fn read(self: *Self, comptime S: type, stream: S) !usize {
+	// 	var len = self.len;
+	// 	var buf = self.buf;
 
-		const n = try stream.read(buf[len..]);
-		self.len = len + n;
-		return n;
-	}
+	// 	const n = try stream.read(buf[len..]);
+	// 	self.len = len + n;
+	// 	return n;
+	// }
 };
+
+fn read(comptime S: type, stream: S, buffer: []u8) !usize {
+	const n = try stream.read(buffer);
+	if (n == 0) {
+		return error.ConnectionClosed;
+	}
+	return n;
+}
 
 const Error = error {
 	NeedMoreData,
@@ -296,6 +330,7 @@ const Error = error {
 	InvalidRequestTarget,
 	UnknownProtocol,
 	UnsupportedProtocol,
+	InvalidHeaderLine,
 };
 
 test "request: parse method" {
@@ -405,12 +440,46 @@ test "request: parse protocol" {
 	}
 }
 
+test "request: parse headers" {
+	{
+		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nH");
+		try expectParseError(Error.InvalidHeaderLine, "GET / HTTP/1.1\r\nHost\r\n");
+		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nHost:another\r\n\r");
+		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nHost: goblgobl.com\r\n");
+	}
+
+	{
+		const r = try testParse("PUT / HTTP/1.0\r\n\r\n");
+		defer cleanupRequest(r);
+		try t.expectEqual(@as(usize, 0), r.headers.len);
+	}
+
+	{
+		const r = try testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\n\r\n");
+		defer cleanupRequest(r);
+
+		try t.expectEqual(@as(usize, 1), r.headers.len);
+		try t.expectString("goblgobl.com", r.headers.get("host").?);
+	}
+
+	{
+		const r = try testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nMisc:  some-value\r\nAuthorization:none\r\n\r\n");
+		defer cleanupRequest(r);
+
+		try t.expectEqual(@as(usize, 3), r.headers.len);
+		try t.expectString("goblgobl.com", r.headers.get("host").?);
+		try t.expectString("some-value", r.headers.get("misc").?);
+		try t.expectString("none", r.headers.get("authorization").?);
+	}
+}
+
 fn testParse(input: []const u8) !*Request {
 	var s = t.Stream.init();
 	_ = s.add(input);
 	defer s.deinit();
 
 	var request = try init(t.allocator, .{});
+	errdefer cleanupRequest(request);
 	try request.parse(*t.Stream, &s);
 	return request;
 }

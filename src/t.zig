@@ -18,53 +18,49 @@ pub fn getRandom() std.rand.DefaultPrng {
 
 pub const Stream = struct {
 	closed: bool,
-	buf_index: usize,
 	read_index: usize,
-	to_read: ArrayList([]const u8),
+	to_read: ArrayList(u8),
 	random: std.rand.DefaultPrng,
 	received: ArrayList([]const u8),
 
 	pub fn init() Stream {
 		return .{
 			.closed = false,
-			.buf_index = 0,
 			.read_index = 0,
 			.random = getRandom(),
-			.to_read = ArrayList([]const u8).init(allocator),
+			.to_read = ArrayList(u8).init(allocator),
 			.received = ArrayList([]const u8).init(allocator),
 		};
 	}
 
 	pub fn add(self: *Stream, value: []const u8) *Stream {
-		// Take ownership of this data so that we can consistently free each
-		// (necessary because we need to allocate data for frames)
-		var copy = allocator.alloc(u8, value.len) catch unreachable;
-		mem.copy(u8, copy, value);
-		self.to_read.append(copy) catch unreachable;
+		self.to_read.appendSlice(value) catch unreachable;
 		return self;
 	}
 
 	pub fn read(self: *Stream, buf: []u8) !usize {
 		std.debug.assert(!self.closed);
 
+		const read_index = self.read_index;
 		const items = self.to_read.items;
-		if (self.read_index == items.len) {
+		if (read_index == items.len) {
 			return 0;
 		}
 
-		var data = items[self.read_index][self.buf_index..];
+		// let's fragment this message
+		const left_to_read = items.len - read_index;
+		const max_can_read = if (buf.len < left_to_read) buf.len else left_to_read;
+
+		const random = self.random.random();
+		const to_read = random.uintAtMost(usize, max_can_read - 1) + 1;
+
+		var data = items[read_index..(read_index+to_read)];
 		if (data.len > buf.len) {
 			// we have more data than we have space in buf (our target)
-			// we'll fill the target buffer, and keep track of where
-			// we our in our source buffer, so that that on the next read
-			// we'll use the same source buffer, but at the offset
-			self.buf_index += buf.len;
+			// we'll give it when it can take
 			data = data[0..buf.len];
-		} else {
-			// ok, fully read this one, next time we can move on
-			self.buf_index = 0;
-			self.read_index += 1;
 		}
+		self.read_index = read_index + data.len;
 
 		for (data, 0..) |b, i| {
 			buf[i] = b;
@@ -86,9 +82,6 @@ pub const Stream = struct {
 	}
 
 	pub fn deinit(self: *Stream) void {
-		for (self.to_read.items) |buf| {
-			allocator.free(buf);
-		}
 		self.to_read.deinit();
 
 		if (self.received.items.len > 0) {
