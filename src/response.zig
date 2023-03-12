@@ -102,7 +102,8 @@ pub const Response = struct {
 				try stream.write(rl);
 			}
 		}
-		try stream.write("content-length: 0\r\n");
+		try stream.write("content-length: 2\r\n");
 		try stream.write("\r\n");
+		try stream.write("ko");
 	}
 };
