@@ -61,7 +61,6 @@ pub const Headers = struct {
 	}
 };
 
-
 test "gets header value" {
 	var allocator = t.allocator;
 	const variations = [_][]const u8{ "content-type", "Content-Type", "cONTENT-tYPE", "CONTENT-TYPE" };

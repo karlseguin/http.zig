@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const t = @import("t.zig");
-const http = @import("http.zig");
+const http = @import("httpz.zig");
 
 const Headers = @import("headers.zig").Headers;
 
@@ -50,6 +50,8 @@ pub const Request = struct {
 	method: http.Method,
 	protocol: http.Protocol,
 	request_line: []const u8,
+	body_read: bool,
+	body: ?[]const u8,
 
 	const Self = @This();
 
@@ -70,11 +72,28 @@ pub const Request = struct {
 		self.buffer.deinit();
 	}
 
+	pub fn reset(self: *Self) void {
+		self.body_read = false;
+		self.headers.reset();
+	}
+
 	pub fn parse(self: *Self, comptime S: type, stream: S) !void {
 		try self.parseHeader(S, stream);
 	}
 
-	fn parseHeader(self: *Self, comptime S: type, stream: S) Error!void {
+	pub fn canKeepAlive(self: *Self) bool {
+		return switch (self.protocol) {
+			http.Protocol.HTTP11 => {
+				if (self.headers.get("connection")) |conn| {
+					return !std.mem.eql(u8, conn, "close");
+				}
+				return true;
+			},
+			http.Protocol.HTTP10 => return false, // TODO: support this in the cases where it can be
+		};
+	}
+
+	fn parseHeader(self: *Self, comptime S: type, stream: S) !void {
 		// Header always fits inside the static portion of our buffer
 		const buf = self.buffer.static;
 
@@ -90,7 +109,7 @@ pub const Request = struct {
 		pos += res.used;
 		buf_len += res.buf_len;
 
-		while (try self.parseHeaders(S, stream, buf[pos..], buf_len - pos)) |r| {
+		while (try self.parseOneHeader(S, stream, buf[pos..], buf_len - pos)) |r| {
 			pos += r.used;
 			buf_len += r.buf_len;
 		}
@@ -221,7 +240,7 @@ pub const Request = struct {
 		return .{.buf_len = buf_len - len, .used = 10};
 	}
 
-	fn parseHeaders(self: *Self, comptime S: type, stream: S, buf: []u8, len: usize) !?ParseResult {
+	fn parseOneHeader(self: *Self, comptime S: type, stream: S, buf: []u8, len: usize) !?ParseResult {
 		var buf_len = len;
 
 		while (true) {
@@ -255,6 +274,14 @@ fn trimLeadingSpace(in: []const u8) []const u8 {
 		if (b != ' ') return in[i..];
 	}
 	return "";
+}
+
+fn read(comptime S: type, stream: S, buffer: []u8) !usize {
+	const n = try stream.read(buffer);
+	if (n == 0) {
+		return error.ConnectionClosed;
+	}
+	return n;
 }
 
 const Buffer = struct {
@@ -315,16 +342,7 @@ const Buffer = struct {
 	// }
 };
 
-fn read(comptime S: type, stream: S, buffer: []u8) !usize {
-	const n = try stream.read(buffer);
-	if (n == 0) {
-		return error.ConnectionClosed;
-	}
-	return n;
-}
-
 const Error = error {
-	NeedMoreData,
 	ConnectionClosed,
 	UnknownMethod,
 	InvalidRequestTarget,
@@ -470,6 +488,29 @@ test "request: parse headers" {
 		try t.expectString("goblgobl.com", r.headers.get("host").?);
 		try t.expectString("some-value", r.headers.get("misc").?);
 		try t.expectString("none", r.headers.get("authorization").?);
+	}
+}
+
+test "request: canKeepAlive" {
+	{
+		// implicitly keepalive for 1.1
+		const r = try testParse("GET / HTTP/1.1\r\n\r\n");
+		defer cleanupRequest(r);
+		try t.expectEqual(true, r.canKeepAlive());
+	}
+
+	{
+		// explicitly keepalive for 1.1
+		const r = try testParse("GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n");
+		defer cleanupRequest(r);
+		try t.expectEqual(true, r.canKeepAlive());
+	}
+
+	{
+		// explicitly not keepalive for 1.1
+		const r = try testParse("GET / HTTP/1.1\r\nConnection: close\r\n\r\n");
+		defer cleanupRequest(r);
+		try t.expectEqual(false, r.canKeepAlive());
 	}
 }
 

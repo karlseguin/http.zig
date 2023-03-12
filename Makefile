@@ -5,4 +5,4 @@ t:
 
 .PHONY: s
 s:
-	zig build run -freference-trace -- tests/config.json
+	zig build run -freference-trace

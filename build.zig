@@ -4,13 +4,13 @@ pub fn build(b: *std.Build) !void {
 	const target = b.standardTargetOptions(.{});
 	const optimize = b.standardOptimizeOption(.{});
 
-		const httpzig_module = b.addModule("httpzig", .{
-				.source_file = .{ .path = "src/http.zig" },
+		const httpzig_module = b.addModule("httpz", .{
+				.source_file = .{ .path = "src/httpz.zig" },
 		});
 
 		const lib = b.addStaticLibrary(.{
-				.name = "httpzig",
-				.root_source_file = .{ .path = "src/http.zig" },
+				.name = "httpz",
+				.root_source_file = .{ .path = "src/httpz.zig" },
 				.target = target,
 				.optimize = optimize,
 		});
@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) !void {
 		.target = target,
 		.optimize = optimize,
 	});
-	exe.addModule("httpzig", httpzig_module);
+	exe.addModule("httpz", httpzig_module);
 	exe.install();
 
 	const run_cmd = exe.run();
@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) !void {
 	run_step.dependOn(&run_cmd.step);
 
 	const tests = b.addTest(.{
-		.root_source_file = .{ .path = "src/http.zig" },
+		.root_source_file = .{ .path = "src/httpz.zig" },
 		.target = target,
 		.optimize = optimize,
 	});
