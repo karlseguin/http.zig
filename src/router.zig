@@ -3,12 +3,12 @@ const std = @import("std");
 const t = @import("t.zig");
 const httpz = @import("httpz.zig");
 const Request = @import("request.zig").Request;
-const Response = @import("request.zig").Response;
+const Response = @import("response.zig").Response;
 
 const Allocator = std.mem.Allocator;
 const StringHashMap = std.StringHashMap;
 
-const Action = *const fn(req: *Request, res: *Response) anyerror!void;
+pub const Action = *const fn(req: *Request, res: *Response) anyerror!void;
 
 // Our router is generic. This is to help us test so that we can create "routes"
 // to integers, and then assert that we routed to the right integer (which is
@@ -191,11 +191,21 @@ test "route: root" {
 test "route: static" {
 	var router = try Router(u32).init(t.allocator);
 	defer router.deinit();
-	try router.get("/hello/world", 1);
-	try router.get("/over/9000", 2);
+	try router.get("hello/world", 1);
+	try router.get("/over/9000/", 2);
 
+	// all trailing/leading slash combinations
+	try t.expectEqual(@as(u32, 1), router.route(httpz.Method.GET, "hello/world").?);
 	try t.expectEqual(@as(u32, 1), router.route(httpz.Method.GET, "/hello/world").?);
+	try t.expectEqual(@as(u32, 1), router.route(httpz.Method.GET, "hello/world/").?);
+	try t.expectEqual(@as(u32, 1), router.route(httpz.Method.GET, "/hello/world/").?);
+
+	// all trailing/leading slash combinations
+	try t.expectEqual(@as(u32, 2), router.route(httpz.Method.GET, "over/9000").?);
 	try t.expectEqual(@as(u32, 2), router.route(httpz.Method.GET, "/over/9000").?);
+	try t.expectEqual(@as(u32, 2), router.route(httpz.Method.GET, "over/9000/").?);
+	try t.expectEqual(@as(u32, 2), router.route(httpz.Method.GET, "/over/9000").?);
+
 	try t.expectEqual(@as(?u32, null), router.route(httpz.Method.GET, "/over/9000!"));
 	try t.expectEqual(@as(?u32, null), router.route(httpz.Method.PUT, "/over/9000"));
 }
