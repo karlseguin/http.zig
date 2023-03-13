@@ -13,13 +13,17 @@ pub const Config = struct {
 // Should not be called directly, but initialized through a pool
 pub fn init(allocator: Allocator, config: Config) !*Response {
 	var response = try allocator.create(Response);
+	response._text = null;
 	response.headers = try Headers.init(allocator, config.max_header_count);
 	return response;
 }
 
 pub const Response = struct {
-	status: u16,
+	_status: u16,
+	_text: ?[]const u8,
+	_scrap: [10]u8,
 	headers: Headers,
+	// enough to hold an atoi of a large positive numbr
 
 	const Self = @This();
 
@@ -28,11 +32,21 @@ pub const Response = struct {
 	}
 
 	pub fn reset(self: *Self) void {
+		self._text = null;
 		self.headers.reset();
 	}
 
+	pub fn status(self: *Self, value: u16) void {
+		self._status = value;
+	}
+
+	pub fn text(self: *Self, value: []const u8) void {
+		self._text = value;
+	}
+
 	pub fn write(self: Self, comptime S: type, stream: S) !void {
-		switch (self.status) {
+		var scrap = self._scrap;
+		switch (self._status) {
 			100 => try stream.write("HTTP/1.1 100\r\n"),
 			101 => try stream.write("HTTP/1.1 101\r\n"),
 			102 => try stream.write("HTTP/1.1 102\r\n"),
@@ -96,14 +110,75 @@ pub const Response = struct {
 			508 => try stream.write("HTTP/1.1 508\r\n"),
 			510 => try stream.write("HTTP/1.1 510\r\n"),
 			511 => try stream.write("HTTP/1.1 511\r\n"),
-			else => {
-				var buf: [20]u8 = undefined;
-				var rl = try std.fmt.bufPrint(&buf, "HTTP/1.1 {d}\r\n", .{self.status});
-				try stream.write(rl);
+			else => |s| {
+				try stream.write("HTTP/1.1 ");
+				try stream.write(itoa(@as(u32, s), scrap[0..]));
+				try stream.write("\r\n");
 			}
 		}
-		try stream.write("content-length: 2\r\n");
-		try stream.write("\r\n");
-		try stream.write("ko");
+		if (self._text) |txt| {
+			try stream.write("Content-Length: ");
+			try stream.write(itoa(@intCast(u32, txt.len), scrap[0..]));
+			try stream.write("\r\n\r\n");
+			try stream.write(txt);
+		} else {
+			try stream.write("Content-Length: 0\r\n\r\n");
+		}
 	}
 };
+
+fn itoa(n: u32, buf: []u8) []u8 {
+	if (n == 0) {
+		buf[0] = '0';
+		return buf[0..1];
+	}
+
+	var num = n;
+	var i: usize = 0;
+	while (num != 0) : (i += 1) {
+		const rem = num % 10;
+		buf[i] = @intCast(u8, rem) + '0';
+		num = num / 10;
+	}
+	const a = buf[0..i];
+	std.mem.reverse(u8, a);
+	return a;
+}
+
+test "atoi" {
+	var buf: [10]u8 = undefined;
+	var tst: [10]u8 = undefined;
+	for (0..100_009) |i| {
+		const expected_len = std.fmt.formatIntBuf(tst[0..], i, 10, .lower, .{});
+		try t.expectString(tst[0..expected_len], itoa(@intCast(u32, i), &buf));
+	}
+}
+
+test "response: write" {
+	var s = t.Stream.init();
+	var res = try init(t.allocator, .{});
+	defer cleanupWrite(res, &s);
+
+	{
+		// no body
+		res.status(401);
+		try res.write(*t.Stream, &s);
+		try t.expectString("HTTP/1.1 401\r\nContent-Length: 0\r\n\r\n", s.received.items);
+	}
+
+	{
+		// body
+		s.reset(); res.reset();
+		res.status(200);
+		res.text("hello");
+		try res.write(*t.Stream, &s);
+		try t.expectString("HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello", s.received.items);
+	}
+}
+
+fn cleanupWrite(r: *Response, s: *t.Stream) void {
+	r.deinit();
+	t.allocator.destroy(r);
+
+	defer s.deinit();
+}

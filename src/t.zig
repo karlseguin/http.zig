@@ -21,7 +21,9 @@ pub const Stream = struct {
 	read_index: usize,
 	to_read: ArrayList(u8),
 	random: std.rand.DefaultPrng,
-	received: ArrayList([]const u8),
+	received: ArrayList(u8),
+
+	const Self = @This();
 
 	pub fn init() Stream {
 		return .{
@@ -29,16 +31,21 @@ pub const Stream = struct {
 			.read_index = 0,
 			.random = getRandom(),
 			.to_read = ArrayList(u8).init(allocator),
-			.received = ArrayList([]const u8).init(allocator),
+			.received = ArrayList(u8).init(allocator),
 		};
 	}
 
-	pub fn add(self: *Stream, value: []const u8) *Stream {
+	pub fn reset(self: *Self) void {
+		self.to_read.clearRetainingCapacity();
+		self.received.clearRetainingCapacity();
+	}
+
+	pub fn add(self: *Self, value: []const u8) *Self {
 		self.to_read.appendSlice(value) catch unreachable;
 		return self;
 	}
 
-	pub fn read(self: *Stream, buf: []u8) !usize {
+	pub fn read(self: *Self, buf: []u8) !usize {
 		std.debug.assert(!self.closed);
 
 		const read_index = self.read_index;
@@ -70,27 +77,17 @@ pub const Stream = struct {
 	}
 
 	// store messages that are written to the stream
-	pub fn write(self: *Stream, data: []const u8) !void {
-		std.debug.assert(!self.closed);
-		var copy = allocator.alloc(u8, data.len) catch unreachable;
-		mem.copy(u8, copy, data);
-		self.received.append(copy) catch unreachable;
+	pub fn write(self: *Self, data: []const u8) !void {
+		self.received.appendSlice(data) catch unreachable;
 	}
 
-	pub fn close(self: *Stream) void {
+	pub fn close(self: *Self) void {
 		self.closed = true;
 	}
 
-	pub fn deinit(self: *Stream) void {
+	pub fn deinit(self: *Self) void {
 		self.to_read.deinit();
-
-		if (self.received.items.len > 0) {
-			for (self.received.items) |buf| {
-				allocator.free(buf);
-			}
-			self.received.deinit();
-		}
-
+		self.received.deinit();
 		self.* = undefined;
 	}
 };

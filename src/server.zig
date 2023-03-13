@@ -98,9 +98,17 @@ pub fn Server(comptime H: type) type {
 
 			const handler = self.handler;
 			while (true) {
-				if (!handler.handle(S, stream, req, res)) {
-					return;
+				if (req.parse(S, stream)) {
+					if (!handler.handle(S, stream, req, res)) {
+						return;
+					}
+				} else |err| {
+					if (!handler.requestParseError(S, stream, err, res)) {
+						return;
+					}
+					continue;
 				}
+
 				req.reset();
 				res.reset();
 			}
@@ -111,22 +119,9 @@ pub fn Server(comptime H: type) type {
 pub const Handler = struct {
 	const Self = @This();
 
-	pub fn handle(self: Self, comptime S: type, stream: S, req: *request.Request, res: *response.Response) bool {
-		req.parse(S, stream) catch |err| switch (err) {
-			error.UnknownMethod, error.InvalidRequestTarget,
-			error.UnknownProtocol, error.UnsupportedProtocol,
-			error.InvalidHeaderLine => {
-				self.requestParseInvalidError(S, stream, res);
-				return false;
-			},
-			error.ConnectionClosed => return false,
-			else => {
-				self.requestParseUnhandledError(S, stream, res);
-				return false;
-			},
-		};
-
-		res.status = 200;
+	pub fn handle(_: Self, comptime S: type, stream: S, req: *request.Request, res: *response.Response) bool {
+		// TODO
+		res.status(200);
 		res.write(S, stream) catch {
 			return false;
 		};
@@ -134,15 +129,20 @@ pub const Handler = struct {
 		return req.canKeepAlive();
 	}
 
-	pub fn requestParseInvalidError(_: Self, comptime S: type, stream: S, res: *httpz.Response) void {
-		res.write(S, stream) catch {};
-	}
-
-	pub fn requestParseUnhandledError(_: Self, comptime S: type, stream: S, res: *httpz.Response) void {
-		res.write(S, stream) catch {};
+	pub fn requestParseError(_: Self, comptime S: type, stream: S, err: anyerror, res: *httpz.Response) bool {
+		switch (err) {
+			error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
+				res.status(400);
+				res.text("Invalid Request");
+				res.write(S, stream) catch {
+					return false;
+				};
+				return true;
+			},
+			else => return false, // assume this is either ConnectionClosed or a Stream.ReadError that we can't recover from
+		}
 	}
 };
-
 
 test "server" {
 	var s = try Server(Handler).init(t.allocator, Handler{}, .{});
