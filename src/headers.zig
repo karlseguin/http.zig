@@ -24,6 +24,11 @@ pub const Headers = struct {
 		};
 	}
 
+	pub fn deinit(self: *Self) void {
+		self.allocator.free(self.names);
+		self.allocator.free(self.values);
+	}
+
 	pub fn add(self: *Self, name: []u8, value: []const u8) void {
 		const len = self.len;
 		var names = self.names;
@@ -54,19 +59,14 @@ pub const Headers = struct {
 	pub fn reset(self: *Self) void {
 		self.len = 0;
 	}
-
-	pub fn deinit(self: *Self) void {
-		self.allocator.free(self.names);
-		self.allocator.free(self.values);
-	}
 };
 
-test "gets header value" {
+test "headers: get" {
 	var allocator = t.allocator;
 	const variations = [_][]const u8{ "content-type", "Content-Type", "cONTENT-tYPE", "CONTENT-TYPE" };
 	for (variations) |header| {
-		var h = try Headers.init(allocator, 1);
-		var name = try mutableString(header);
+		var h = try Headers.init(allocator, 2);
+		var name = t.mutableString(header);
 		h.add(name, "application/json");
 
 		try t.expectEqual(@as(?[]const u8, "application/json"), h.get("content-type"));
@@ -81,15 +81,15 @@ test "gets header value" {
 	}
 }
 
-test "ignores headers beyond max" {
+test "headers: ignores beyond max" {
 	var h = try Headers.init(t.allocator, 2);
-	var n1 = try mutableString("content-length");
+	var n1 = t.mutableString("content-length");
 	h.add(n1, "cl");
 
-	var n2 = try mutableString("host");
+	var n2 = t.mutableString("host");
 	h.add(n2, "www");
 
-	var n3 = try mutableString("authorization");
+	var n3 = t.mutableString("authorization");
 	h.add(n3, "hack");
 
 	try t.expectEqual(@as(?[]const u8, "cl"), h.get("content-length"));
@@ -97,13 +97,7 @@ test "ignores headers beyond max" {
 	try t.expectEqual(@as(?[]const u8, null), h.get("authorization"));
 
 	h.deinit();
-	t.allocator.free(n1);
-	t.allocator.free(n2);
-	t.allocator.free(n3);
-}
-
-fn mutableString(str: []const u8) ![]u8 {
-	var b = try t.allocator.alloc(u8, str.len);
-	std.mem.copy(u8, b, str);
-	return b;
+	t.clearMutableString(n1);
+	t.clearMutableString(n2);
+	t.clearMutableString(n3);
 }

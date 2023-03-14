@@ -91,3 +91,31 @@ pub const Stream = struct {
 		self.* = undefined;
 	}
 };
+
+
+// Code often takes a []u8, but, in a test, we only have a []const u8 (e.g. a string literal)
+pub fn mutableString(str: []const u8) []u8 {
+	var b = allocator.alloc(u8, str.len) catch unreachable;
+	std.mem.copy(u8, b, str);
+	return b;
+}
+
+pub fn mutableStrings(strings: [][]const u8) [][]u8 {
+	var container = allocator.alloc([]u8, strings.len) catch unreachable;
+	for (strings, 0..) |s, i| {
+		container[i] = mutableString(s);
+	}
+	return container;
+}
+
+pub fn clearMutableStrings(strings: [][]u8) void {
+	for (strings) |s| {
+		clearMutableString(s);
+	}
+	allocator.destroy(strings);
+}
+
+
+pub fn clearMutableString(s: []u8) void {
+	allocator.free(s);
+}
