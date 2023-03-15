@@ -22,12 +22,12 @@ const V1P0 = @bitCast(u32, [4]u8{'/', '1', '.', '0'});
 const V1P1 = @bitCast(u32, [4]u8{'/', '1', '.', '1'});
 
 pub const Config = struct {
+	pool_size: usize = 100,
 	max_body_size: usize = 1_048_576,
 	buffer_size: usize = 65_536,
 	max_header_count: usize = 32,
 	max_param_count: usize = 10,
 	max_query_count: usize = 32,
-	pool_size: usize = 100,
 };
 
 // Should not be called directly, but initialized through a pool

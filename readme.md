@@ -22,13 +22,11 @@ fn main() !void {
 }
 
 fn get_users(req: *httpz.Request, res: *httpz.Response) !void {
-    res.status = 200;
     res.text("todo");
 }
 
 fn update_users(req: *httpz.Request, res: *httpz.Response) !void {
     _ = req.params.get("id");
-    res.status = 200;
     res.text("todo");
 }
 ```

@@ -125,6 +125,5 @@ fn testParams(req: *Request, res: *Response) !void {
 	var buf: [100]u8 = undefined;
 	var args = .{req.params.get("version").?, req.params.get("UserId").?};
 	var out = try std.fmt.bufPrint(buf[0..], "version={s},user={s}", args);
-	res.status = 200;
 	res.text(out);
 }

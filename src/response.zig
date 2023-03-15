@@ -7,14 +7,15 @@ const KeyValue = @import("key_value.zig").KeyValue;
 const Allocator = std.mem.Allocator;
 
 pub const Config = struct {
-	max_header_count: usize = 10,
 	pool_size: usize = 100,
+	max_header_count: usize = 16,
 };
 
 // Should not be called directly, but initialized through a pool
 pub fn init(allocator: Allocator, config: Config) !*Response {
 	var response = try allocator.create(Response);
 	response.body = null;
+	response.status = 200;
 	response.headers = try KeyValue.init(allocator, config.max_header_count);
 	return response;
 }
@@ -33,6 +34,7 @@ pub const Response = struct {
 
 	pub fn reset(self: *Self) void {
 		self.body = null;
+		self.status = 200;
 		self.headers.reset();
 	}
 	pub fn text(self: *Self, value: []const u8) void {
