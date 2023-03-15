@@ -98,6 +98,20 @@ test "httpz: unhandled exception" {
 	try t.expectString("HTTP/1.1 500\r\nContent-Length: 21\r\n\r\nInternal Server Error", stream.received.items);
 }
 
+test "httpz: route params" {
+	var stream = t.Stream.init();
+	defer stream.deinit();
+	_ = stream.add("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
+
+	var r = Router.init(t.allocator) catch unreachable;
+	try r.all("/api/:version/users/:UserId", testParams);
+	var srv = testServer(&r);
+	defer srv.deinit();
+	srv.handleConnection(*t.Stream, &stream);
+
+	try t.expectString("HTTP/1.1 200\r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", stream.received.items);
+}
+
 fn testServer(r: *Router) Server(Handler) {
 	const handler = Handler{.router = r};
 	return Server(Handler).init(t.allocator, handler, .{}) catch unreachable;
@@ -105,4 +119,12 @@ fn testServer(r: *Router) Server(Handler) {
 
 fn testFail(_: *Request, _: *Response) !void {
 	return error.TestUnhandledError;
+}
+
+fn testParams(req: *Request, res: *Response) !void {
+	var buf: [100]u8 = undefined;
+	var args = .{req.params.get("version").?, req.params.get("UserId").?};
+	var out = try std.fmt.bufPrint(buf[0..], "version={s},user={s}", args);
+	res.status = 200;
+	res.text(out);
 }
