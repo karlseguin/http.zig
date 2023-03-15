@@ -15,7 +15,6 @@ pub const Action = *const fn(req: *Request, res: *Response) anyerror!void;
 // to integers, and then assert that we routed to the right integer (which is
 // a lot easier than testing that we routed to the correct Action). However, in
 // real life, we always expected this to be a Router(Action).
-
 pub fn Router(comptime A: type) type {
 	return struct {
 		_allocator: Allocator,
@@ -85,6 +84,15 @@ pub fn Router(comptime A: type) type {
 		}
 		pub fn option(self: *Self, path: []const u8, action: A) !void {
 			try addRoute(A, self._allocator, &self._options, path, action);
+		}
+		pub fn all(self: *Self, path: []const u8, action: A) !void {
+			try self.get(path, action);
+			try self.put(path, action);
+			try self.post(path, action);
+			try self.head(path, action);
+			try self.patch(path, action);
+			try self.delete(path, action);
+			try self.option(path, action);
 		}
 	};
 }
@@ -283,8 +291,9 @@ test "route: root" {
 	try router.get("/", 1);
 	try router.put("/", 2);
 	try router.post("", 3);
+	try router.all("/all", 4);
 
-	var _urls = [_][]const u8{"/", "/other"};
+	var _urls = [_][]const u8{"/", "/other", "/all"};
 	var urls = t.mutableStrings(_urls[0..]);
 	defer t.clearMutableStrings(urls);
 
@@ -298,6 +307,12 @@ test "route: root" {
 
 	try t.expectEqual(@as(?u32, null), router.route(httpz.Method.GET, urls[1], &params));
 	try t.expectEqual(@as(?u32, null), router.route(httpz.Method.DELETE, urls[0], &params));
+
+	// test "all" route
+	inline for (@typeInfo(httpz.Method).Enum.fields) |field| {
+		const m = @intToEnum(httpz.Method, field.value);
+		try t.expectEqual(@as(u32, 4), router.route(m, urls[2], &params).?);
+	}
 }
 
 test "route: static" {
