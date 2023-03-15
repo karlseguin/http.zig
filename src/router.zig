@@ -53,7 +53,7 @@ pub fn Router(comptime A: type) type {
 			self._options.deinit(allocator);
 		}
 
-		pub fn route(self: *Self, method: httpz.Method, url: []u8, params: *Params) ?A {
+		pub fn route(self: *Self, method: httpz.Method, url: []const u8, params: *Params) ?A {
 			return switch (method) {
 				httpz.Method.GET => getRoute(A, &self._get, url, params),
 				httpz.Method.POST => getRoute(A, &self._post, url, params),
@@ -158,15 +158,14 @@ fn addRoute(comptime A: type, allocator: Allocator, root: *Part(A), url: []const
 		normalized = normalized[0..normalized.len - 1];
 	}
 
-	var param_count: usize = 0;
-	var param_name_collector: [Params.MAX][]const u8 = undefined;
+	var param_name_collector = std.ArrayList([]const u8).init(allocator);
+	defer param_name_collector.deinit();
 
 	var route_part = root;
 	var it = std.mem.split(u8, normalized, "/");
 	while (it.next()) |part| {
 		if (part[0] == ':') {
-			param_name_collector[param_count] = part[1..];
-			param_count += 1;
+			try param_name_collector.append(part[1..]);
 			if (route_part.param_part) |child| {
 				route_part = child;
 			} else {
@@ -201,12 +200,12 @@ fn addRoute(comptime A: type, allocator: Allocator, root: *Part(A), url: []const
 		}
 	}
 
-	if (param_count > 0) {
-		const param_names = try allocator.alloc([]const u8, param_count);
-		for (0..param_count) |i| {
-			param_names[i] = param_name_collector[i];
+	const param_name_count = param_name_collector.items.len;
+	if (param_name_count > 0) {
+		const param_names = try allocator.alloc([]const u8, param_name_count);
+		for (param_name_collector.items, 0..) |name, i| {
+			param_names[i] = name;
 		}
-
 		route_part.param_names = param_names;
 	}
 
@@ -219,7 +218,7 @@ fn addRoute(comptime A: type, allocator: Allocator, root: *Part(A), url: []const
 	route_part.action = action;
 }
 
-fn getRoute(comptime A: type, root: *Part(A), url: []u8, params: *Params) ?A {
+fn getRoute(comptime A: type, root: *Part(A), url: []const u8, params: *Params) ?A {
 	if (url.len == 0 or (url.len == 1 and url[0] == '/')) {
 		return root.action;
 	}
@@ -231,7 +230,6 @@ fn getRoute(comptime A: type, root: *Part(A), url: []u8, params: *Params) ?A {
 	if (normalized[normalized.len - 1] == '/') {
 		normalized = normalized[0..normalized.len - 1];
 	}
-	_ = std.ascii.lowerString(normalized, normalized);
 
 	var route_part = root;
 
@@ -277,7 +275,7 @@ fn getRoute(comptime A: type, root: *Part(A), url: []u8, params: *Params) ?A {
 }
 
 test "route: root" {
-	var params = try Params.init(t.allocator);
+	var params = try Params.init(t.allocator, 5);
 	defer params.deinit();
 
 	var router = try Router(u32).init(t.allocator);
@@ -303,7 +301,7 @@ test "route: root" {
 }
 
 test "route: static" {
-	var params = try Params.init(t.allocator);
+	var params = try Params.init(t.allocator, 5);
 	defer params.deinit();
 
 	var router = try Router(u32).init(t.allocator);
@@ -312,7 +310,7 @@ test "route: static" {
 	try router.get("/over/9000/", 2);
 
 	{
-		var _urls = [_][]const u8{"hello/world", "/hello/world", "hello/world/", "/hello/world/", "HELLO/WORLD", "/HELLO/worlD", "HELLO/WORLD/", "/HELLO/WORLD/"};
+		var _urls = [_][]const u8{"hello/world", "/hello/world", "hello/world/", "/hello/world/"};
 		var urls = t.mutableStrings(_urls[0..]);
 		defer t.clearMutableStrings(urls);
 
@@ -348,7 +346,7 @@ test "route: static" {
 }
 
 test "route: params" {
-	var params = try Params.init(t.allocator);
+	var params = try Params.init(t.allocator, 5);
 	defer params.deinit();
 
 	var router = try Router(u32).init(t.allocator);
@@ -372,7 +370,7 @@ test "route: params" {
 
 	{
 		// nested param
-		var url = t.mutableString("/USERS/33");
+		var url = t.mutableString("/users/33");
 		defer t.clearMutableString(url);
 
 		params.reset();
@@ -402,7 +400,7 @@ test "route: params" {
 	{
 		// nested params
 		var url1 = t.mutableString("/users/u1/fav/blue");
-		var url2 = t.mutableString("/users/u3/like/Tea");
+		var url2 = t.mutableString("/users/u3/like/tea");
 		defer t.clearMutableString(url1);
 		defer t.clearMutableString(url2);
 
@@ -436,7 +434,7 @@ test "route: params" {
 }
 
 test "route: glob" {
-	var params = try Params.init(t.allocator);
+	var params = try Params.init(t.allocator, 5);
 	defer params.deinit();
 
 	var router = try Router(u32).init(t.allocator);
@@ -495,7 +493,7 @@ test "route: glob" {
 // common.
 
 // test "route: ambiguous params" {
-// 	var params = try Params.init(t.allocator);
+// 	var params = try Params.init(t.allocator, 5);
 // 	defer params.deinit();
 
 // 	var router = try Router(u32).init(t.allocator);

@@ -31,9 +31,6 @@ pub fn Server(comptime H: type) type {
 		const Self = @This();
 
 		pub fn init(allocator: Allocator, handler: H, config: Config) !Self {
-			// the static portion of our request buffer must be at least
-			// as big as the maximum possible header we'll accept.
-			assert(config.request.buffer_size >= config.request.max_header_size);
 			return .{
 				.config = config,
 				.handler = handler,
@@ -47,6 +44,7 @@ pub fn Server(comptime H: type) type {
 		pub fn deinit(self: *Self) void {
 			self.reqPool.deinit();
 			self.resPool.deinit();
+			self.handler.deinit();
 		}
 
 		pub fn listen(self: *Self) !void {
@@ -60,7 +58,7 @@ pub fn Server(comptime H: type) type {
 			const listen_address = config.address orelse "127.0.0.1";
 			const listen_port = config.port orelse 5882;
 			try socket.listen(net.Address.parseIp(listen_address, listen_port) catch unreachable);
-			std.log.info("listening at {}", .{socket.listen_address});
+			std.log.info("listening on http://{}", .{socket.listen_address});
 
 			while (true) {
 				if (socket.accept()) |conn| {
@@ -79,7 +77,7 @@ pub fn Server(comptime H: type) type {
 			}
 		}
 
-		fn handleConnection(self: *Self, comptime S: type, stream: S) void {
+		pub fn handleConnection(self: *Self, comptime S: type, stream: S) void {
 			defer stream.close();
 
 			var reqPool = self.reqPool;
@@ -103,12 +101,11 @@ pub fn Server(comptime H: type) type {
 						return;
 					}
 				} else |err| {
-					if (!handler.requestParseError(S, stream, err, res)) {
-						return;
-					}
-					continue;
+					// hard to keep this request alive on a parseError since in a lot of
+					// failure cases, it's unclear where 1 request stops and another starts.
+					handler.requestParseError(S, stream, err, res);
+					return;
 				}
-
 				req.reset();
 				res.reset();
 			}
@@ -117,11 +114,23 @@ pub fn Server(comptime H: type) type {
 }
 
 pub const Handler = struct {
+	router: *httpz.Router,
+
 	const Self = @This();
 
-	pub fn handle(_: Self, comptime S: type, stream: S, req: *request.Request, res: *response.Response) bool {
-		// TODO
-		res.status(200);
+	pub fn deinit(self: Self) void {
+		self.router.deinit();
+	}
+
+	pub fn handle(self: Self, comptime S: type, stream: S, req: *request.Request, res: *response.Response) bool {
+		if (self.router.route(req.method, req.url.path, &req.params)) |action| {
+			action(req, res) catch |err| {
+				self.unhandledError(err, req, res);
+			};
+		} else {
+			self.noRouteFound(res);
+		}
+
 		res.write(S, stream) catch {
 			return false;
 		};
@@ -129,22 +138,27 @@ pub const Handler = struct {
 		return req.canKeepAlive();
 	}
 
-	pub fn requestParseError(_: Self, comptime S: type, stream: S, err: anyerror, res: *httpz.Response) bool {
+	pub fn requestParseError(_: Self, comptime S: type, stream: S, err: anyerror, res: *httpz.Response) void {
 		switch (err) {
 			error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
-				res.status(400);
+				res.status = 400;
 				res.text("Invalid Request");
-				res.write(S, stream) catch {
-					return false;
-				};
-				return true;
+				res.write(S, stream) catch {};
 			},
-			else => return false, // assume this is either ConnectionClosed or a Stream.ReadError that we can't recover from
+			else => {},
 		}
+	}
+
+	pub fn unhandledError(_: Self, err: anyerror, req: *httpz.Request, res: *httpz.Response) void {
+		res.status = 500;
+		res.text("Internal Server Error");
+		std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
+	}
+
+	pub fn noRouteFound(_: Self, res: *httpz.Response) void {
+		res.status = 404;
+		res.text("Not Found");
 	}
 };
 
-test "server" {
-	var s = try Server(Handler).init(t.allocator, Handler{}, .{});
-	defer s.deinit();
-}
+// this is largely tested in httpz.zig

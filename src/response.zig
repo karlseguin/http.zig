@@ -2,28 +2,27 @@ const std = @import("std");
 
 const t = @import("t.zig");
 
-const Headers = @import("headers.zig").Headers;
+const KeyValue = @import("key_value.zig").KeyValue;
 
 const Allocator = std.mem.Allocator;
 
 pub const Config = struct {
-	max_header_count: usize = 32,
+	max_header_count: usize = 10,
 };
 
 // Should not be called directly, but initialized through a pool
 pub fn init(allocator: Allocator, config: Config) !*Response {
 	var response = try allocator.create(Response);
-	response._text = null;
-	response.headers = try Headers.init(allocator, config.max_header_count);
+	response.body = null;
+	response.headers = try KeyValue.init(allocator, config.max_header_count);
 	return response;
 }
 
 pub const Response = struct {
-	_status: u16,
-	_text: ?[]const u8,
-	_scrap: [10]u8,
-	headers: Headers,
-	// enough to hold an atoi of a large positive numbr
+	body: ?[]const u8,
+	status: u16,
+	scrap: [10]u8, // enough to hold an atoi of a large positive numbr
+	headers: KeyValue,
 
 	const Self = @This();
 
@@ -32,21 +31,16 @@ pub const Response = struct {
 	}
 
 	pub fn reset(self: *Self) void {
-		self._text = null;
+		self.body = null;
 		self.headers.reset();
 	}
-
-	pub fn status(self: *Self, value: u16) void {
-		self._status = value;
-	}
-
 	pub fn text(self: *Self, value: []const u8) void {
-		self._text = value;
+		self.body = value;
 	}
 
 	pub fn write(self: Self, comptime S: type, stream: S) !void {
-		var scrap = self._scrap;
-		switch (self._status) {
+		var scrap = self.scrap;
+		switch (self.status) {
 			100 => try stream.write("HTTP/1.1 100\r\n"),
 			101 => try stream.write("HTTP/1.1 101\r\n"),
 			102 => try stream.write("HTTP/1.1 102\r\n"),
@@ -116,11 +110,11 @@ pub const Response = struct {
 				try stream.write("\r\n");
 			}
 		}
-		if (self._text) |txt| {
+		if (self.body) |b| {
 			try stream.write("Content-Length: ");
-			try stream.write(itoa(@intCast(u32, txt.len), scrap[0..]));
+			try stream.write(itoa(@intCast(u32, b.len), scrap[0..]));
 			try stream.write("\r\n\r\n");
-			try stream.write(txt);
+			try stream.write(b);
 		} else {
 			try stream.write("Content-Length: 0\r\n\r\n");
 		}
@@ -161,7 +155,7 @@ test "response: write" {
 
 	{
 		// no body
-		res.status(401);
+		res.status = 401;
 		try res.write(*t.Stream, &s);
 		try t.expectString("HTTP/1.1 401\r\nContent-Length: 0\r\n\r\n", s.received.items);
 	}
@@ -169,7 +163,7 @@ test "response: write" {
 	{
 		// body
 		s.reset(); res.reset();
-		res.status(200);
+		res.status = 200;
 		res.text("hello");
 		try res.write(*t.Stream, &s);
 		try t.expectString("HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello", s.received.items);

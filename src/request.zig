@@ -3,7 +3,9 @@ const std = @import("std");
 const t = @import("t.zig");
 const http = @import("httpz.zig");
 
-const Headers = @import("headers.zig").Headers;
+const Url = @import("url.zig").Url;
+const Params = @import("params.zig").Params;
+const KeyValue = @import("key_value.zig").KeyValue;
 
 const Allocator = std.mem.Allocator;
 
@@ -21,37 +23,36 @@ const V1P1 = @bitCast(u32, [4]u8{'/', '1', '.', '1'});
 
 pub const Config = struct {
 	max_body_size: usize = 1_048_576,
-	max_header_size: usize = 8192,
 	buffer_size: usize = 65_536,
 	max_header_count: usize = 32,
+	max_url_params: usize = 10,
+	max_query_params: usize = 32,
 };
 
 // Should not be called directly, but initialized through a pool
 pub fn init(allocator: Allocator, config: Config) !*Request {
 	var request = try allocator.create(Request);
+	request.body_read = false;
+	request.query_read = false;
 	request.buffer = try Buffer.init(allocator, config.buffer_size, config.max_body_size);
-	request.headers = try Headers.init(allocator, config.max_header_count);
+	request.headers = try KeyValue.init(allocator, config.max_header_count);
+	request.params = try Params.init(allocator, config.max_url_params);
+	request.query = try KeyValue.init(allocator, config.max_query_params);
 	return request;
 }
 
-const ParseStep = enum {
-	Method,
-	Uri,
-	Protocol,
-	Headers,
-	Body
-};
-
-
 pub const Request = struct {
+	url: Url,
+	params: Params,
 	buffer: Buffer,
-	headers: Headers,
-	uri: []const u8,
+	headers: KeyValue,
 	method: http.Method,
 	protocol: http.Protocol,
 	request_line: []const u8,
 	body_read: bool,
 	body: ?[]const u8,
+	query_read: bool,
+	query: KeyValue,
 
 	const Self = @This();
 
@@ -68,12 +69,17 @@ pub const Request = struct {
 	};
 
 	pub fn deinit(self: *Self) void {
+		self.query.deinit();
+		self.params.deinit();
 		self.headers.deinit();
 		self.buffer.deinit();
 	}
 
 	pub fn reset(self: *Self) void {
 		self.body_read = false;
+		self.query_read = false;
+		self.query.reset();
+		self.params.reset();
 		self.headers.reset();
 	}
 
@@ -101,7 +107,7 @@ pub const Request = struct {
 		var pos = res.used;
 		var buf_len = res.buf_len;
 
-		res = try self.parseUri(S, stream, buf[pos..], buf_len - pos);
+		res = try self.parseURL(S, stream, buf[pos..], buf_len - pos);
 		pos += res.used;
 		buf_len += res.buf_len;
 
@@ -185,7 +191,7 @@ pub const Request = struct {
 		}
 	}
 
-	fn parseUri(self: *Self, comptime S: type, stream: S, buf: []u8, len: usize) !ParseResult {
+	fn parseURL(self: *Self, comptime S: type, stream: S, buf: []u8, len: usize) !ParseResult {
 		var buf_len = len;
 		if (buf_len == 0) {
 			buf_len += try read(S, stream, buf);
@@ -195,7 +201,9 @@ pub const Request = struct {
 			'/' => {
 				while (true) {
 					if (std.mem.indexOfScalar(u8, buf, ' ')) |end_index| {
-						self.uri = buf[0..end_index];
+						var target = buf[0..end_index];
+						_ = std.ascii.lowerString(target, target);
+						self.url = Url.parse(target);
 						// +1 to consume the space
 						return .{.used = end_index + 1, .buf_len = buf_len - len};
 					}
@@ -211,7 +219,7 @@ pub const Request = struct {
 				if (buf[1] != ' ') {
 					return error.InvalidRequestTarget;
 				}
-				self.uri = "*";
+				self.url = Url.star();
 				return .{.used = 2, .buf_len = buf_len - len};
 			},
 			// TODO: Support absolute-form target (e.g. http://....)
@@ -414,25 +422,25 @@ test "request: parse request target" {
 	{
 		const r = try testParse("PUT / HTTP/1.1\r\n\r\n");
 		defer cleanupRequest(r);
-		try t.expectString("/", r.uri);
+		try t.expectString("/", r.url.raw);
 	}
 
 	{
 		const r = try testParse("PUT /api/v2 HTTP/1.1\r\n\r\n");
 		defer cleanupRequest(r);
-		try t.expectString("/api/v2", r.uri);
+		try t.expectString("/api/v2", r.url.raw);
 	}
 
 	{
-		const r = try testParse("DELETE /api/v2?hack=true&over=9000%20!! HTTP/1.1\r\n\r\n");
+		const r = try testParse("DELETE /API/v2?hack=true&over=9000%20!! HTTP/1.1\r\n\r\n");
 		defer cleanupRequest(r);
-		try t.expectString("/api/v2?hack=true&over=9000%20!!", r.uri);
+		try t.expectString("/api/v2?hack=true&over=9000%20!!", r.url.raw);
 	}
 
 	{
 		const r = try testParse("PUT * HTTP/1.1\r\n\r\n");
 		defer cleanupRequest(r);
-		try t.expectString("*", r.uri);
+		try t.expectString("*", r.url.raw);
 	}
 }
 

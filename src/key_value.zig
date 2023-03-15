@@ -5,7 +5,7 @@ const mem = std.mem;
 const ascii = std.ascii;
 const Allocator = std.mem.Allocator;
 
-pub const Headers = struct {
+pub const KeyValue = struct {
 	len: usize,
 	names: [][]u8,
 	values: [][]const u8,
@@ -61,42 +61,42 @@ pub const Headers = struct {
 	}
 };
 
-test "headers: get" {
+test "key_value: get" {
 	var allocator = t.allocator;
 	const variations = [_][]const u8{ "content-type", "Content-Type", "cONTENT-tYPE", "CONTENT-TYPE" };
 	for (variations) |header| {
-		var h = try Headers.init(allocator, 2);
+		var kv = try KeyValue.init(allocator, 2);
 		var name = t.mutableString(header);
-		h.add(name, "application/json");
+		kv.add(name, "application/json");
 
-		try t.expectEqual(@as(?[]const u8, "application/json"), h.get("content-type"));
+		try t.expectEqual(@as(?[]const u8, "application/json"), kv.get("content-type"));
 
-		h.reset();
-		try t.expectEqual(@as(?[]const u8, null), h.get("content-type"));
-		h.add(name, "application/json2");
-		try t.expectEqual(@as(?[]const u8, "application/json2"), h.get("content-type"));
+		kv.reset();
+		try t.expectEqual(@as(?[]const u8, null), kv.get("content-type"));
+		kv.add(name, "application/json2");
+		try t.expectEqual(@as(?[]const u8, "application/json2"), kv.get("content-type"));
 
-		h.deinit();
+		kv.deinit();
 		allocator.free(name);
 	}
 }
 
-test "headers: ignores beyond max" {
-	var h = try Headers.init(t.allocator, 2);
+test "key_value: ignores beyond max" {
+	var kv = try KeyValue.init(t.allocator, 2);
 	var n1 = t.mutableString("content-length");
-	h.add(n1, "cl");
+	kv.add(n1, "cl");
 
 	var n2 = t.mutableString("host");
-	h.add(n2, "www");
+	kv.add(n2, "www");
 
 	var n3 = t.mutableString("authorization");
-	h.add(n3, "hack");
+	kv.add(n3, "hack");
 
-	try t.expectEqual(@as(?[]const u8, "cl"), h.get("content-length"));
-	try t.expectEqual(@as(?[]const u8, "www"), h.get("host"));
-	try t.expectEqual(@as(?[]const u8, null), h.get("authorization"));
+	try t.expectEqual(@as(?[]const u8, "cl"), kv.get("content-length"));
+	try t.expectEqual(@as(?[]const u8, "www"), kv.get("host"));
+	try t.expectEqual(@as(?[]const u8, null), kv.get("authorization"));
 
-	h.deinit();
+	kv.deinit();
 	t.clearMutableString(n1);
 	t.clearMutableString(n2);
 	t.clearMutableString(n3);

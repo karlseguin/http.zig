@@ -4,7 +4,7 @@ const t = @import("t.zig");
 const mem = std.mem;
 const Allocator = std.mem.Allocator;
 
-// Similar to Headers with two important differences
+// Similar to KeyValue with two important differences
 // 1 - We don't need to normalize (i.e. lowercase) the names, because they're
 //     statically defined in code, and presumably, if the param is called "id"
 //     then the developer will also fetch it as "id"
@@ -18,11 +18,10 @@ pub const Params = struct {
 	allocator: Allocator,
 
 	const Self = @This();
-	pub const MAX = 10;
 
-	pub fn init(allocator: Allocator) !Self {
-		const names = try allocator.alloc([]const u8, MAX);
-		const values = try allocator.alloc([]const u8, MAX);
+	pub fn init(allocator: Allocator, max: usize) !Self {
+		const names = try allocator.alloc([]const u8, max);
+		const values = try allocator.alloc([]const u8, max);
 		return Self{
 			.len = 0,
 			.names = names,
@@ -77,7 +76,7 @@ pub const Params = struct {
 
 test "params: get" {
 	var allocator = t.allocator;
-	var params = try Params.init(allocator);
+	var params = try Params.init(allocator, 10);
 	var names = [_][]const u8{"over", "duncan"};
 	params.addValue("9000");
 	params.addValue("idaho");
