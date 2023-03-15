@@ -25,8 +25,9 @@ pub const Config = struct {
 	max_body_size: usize = 1_048_576,
 	buffer_size: usize = 65_536,
 	max_header_count: usize = 32,
-	max_url_params: usize = 10,
-	max_query_params: usize = 32,
+	max_param_count: usize = 10,
+	max_query_count: usize = 32,
+	pool_size: usize = 100,
 };
 
 // Should not be called directly, but initialized through a pool
@@ -36,8 +37,8 @@ pub fn init(allocator: Allocator, config: Config) !*Request {
 	request.query_read = false;
 	request.buffer = try Buffer.init(allocator, config.buffer_size, config.max_body_size);
 	request.headers = try KeyValue.init(allocator, config.max_header_count);
-	request.params = try Params.init(allocator, config.max_url_params);
-	request.query = try KeyValue.init(allocator, config.max_query_params);
+	request.params = try Params.init(allocator, config.max_param_count);
+	request.query = try KeyValue.init(allocator, config.max_query_count);
 	return request;
 }
 

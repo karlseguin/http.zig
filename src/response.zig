@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 
 pub const Config = struct {
 	max_header_count: usize = 10,
+	pool_size: usize = 100,
 };
 
 // Should not be called directly, but initialized through a pool

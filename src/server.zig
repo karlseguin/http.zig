@@ -36,8 +36,8 @@ pub fn Server(comptime H: type) type {
 				.handler = handler,
 				.socket = undefined,
 				.allocator = allocator,
-				.reqPool = try ReqPool.init(allocator, 100, request.init, config.request),
-				.resPool = try ResPool.init(allocator, 100, response.init, config.response),
+				.reqPool = try ReqPool.init(allocator, config.request.pool_size, request.init, config.request),
+				.resPool = try ResPool.init(allocator, config.response.pool_size, response.init, config.response),
 			};
 		}
 

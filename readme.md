@@ -4,6 +4,7 @@ An HTTP/1.1 server for Zig.
 This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`.
 
 # Usage
+
 ```zig
 const httpz = @import("httpz");
 
@@ -17,7 +18,7 @@ fn main() !void {
     try router.get("/api/users", get_users);
     try router.put("/api/users/:id", update_user);
 
-    try httpz.listen(allocator, &router, .{.port = 3000});
+    try httpz.listen(allocator, &router, .{.port = 5882});
 }
 
 fn get_users(req: *httpz.Request, res: *httpz.Response) !void {
@@ -32,38 +33,38 @@ fn update_users(req: *httpz.Request, res: *httpz.Response) !void {
 }
 ```
 
-# Router
+## Router
 You can use the `get`, `put`, `post`, `head`, `patch`, `delete` or `option` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
 
-## Casing
-You **must** use a lowercase route. You can use any casing with parameter names, as long as you use that same casing when requested the parameter.
+### Casing
+You **must** use a lowercase route. You can use any casing with parameter names, as long as you use that same casing when getting the parameter.
 
-## Parameters
+### Parameters
 Routing supports parameters, via `:CAPTURE_NAME`. The captured values are available via `req.params.get(name: []const u8) ?[]const u8`.  
 
-## Glob
+### Glob
 You can glob an individual path segment, or the entire path suffix. For a suffix glob, it is important that no trailing slash is present.
 
-```
+```zig
 res.all("/*", not_found);
 res.get("/api/*/debug")
 ```
 
 When multiple globs are used, the most specific will be selected. E.g., give the following two routes:
 
-```
+```zig
 res.get("/*", not_found);
 res.get("/info/*", any_info)
 ```
 
 A request for "/info/debug/all" will be routed to `any_info`, whereas a request for "/over/9000" will be routed to `not_found`.
 
-## Limitations
+### Limitations
 The router has several limitations which might not get fixed. These specifically resolve around the interaction of globs, parameters and static path segments.
 
 Given the following routes:
 
-```
+```zig
 try router.get("/:any/users", route1);
 try router.get("/hello/users/test", route2);
 ```
@@ -75,12 +76,65 @@ Globs interact similarly poorly with parameters and static path segments.
 Resolving this issue requires keeping a stack (or visiting the routes recursively), in order to back-out of a dead-end and trying a different path.
 This seems like an unnecessarily expensive thing to do, on each request, when, in my opinion, such route hierarchies are quite uncommon. 
 
-# Zig compatibility
+## Configuration
+The third option given to `listen` is an `httpz.Config` instance. Possible values, along with their default, are:
+
+```zig
+try httpz.listen(allocator, &router, .{
+    // the port to listen on
+    .port = 5882, 
+
+    // the interface address to bind to
+    .address = "127.0.0.1",
+
+    // various options for tweaking request processing
+    .request = .{
+        // Minimum number of request objects to keep pooled
+        // This should be set to the same value as response.pool_size
+        pool_size: usize = 100,
+
+        // The maximum body size that we'll process. We'll can allocate up 
+        // to this much memory per request for the body. Internally, we might
+        // keep this memory around for a number of requests as an optimization.
+        // So the maximum amount of memory that our request pool will use is in
+        // the neighborhood of pool_size * max_body_size, but this value should be temporary
+        // (there are more allocations, but this is the biggest chunk).
+        max_body_size: usize = 1_048_576,
+
+        // This memory is allocated upfront. The request header _must_ fit into
+        // this space, else the request will be rejected. If possible, we'll 
+        // try to load the body in here too. The minimum amount of memory that our request
+        // pool will use is in the neighborhood of pool_size * buffer_size. It will never
+        // be smaller than this (there are other static allocations, but this is the biggest chunk.)
+        buffer_size: usize = 65_536,
+
+        // The maximum number of headers to accept. 
+        // Additional headers will be silently ignored.
+        max_header_count: usize = 32,
+
+        // the maximum number of URL parameters to accept.
+        // Additional parameters will be silently ignored.
+        max_param_count: usize = 10,
+
+        // the maximum number of query string parameters to accept.
+        // Additional parameters will be silently ignored.
+        max_query_count: usize = 32,
+    }
+    // various options for tweaking response object
+    .response = .{
+        // Minimum number of response objects to keep pooled
+        // This should be set to the same value as request.pool_size
+        pool_size: usize = 100,
+        
+        // The maximum number of headers to accept. 
+        // Additional headers will be silently ignored.
+        max_header_count: usize = 16,
+    }
+});
+```
+
+# Zig Compatibility
 0.11-dev is constantly changing, but the goal is to keep this library compatible with the latest development release. Since 0.11-dev does not support async, threads are currently and there are some thread-unsafe code paths. Since this library is itself a WIP, the entire thing is considered good enough for playing/testing, and should be stable when 0.11 itself becomes more stable.
 
 # HTTP Compliance
 This implementation may never be fully HTTP/1.1 compliant, as it is built with the assumption that it will sit behind a reverse proxy that is tolerant of non-compliant upstreams (e.g. nginx). 
-
-Things that are missing:
-
-- 
