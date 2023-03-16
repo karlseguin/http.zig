@@ -13,6 +13,7 @@ const Stream = @import("stream.zig").Stream;
 const Loop = std.event.Loop;
 const Allocator = std.mem.Allocator;
 
+const os = std.os;
 const net = std.net;
 const assert = std.debug.assert;
 
@@ -58,6 +59,14 @@ pub fn Server(comptime H: type) type {
 			const listen_address = config.address orelse "127.0.0.1";
 			const listen_port = config.port orelse 5882;
 			try socket.listen(net.Address.parseIp(listen_address, listen_port) catch unreachable);
+
+			// TODO: I believe this should work, but it currently doesn't on 0.11-dev. Instead I have to
+			// hardcode 1 for the setsocopt NODELAY option
+			// if (@hasDecl(os.TCP, "NODELAY")) {
+			// 	try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, os.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
+			// }
+			try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
+
 			std.log.info("listening on http://{}", .{socket.listen_address});
 
 			while (true) {

@@ -47,6 +47,9 @@ pub const Response = struct {
 	}
 
 	pub fn write(self: Self, comptime S: type, stream: S) !void {
+		// TODO: minimize the amount of writes we need to do.
+		// Consider using writev.
+
 		var scrap = self.scrap;
 		switch (self.status) {
 			100 => try stream.write("HTTP/1.1 100\r\n"),
