@@ -46,6 +46,33 @@ fn errorHandler(err: anyerror, _res: *httpz.Request, res: *httpz.Response) void 
 }
 ```
 
+## httpz.Request
+The main most important fields for this method are:
+
+* `method` - an httpz.Method enum
+* `arena` - an arena allocator that will be reset at the end of the request
+* `url.path` - the path of the request 
+
+To get a value from a URL parameter (as defined by the route using the `:NAME` syntax), use the `req.param(PARAM_NAME) ?[]const u8` method. Note that the parameter name matches the casing that you used when defining the route. The value will be lowercase (if the parameter exists).
+
+To get a header vlaue, use `req.header(HEADER_NAME) ?[]const u8`. The `HEADER_NAME` must be lowercase. The value will be lowercase (if the header exists).
+
+Getting a query string value is different than getting a header or parameter value. By default, httpz does not parse the querystring (because httpz itself doesn't need any information contained inside of it, unlike URL parameters and headers). To get a query value use:
+
+```zig
+const query = try req.query();
+const value = query.get(KEY);
+```
+
+Note that `query()` can fail (parsing the querystring can require allocations if values are URL encoded). The `KEY` must be lowercase. The value will be lowercase (if the query value exists). The results of `req.query()` are internally cached, so calling it multiple times is ok.
+
+## http.Response
+You can set the status using the `status` field. By default, the status is set to 200.
+
+You can set an arbitrary body using `setBody`. If you need dynamically allocated memory to create the body, consider using `req.arena`.
+
+You can set a header using `res.header(NAME, VALUE)`. The `NAME` and `VALUE` are written in the response as-is (i.e. no changes are made to the casing or whitespacing).
+
 ## Router
 You can use the `get`, `put`, `post`, `head`, `patch`, `delete` or `option` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
 
@@ -59,18 +86,20 @@ Routing supports parameters, via `:CAPTURE_NAME`. The captured values are availa
 You can glob an individual path segment, or the entire path suffix. For a suffix glob, it is important that no trailing slash is present.
 
 ```zig
-res.all("/*", not_found);
-res.get("/api/*/debug")
+// prefer using `try router.notFound(not_found)` than a global glob.
+try router.all("/*", not_found);
+try router.get("/api/*/debug")
 ```
 
 When multiple globs are used, the most specific will be selected. E.g., give the following two routes:
 
 ```zig
-res.get("/*", not_found);
-res.get("/info/*", any_info)
+try router.get("/*", not_found);
+try router.get("/info/*", any_info)
 ```
 
 A request for "/info/debug/all" will be routed to `any_info`, whereas a request for "/over/9000" will be routed to `not_found`.
+
 
 ### Limitations
 The router has several limitations which might not get fixed. These specifically resolve around the interaction of globs, parameters and static path segments.

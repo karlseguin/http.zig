@@ -36,12 +36,12 @@ pub fn init(allocator: Allocator, config: Config) !*Request {
 	var arena = std.heap.ArenaAllocator.init(allocator);
 
 	request.body_read = false;
-	request.query_read = false;
+	request.qs_read = false;
 	request.arena = arena;
 	request.static = try allocator.alloc(u8, config.buffer_size);
 	request.headers = try KeyValue.init(allocator, config.max_header_count);
 	request.params = try Params.init(allocator, config.max_param_count);
-	request.query = try KeyValue.init(allocator, config.max_query_count);
+	request.qs = try KeyValue.init(allocator, config.max_query_count);
 	return request;
 }
 
@@ -72,23 +72,19 @@ pub const Request = struct {
 	// Second, for keepalive, if the body wasn't read as part of the normal
 	// request handling, we need to discard it from the stream.
 	body_read: bool,
-
 	// The body of the request, if any.
 	body: ?[]const u8,
 
-	// Whether or not the query string was parsed.
-	// Using req.param(NAME) is preferred.
-	query_read: bool,
-
+	// cannot use an optional on qs, because it's pre-allocated so always exists
+	qs_read: bool,
 	// The query string lookup.
-	query: KeyValue,
+	qs: KeyValue,
 
 	// A buffer that exists for the entire lifetime of the request. The sized
 	// is defined by the request.buffer_size configuration. The request header MUST
 	// fit in this size (requests with headers larger than this will be rejected).
 	// If possible, this space will also be used for the body.
 	static: []u8,
-
 
 	// An arena that will be reset at the end of each request. Can be used
 	// internally by this framework, or externally by the application.
@@ -109,7 +105,7 @@ pub const Request = struct {
 	};
 
 	pub fn deinit(self: *Self, allocator: Allocator) void {
-		self.query.deinit();
+		self.qs.deinit();
 		self.params.deinit();
 		self.headers.deinit();
 		allocator.free(self.static);
@@ -118,8 +114,8 @@ pub const Request = struct {
 
 	pub fn reset(self: *Self) void {
 		self.body_read = false;
-		self.query_read = false;
-		self.query.reset();
+		self.qs_read = false;
+		self.qs.reset();
 		self.params.reset();
 		self.headers.reset();
 		_ = self.arena.reset(std.heap.ArenaAllocator.ResetMode.free_all);
@@ -133,6 +129,12 @@ pub const Request = struct {
 		return self.params.get(name);
 	}
 
+	pub fn query(self: *Self) !KeyValue {
+		if (self.qs_read) {
+			return self.qs;
+		}
+		return self.parseQuery();
+	}
 
 	pub fn parse(self: *Self, comptime S: type, stream: S) !void {
 		try self.parseHeader(S, stream);
@@ -336,6 +338,32 @@ pub const Request = struct {
 			buf_len += try readForHeader(S, stream, buf[buf_len..]);
 		}
 	}
+
+	fn parseQuery(self: *Self) !KeyValue {
+		const raw = self.url.query;
+		if (raw.len == 0) {
+			self.qs_read = true;
+			return self.qs;
+		}
+
+		var qs = &self.qs;
+		var allocator = self.arena.allocator();
+
+		var it = std.mem.split(u8, raw, "&");
+		while (it.next()) |pair| {
+			if (std.mem.indexOfScalar(u8, pair, '=')) |sep| {
+				const key = try std.Uri.unescapeString(allocator, pair[0..sep]);
+				const value = try std.Uri.unescapeString(allocator, pair[sep+1..]);
+				qs.add(key, value);
+			} else {
+				const key = try std.Uri.unescapeString(allocator, pair);
+				qs.add(key, "");
+			}
+		}
+
+		self.qs_read = true;
+		return self.qs;
+	}
 };
 
 fn trimLeadingSpace(in: []const u8) []const u8 {
@@ -537,6 +565,53 @@ test "request: canKeepAlive" {
 		const r = try testParse("GET / HTTP/1.1\r\nConnection: close\r\n\r\n");
 		defer cleanupRequest(r);
 		try t.expectEqual(false, r.canKeepAlive());
+	}
+}
+
+test "request: query" {
+	{
+		// none
+		const r = try testParse("PUT / HTTP/1.1\r\n\r\n");
+		defer cleanupRequest(r);
+		try t.expectEqual(@as(usize, 0), (try r.query()).len);
+	}
+
+	{
+		// none with path
+		const r = try testParse("PUT /why/would/this/matter HTTP/1.1\r\n\r\n");
+		defer cleanupRequest(r);
+		try t.expectEqual(@as(usize, 0), (try r.query()).len);
+	}
+
+	{
+		// value-less
+		const r = try testParse("PUT /?a HTTP/1.1\r\n\r\n");
+		defer cleanupRequest(r);
+		const query = try r.query();
+		try t.expectEqual(@as(usize, 1), query.len);
+		try t.expectString("", query.get("a").?);
+		try t.expectEqual(@as(?[]const u8, null), query.get("b"));
+	}
+
+	{
+		// single
+		const r = try testParse("PUT /?a=1 HTTP/1.1\r\n\r\n");
+		defer cleanupRequest(r);
+		const query = try r.query();
+		try t.expectEqual(@as(usize, 1), query.len);
+		try t.expectString("1", query.get("a").?);
+		try t.expectEqual(@as(?[]const u8, null), query.get("b"));
+	}
+
+	{
+		// multiple
+		const r = try testParse("PUT /path?Teg=Tea&it%20%20IS=over%209000%24&ha%09ck HTTP/1.1\r\n\r\n");
+		defer cleanupRequest(r);
+		const query = try r.query();
+		try t.expectEqual(@as(usize, 3), query.len);
+		try t.expectString("tea", query.get("teg").?);
+		try t.expectString("over 9000$", query.get("it  is").?);
+		try t.expectString("", query.get("ha\tck").?);
 	}
 }
 

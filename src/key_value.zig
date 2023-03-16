@@ -41,7 +41,7 @@ pub const KeyValue = struct {
 		self.len = len + 1;
 	}
 
-	pub fn get(self: *Self, needle: []const u8) ?[]const u8 {
+	pub fn get(self: Self, needle: []const u8) ?[]const u8 {
 		const keys = self.keys[0..self.len];
 		for (keys, 0..) |key, i| {
 			if (mem.eql(u8, key, needle)) {
