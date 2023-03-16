@@ -96,6 +96,8 @@ pub fn Server(comptime H: type) type {
 
 			const handler = self.handler;
 			while (true) {
+				req.reset();
+				res.reset();
 				if (req.parse(S, stream)) {
 					if (!handler.handle(S, stream, req, res)) {
 						return;
@@ -108,8 +110,6 @@ pub fn Server(comptime H: type) type {
 				}
 
 				req.ensureBodyIsRead(S, stream) catch { return false; };
-				req.reset();
-				res.reset();
 			}
 		}
 	};
@@ -144,7 +144,7 @@ pub const Handler = struct {
 		switch (err) {
 			error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
 				res.status = 400;
-				res.text("Invalid Request");
+				res.setBody("Invalid Request");
 				res.write(S, stream) catch {};
 			},
 			else => {},
@@ -153,13 +153,13 @@ pub const Handler = struct {
 
 	pub fn unhandledError(_: Self, err: anyerror, req: *httpz.Request, res: *httpz.Response) void {
 		res.status = 500;
-		res.text("Internal Server Error");
+		res.setBody("Internal Server Error");
 		std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
 	}
 
 	pub fn noRouteFound(_: Self, res: *httpz.Response) void {
 		res.status = 404;
-		res.text("Not Found");
+		res.setBody("Not Found");
 	}
 };
 

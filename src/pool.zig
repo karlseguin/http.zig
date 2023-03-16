@@ -69,7 +69,6 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 		}
 
 		pub fn release(self: *Self, e: E) void {
-			e.reset();
 			_ = self.dynamic.remove(@ptrToInt(e));
 
 			// Even if this was a dynamically created item, we'll add it back
@@ -95,7 +94,6 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 var id: i32 = 0;
 const TestEntry = struct {
 	id: i32,
-	resetted: bool,
 	deinited: bool,
 
 
@@ -109,10 +107,6 @@ const TestEntry = struct {
 	pub fn deinit(self: *TestEntry, _: Allocator) void {
 		self.deinited = true;
 	}
-
-	pub fn reset(self: *TestEntry) void {
-		self.resetted = true;
-	}
 };
 
 test "pool: acquires & release" {
@@ -121,28 +115,23 @@ test "pool: acquires & release" {
 
 	var e1 = try p.acquire();
 	try t.expectEqual(@as(i32, 10), e1.id);
-	try t.expectEqual(false, e1.resetted);
 	try t.expectEqual(false, e1.deinited);
 
 	var e2 = try p.acquire();
 	try t.expectEqual(@as(i32, 5), e2.id);
-	try t.expectEqual(false, e2.resetted);
 	try t.expectEqual(false, e2.deinited);
 
 	var e3 = try p.acquire();
 	try t.expectEqual(@as(i32, 15), e3.id);
-	try t.expectEqual(false, e3.resetted);
 	try t.expectEqual(false, e3.deinited);
 
 	// released first, so back in the pool
 	p.release(e3);
 	try t.expectEqual(@as(i32, 15), e3.id);
-	try t.expectEqual(true, e3.resetted);
 	try t.expectEqual(false, e3.deinited);
 
 	p.release(e2);
 	try t.expectEqual(@as(i32, 5), e2.id);
-	try t.expectEqual(true, e2.resetted);
 	try t.expectEqual(false, e2.deinited);
 
 	p.release(e1);

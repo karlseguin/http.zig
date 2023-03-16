@@ -112,6 +112,20 @@ test "httpz: route params" {
 	try t.expectString("HTTP/1.1 200\r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", stream.received.items);
 }
 
+test "httpz: request and response headers" {
+	var stream = t.Stream.init();
+	defer stream.deinit();
+	_ = stream.add("GET /test/headers HTTP/1.1\r\nHeader-Name: Header-Value\r\n\r\n");
+
+	var r = Router.init(t.allocator) catch unreachable;
+	try r.get("/test/headers", testHeaders);
+	var srv = testServer(&r);
+	defer srv.deinit();
+	srv.handleConnection(*t.Stream, &stream);
+
+	try t.expectString("HTTP/1.1 200\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", stream.received.items);
+}
+
 fn testServer(r: *Router) Server(Handler) {
 	const handler = Handler{.router = r};
 	return Server(Handler).init(t.allocator, handler, .{}) catch unreachable;
@@ -122,8 +136,12 @@ fn testFail(_: *Request, _: *Response) !void {
 }
 
 fn testParams(req: *Request, res: *Response) !void {
-	var buf: [100]u8 = undefined;
-	var args = .{req.params.get("version").?, req.params.get("UserId").?};
-	var out = try std.fmt.bufPrint(buf[0..], "version={s},user={s}", args);
-	res.text(out);
+	var args = .{req.param("version").?, req.param("UserId").?};
+	var out = try std.fmt.allocPrint(req.arena.allocator(), "version={s},user={s}", args);
+	res.setBody(out);
+}
+
+fn testHeaders(req: *Request, res: *Response) !void {
+	res.header("Echo", req.header("header-name").?);
+	res.header("other", "test-value");
 }

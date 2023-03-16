@@ -33,8 +33,11 @@ pub const Config = struct {
 // Should not be called directly, but initialized through a pool
 pub fn init(allocator: Allocator, config: Config) !*Request {
 	var request = try allocator.create(Request);
+	var arena = std.heap.ArenaAllocator.init(allocator);
+
 	request.body_read = false;
 	request.query_read = false;
+	request.arena = arena;
 	request.static = try allocator.alloc(u8, config.buffer_size);
 	request.headers = try KeyValue.init(allocator, config.max_header_count);
 	request.params = try Params.init(allocator, config.max_param_count);
@@ -43,17 +46,53 @@ pub fn init(allocator: Allocator, config: Config) !*Request {
 }
 
 pub const Request = struct {
+	// The URL of the request
 	url: Url,
+
+	// Path params (extracted from the URL based on the route).
+	// Using req.param(NAME) is preferred.
 	params: Params,
+
+	// The headers of the request. Using req.header(NAME) is preferred.
 	headers: KeyValue,
+
+	// The request method.
 	method: http.Method,
+
+	// The request protocol.
+
 	protocol: http.Protocol,
-	request_line: []const u8,
+
+	// // The request line (the first line of the HTTP request)
+	// // e.g. GET /tea/keemun HTTP/1.1
+	// request_line: []const u8,
+
+	// Whether or not the body has been read.
+	// Used for two reasons. First, we only lazily read the body.
+	// Second, for keepalive, if the body wasn't read as part of the normal
+	// request handling, we need to discard it from the stream.
 	body_read: bool,
+
+	// The body of the request, if any.
 	body: ?[]const u8,
+
+	// Whether or not the query string was parsed.
+	// Using req.param(NAME) is preferred.
 	query_read: bool,
+
+	// The query string lookup.
 	query: KeyValue,
+
+	// A buffer that exists for the entire lifetime of the request. The sized
+	// is defined by the request.buffer_size configuration. The request header MUST
+	// fit in this size (requests with headers larger than this will be rejected).
+	// If possible, this space will also be used for the body.
 	static: []u8,
+
+
+	// An arena that will be reset at the end of each request. Can be used
+	// internally by this framework, or externally by the application.
+	arena: std.heap.ArenaAllocator,
 
 	const Self = @This();
 
@@ -74,6 +113,7 @@ pub const Request = struct {
 		self.params.deinit();
 		self.headers.deinit();
 		allocator.free(self.static);
+		self.arena.deinit();
 	}
 
 	pub fn reset(self: *Self) void {
@@ -82,7 +122,17 @@ pub const Request = struct {
 		self.query.reset();
 		self.params.reset();
 		self.headers.reset();
+		_ = self.arena.reset(std.heap.ArenaAllocator.ResetMode.free_all);
 	}
+
+	pub fn header(self: *Self, name: []const u8) ?[]const u8 {
+		return self.headers.get(name);
+	}
+
+	pub fn param(self: *Self, name: []const u8) ?[]const u8 {
+		return self.params.get(name);
+	}
+
 
 	pub fn parse(self: *Self, comptime S: type, stream: S) !void {
 		try self.parseHeader(S, stream);
@@ -275,7 +325,9 @@ pub const Request = struct {
 				}
 
 				if (std.mem.indexOfScalar(u8, buf[0..header_end], ':')) |name_end| {
-					self.headers.add(buf[0..name_end], trimLeadingSpace(buf[name_end+1..header_end]));
+					const name = buf[0..name_end];
+					lowerCase(name);
+					self.headers.add(name, trimLeadingSpace(buf[name_end+1..header_end]));
 					return .{.buf_len = buf_len - len, .used = next + 1};
 				} else {
 					return error.InvalidHeaderLine;
@@ -291,6 +343,12 @@ fn trimLeadingSpace(in: []const u8) []const u8 {
 		if (b != ' ') return in[i..];
 	}
 	return "";
+}
+
+fn lowerCase(value: []u8) void {
+	for (value, 0..) |c, i| {
+		value[i] = std.ascii.toLower(c);
+	}
 }
 
 fn read(comptime S: type, stream: S, buffer: []u8) !usize {
@@ -440,13 +498,13 @@ test "request: parse headers" {
 	}
 
 	{
-		const r = try testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nMisc:  some-value\r\nAuthorization:none\r\n\r\n");
+		const r = try testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nMisc:  Some-Value\r\nAuthorization:none\r\n\r\n");
 		defer cleanupRequest(r);
 
 		try t.expectEqual(@as(usize, 3), r.headers.len);
-		try t.expectString("goblgobl.com", r.headers.get("host").?);
-		try t.expectString("some-value", r.headers.get("misc").?);
-		try t.expectString("none", r.headers.get("authorization").?);
+		try t.expectString("goblgobl.com", r.header("host").?);
+		try t.expectString("Some-Value", r.header("misc").?);
+		try t.expectString("none", r.header("authorization").?);
 	}
 }
 

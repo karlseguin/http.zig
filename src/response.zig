@@ -37,8 +37,13 @@ pub const Response = struct {
 		self.status = 200;
 		self.headers.reset();
 	}
-	pub fn text(self: *Self, value: []const u8) void {
+
+	pub fn setBody(self: *Self, value: []const u8) void {
 		self.body = value;
+	}
+
+	pub fn header(self: *Self, name: []const u8, value: []const u8) void {
+		self.headers.add(name, value);
 	}
 
 	pub fn write(self: Self, comptime S: type, stream: S) !void {
@@ -113,6 +118,20 @@ pub const Response = struct {
 				try stream.write("\r\n");
 			}
 		}
+
+		{
+			const headers = &self.headers;
+			const header_count = headers.len;
+			const names = headers.keys[0..header_count];
+			const values = headers.values[0..header_count];
+			for (names, values) |name, value| {
+				try stream.write(name);
+				try stream.write(": ");
+				try stream.write(value);
+				try stream.write("\r\n");
+			}
+		}
+
 		if (self.body) |b| {
 			try stream.write("Content-Length: ");
 			try stream.write(itoa(@intCast(u32, b.len), scrap[0..]));
@@ -167,7 +186,7 @@ test "response: write" {
 		// body
 		s.reset(); res.reset();
 		res.status = 200;
-		res.text("hello");
+		res.setBody("hello");
 		try res.write(*t.Stream, &s);
 		try t.expectString("HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello", s.received.items);
 	}
