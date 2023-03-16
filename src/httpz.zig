@@ -1,8 +1,8 @@
 const std = @import("std");
 
 const t = @import("t.zig");
+pub const r = @import("router.zig");
 pub const server = @import("server.zig");
-pub const router = @import("router.zig");
 
 const Stream = @import("stream.zig").Stream;
 pub const Config = @import("config.zig").Config;
@@ -13,10 +13,20 @@ const Allocator = std.mem.Allocator;
 
 pub const Server = server.Server;
 pub const Handler = server.Handler;
-pub const Router = router.Router(router.Action);
+pub const Router = r.Router(Action);
+pub const Action = *const fn(req: *Request, res: *Response) anyerror!void;
+pub const ActionError = *const fn(err: anyerror, req: *Request, res: *Response) void;
 
-pub fn listen(allocator: Allocator, r: *Router, config: Config) !void {
-	const handler = Handler{.router = r};
+// We provide this wrapper around init so that we can inject server.notFound
+// as a default notFound route. The caller can always overwrite this by calling
+// router.notFound(ACTION). But by having a default, we can define it, as well
+// as the getRoute functions are non-nullable, which streamlines important code.
+pub fn router(allocator: Allocator) !Router{
+	return Router.init(allocator, server.notFound);
+}
+
+pub fn listen(allocator: Allocator, routes: *Router, config: Config) !void {
+	const handler = Handler{.router = routes, .errorHandler = config.errorHandler};
 	var s = try Server(Handler).init(allocator, handler, config);
 	try s.listen();
 }
@@ -46,8 +56,8 @@ test "httpz: invalid request (not enough data, assume closed)" {
 	defer stream.deinit();
 	_ = stream.add("GET / HTTP/1.1\r");
 
-	var r = Router.init(t.allocator) catch unreachable;
-	var srv = testServer(&r);
+	var rtr = router(t.allocator) catch unreachable;
+	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
 	srv.handleConnection(*t.Stream, &stream);
 
@@ -60,8 +70,8 @@ test "httpz: invalid request" {
 	defer stream.deinit();
 	_ = stream.add("TEA / HTTP/1.1\r\n\r\n");
 
-	var r = Router.init(t.allocator) catch unreachable;
-	var srv = testServer(&r);
+	var rtr = router(t.allocator) catch unreachable;
+	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
 	srv.handleConnection(*t.Stream, &stream);
 
@@ -73,12 +83,27 @@ test "httpz: no route" {
 	defer stream.deinit();
 	_ = stream.add("GET / HTTP/1.1\r\n\r\n");
 
-	var r = Router.init(t.allocator) catch unreachable;
-	var srv = testServer(&r);
+	var rtr = router(t.allocator) catch unreachable;
+	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
 	srv.handleConnection(*t.Stream, &stream);
 
 	try t.expectString("HTTP/1.1 404\r\nContent-Length: 9\r\n\r\nNot Found", stream.received.items);
+}
+
+test "httpz: no route with custom notFound handler" {
+	var stream = t.Stream.init();
+	defer stream.deinit();
+	_ = stream.add("GET / HTTP/1.1\r\n\r\n");
+
+	var rtr = router(t.allocator) catch unreachable;
+	rtr.notFound(testNotFound);
+
+	var srv = testServer(&rtr, .{});
+	defer srv.deinit();
+	srv.handleConnection(*t.Stream, &stream);
+
+	try t.expectString("HTTP/1.1 404\r\nContent-Length: 10\r\n\r\nwhere lah?", stream.received.items);
 }
 
 test "httpz: unhandled exception" {
@@ -89,13 +114,30 @@ test "httpz: unhandled exception" {
 	defer stream.deinit();
 	_ = stream.add("GET /fail HTTP/1.1\r\n\r\n");
 
-	var r = Router.init(t.allocator) catch unreachable;
-	try r.get("/fail", testFail);
-	var srv = testServer(&r);
+	var rtr = router(t.allocator) catch unreachable;
+	try rtr.get("/fail", testFail);
+	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
 	srv.handleConnection(*t.Stream, &stream);
 
 	try t.expectString("HTTP/1.1 500\r\nContent-Length: 21\r\n\r\nInternal Server Error", stream.received.items);
+}
+
+test "httpz: unhandled exception with custom error handler" {
+	std.testing.log_level = .err;
+	defer std.testing.log_level = .warn;
+
+	var stream = t.Stream.init();
+	defer stream.deinit();
+	_ = stream.add("GET /fail HTTP/1.1\r\n\r\n");
+
+	var rtr = router(t.allocator) catch unreachable;
+	try rtr.get("/fail", testFail);
+	var srv = testServer(&rtr, .{.errorHandler = testErrorHandler});
+	defer srv.deinit();
+	srv.handleConnection(*t.Stream, &stream);
+
+	try t.expectString("HTTP/1.1 500\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", stream.received.items);
 }
 
 test "httpz: route params" {
@@ -103,9 +145,9 @@ test "httpz: route params" {
 	defer stream.deinit();
 	_ = stream.add("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
 
-	var r = Router.init(t.allocator) catch unreachable;
-	try r.all("/api/:version/users/:UserId", testParams);
-	var srv = testServer(&r);
+	var rtr = router(t.allocator) catch unreachable;
+	try rtr.all("/api/:version/users/:UserId", testParams);
+	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
 	srv.handleConnection(*t.Stream, &stream);
 
@@ -117,18 +159,18 @@ test "httpz: request and response headers" {
 	defer stream.deinit();
 	_ = stream.add("GET /test/headers HTTP/1.1\r\nHeader-Name: Header-Value\r\n\r\n");
 
-	var r = Router.init(t.allocator) catch unreachable;
-	try r.get("/test/headers", testHeaders);
-	var srv = testServer(&r);
+	var rtr = router(t.allocator) catch unreachable;
+	try rtr.get("/test/headers", testHeaders);
+	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
 	srv.handleConnection(*t.Stream, &stream);
 
 	try t.expectString("HTTP/1.1 200\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", stream.received.items);
 }
 
-fn testServer(r: *Router) Server(Handler) {
-	const handler = Handler{.router = r};
-	return Server(Handler).init(t.allocator, handler, .{}) catch unreachable;
+fn testServer(rtr: *Router, config: Config) Server(Handler) {
+	const handler = Handler{.router = rtr, .errorHandler = config.errorHandler};
+	return Server(Handler).init(t.allocator, handler, config) catch unreachable;
 }
 
 fn testFail(_: *Request, _: *Response) !void {
@@ -144,4 +186,15 @@ fn testParams(req: *Request, res: *Response) !void {
 fn testHeaders(req: *Request, res: *Response) !void {
 	res.header("Echo", req.header("header-name").?);
 	res.header("other", "test-value");
+}
+
+fn testNotFound(_: *Request, res: *Response) !void {
+	res.status = 404;
+	res.setBody("where lah?");
+}
+
+
+fn testErrorHandler(_: anyerror, _: *Request, res: *Response) void {
+	res.status = 500;
+	res.setBody("#/why/arent/tags/hierarchical");
 }

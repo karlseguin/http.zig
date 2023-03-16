@@ -8,4 +8,5 @@ pub const Config = struct {
 	address: ?[]const u8 = null,
 	request: request.Config = request.Config{},
 	response: response.Config = response.Config{},
+	errorHandler: httpz.ActionError = server.errorHandler,
 };

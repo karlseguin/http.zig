@@ -12,22 +12,37 @@ fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var router = try httpz.Router.init(allocator);
+    var router = try httpz.router();
 
     // routes MUST be lowercase (params can use any casing).
-    try router.get("/api/users", get_users);
-    try router.put("/api/users/:id", update_user);
+    try router.get("/api/user/:id", getUser);
 
-    try httpz.listen(allocator, &router, .{.port = 5882});
+    // Overwrite the default notFound handler
+    router.notFound(notFound)
+
+    try httpz.listen(allocator, &router, .{
+        .port = 5882,
+        .errorHandler = errorHandler,
+    });
 }
 
-fn get_users(req: *httpz.Request, res: *httpz.Response) !void {
-    res.text("todo");
+fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
+    // the request comes with an arena allocator that you can use as needed
+        const allocator = req.arena.allocator();
+    var out = try std.fmt.allocPrint(allocator, "Hello {s}", req.param("id").?);
+    res.setBody(out);
 }
 
-fn update_users(req: *httpz.Request, res: *httpz.Response) !void {
-    _ = req.params.get("id");
-    res.text("todo");
+fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
+    res.status = 404;
+    res.setBody("Not Found");
+}
+
+// note that the error handler return `void` and not `!void`
+fn errorHandler(err: anyerror, _res: *httpz.Request, res: *httpz.Response) void {
+    res.status = 500;
+    res.setBody("Internal Server Error");
+    std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
 }
 ```
 
@@ -84,6 +99,8 @@ try httpz.listen(allocator, &router, .{
 
     // the interface address to bind to
     .address = "127.0.0.1",
+
+    .errorHandler = // defaults to a basic handler that will output 500 and log the error
 
     // various options for tweaking request processing
     .request = .{

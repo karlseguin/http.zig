@@ -117,6 +117,7 @@ pub fn Server(comptime H: type) type {
 
 pub const Handler = struct {
 	router: *httpz.Router,
+	errorHandler: httpz.ActionError,
 
 	const Self = @This();
 
@@ -125,13 +126,11 @@ pub const Handler = struct {
 	}
 
 	pub fn handle(self: Self, comptime S: type, stream: S, req: *request.Request, res: *response.Response) bool {
-		if (self.router.route(req.method, req.url.path, &req.params)) |action| {
-			action(req, res) catch |err| {
-				self.unhandledError(err, req, res);
-			};
-		} else {
-			self.noRouteFound(res);
-		}
+		const router = self.router;
+		const action = router.route(req.method, req.url.path, &req.params);
+		action(req, res) catch |err| {
+			self.errorHandler(err, req, res);
+		};
 
 		res.write(S, stream) catch {
 			return false;
@@ -150,17 +149,17 @@ pub const Handler = struct {
 			else => {},
 		}
 	}
-
-	pub fn unhandledError(_: Self, err: anyerror, req: *httpz.Request, res: *httpz.Response) void {
-		res.status = 500;
-		res.setBody("Internal Server Error");
-		std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
-	}
-
-	pub fn noRouteFound(_: Self, res: *httpz.Response) void {
-		res.status = 404;
-		res.setBody("Not Found");
-	}
 };
 
-// this is largely tested in httpz.zig
+pub fn errorHandler(err: anyerror, req: *httpz.Request, res: *httpz.Response) void {
+	res.status = 500;
+	res.setBody("Internal Server Error");
+	std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
+}
+
+pub fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
+	res.status = 404;
+	res.setBody("Not Found");
+}
+
+// All of this logic is largely tested in httpz.zig
