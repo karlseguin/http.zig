@@ -5,12 +5,15 @@ pub fn main() !void {
 	var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 	const allocator = gpa.allocator();
 
-	var router = try httpz.Router.init(allocator);
+	var router = try httpz.router(allocator);
 	try router.get("/ping", ping);
-	try httpz.listen(allocator, &router, .{});
+	try httpz.listen(allocator, &router, .{
+		.request = .{
+			.buffer_size = 20,
+		}
+	});
 }
 
 fn ping(_: *httpz.Request, res: *httpz.Response) !void {
-	res.status = 200;
-	res.text("ok!");
+	res.setBody("ok!");
 }

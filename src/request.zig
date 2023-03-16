@@ -185,7 +185,7 @@ pub const Request = struct {
 	fn parseMethod(self: *Self, comptime S: type, stream: S, buf: []u8) !ParseResult {
 		var buf_len: usize = 0;
 		while (buf_len < 4) {
-			buf_len += try read(S, stream, buf[buf_len..]);
+			buf_len += try readForHeader(S, stream, buf[buf_len..]);
 		}
 
 		while (true) {
@@ -200,7 +200,7 @@ pub const Request = struct {
 				},
 				POST => {
 					// only need 1 more byte, so at most, we need 1 more read
-					if (buf_len < 5) buf_len += try read(S, stream, buf[buf_len..]);
+					if (buf_len < 5) buf_len += try readForHeader(S, stream, buf[buf_len..]);
 					if (buf[4] != ' ') {
 						return error.UnknownMethod;
 					}
@@ -209,7 +209,7 @@ pub const Request = struct {
 				},
 				HEAD => {
 					// only need 1 more byte, so at most, we need 1 more read
-					if (buf_len < 5) buf_len += try read(S, stream, buf[buf_len..]);
+					if (buf_len < 5) buf_len += try readForHeader(S, stream, buf[buf_len..]);
 					if (buf[4] != ' ') {
 						return error.UnknownMethod;
 					}
@@ -217,7 +217,7 @@ pub const Request = struct {
 					return .{.buf_len = buf_len, .used = 5};
 				},
 				PATC => {
-					while (buf_len < 6)  buf_len += try read(S, stream, buf[buf_len..]);
+					while (buf_len < 6)  buf_len += try readForHeader(S, stream, buf[buf_len..]);
 					if (buf[4] != 'H' or buf[5] != ' ') {
 						return error.UnknownMethod;
 					}
@@ -225,7 +225,7 @@ pub const Request = struct {
 					return .{.buf_len = buf_len, .used = 6};
 				},
 				DELE => {
-					while (buf_len < 7) buf_len += try read(S, stream, buf[buf_len..]);
+					while (buf_len < 7) buf_len += try readForHeader(S, stream, buf[buf_len..]);
 					if (buf[4] != 'T' or buf[5] != 'E' or buf[6] != ' ' ) {
 						return error.UnknownMethod;
 					}
@@ -233,7 +233,7 @@ pub const Request = struct {
 					return .{.buf_len = buf_len, .used = 7};
 				},
 				OPTI => {
-					while (buf_len < 8) buf_len += try read(S, stream, buf[buf_len..]);
+					while (buf_len < 8) buf_len += try readForHeader(S, stream, buf[buf_len..]);
 					if (buf[4] != 'O' or buf[5] != 'N' or buf[6] != 'S' or buf[7] != ' ' ) {
 						return error.UnknownMethod;
 					}
@@ -253,7 +253,7 @@ pub const Request = struct {
 	fn parseURL(self: *Self, comptime S: type, stream: S, buf: []u8, len: usize) !ParseResult {
 		var buf_len = len;
 		if (buf_len == 0) {
-			buf_len += try read(S, stream, buf);
+			buf_len += try readForHeader(S, stream, buf);
 		}
 
 		switch (buf[0]) {
@@ -266,13 +266,13 @@ pub const Request = struct {
 						// +1 to consume the space
 						return .{.used = end_index + 1, .buf_len = buf_len - len};
 					}
-					buf_len += try read(S, stream, buf[buf_len..]);
+					buf_len += try readForHeader(S, stream, buf[buf_len..]);
 				}
 			},
 			'*' => {
 				// must be a "* ", so we need at least 1 more byte
 				if (buf_len == 1) {
-					buf_len += try read(S, stream, buf[buf_len..]);
+					buf_len += try readForHeader(S, stream, buf[buf_len..]);
 				}
 				// Read never returns 0, so if we're here, buf.len >= 1
 				if (buf[1] != ' ') {
@@ -289,7 +289,7 @@ pub const Request = struct {
 	fn parseProtocol(self: *Self, comptime S: type, stream: S, buf: []u8, len: usize) !ParseResult {
 		var buf_len = len;
 		while (buf_len < 10) {
-			buf_len += try read(S, stream, buf[buf_len..]);
+			buf_len += try readForHeader(S, stream, buf[buf_len..]);
 		}
 		if (@bitCast(u32, buf[0..4].*) != HTTP) {
 			return error.UnknownProtocol;
@@ -314,7 +314,7 @@ pub const Request = struct {
 			if (std.mem.indexOfScalar(u8, buf, '\r')) |header_end| {
 
 				const next = header_end + 1;
-				if (next == buf_len) buf_len += try read(S, stream, buf[buf_len..]);
+				if (next == buf_len) buf_len += try readForHeader(S, stream, buf[buf_len..]);
 
 				if (buf[next] != '\n') {
 					return error.InvalidHeaderLine;
@@ -333,7 +333,7 @@ pub const Request = struct {
 					return error.InvalidHeaderLine;
 				}
 			}
-			buf_len += try read(S, stream, buf[buf_len..]);
+			buf_len += try readForHeader(S, stream, buf[buf_len..]);
 		}
 	}
 };
@@ -351,15 +351,19 @@ fn lowerCase(value: []u8) void {
 	}
 }
 
-fn read(comptime S: type, stream: S, buffer: []u8) !usize {
+fn readForHeader(comptime S: type, stream: S, buffer: []u8) !usize {
 	const n = try stream.read(buffer);
 	if (n == 0) {
+		if (buffer.len == 0) {
+			return error.HeaderTooBig;
+		}
 		return error.ConnectionClosed;
 	}
 	return n;
 }
 
 const Error = error {
+	HeaderTooBig,
 	ConnectionClosed,
 	UnknownMethod,
 	InvalidRequestTarget,
@@ -368,11 +372,16 @@ const Error = error {
 	InvalidHeaderLine,
 };
 
+test "request: header too big" {
+	try expectParseError(Error.HeaderTooBig, "GET / HTTP/1.1\r\n\r\n", .{.buffer_size = 17});
+	try expectParseError(Error.HeaderTooBig, "GET / HTTP/1.1\r\nH: v\r\n\r\n", .{.buffer_size = 23});
+}
+
 test "request: parse method" {
 	{
-		try expectParseError(Error.ConnectionClosed, "GET");
-		try expectParseError(Error.UnknownMethod, "GETT ");
-		try expectParseError(Error.UnknownMethod, " PUT ");
+		try expectParseError(Error.ConnectionClosed, "GET", .{});
+		try expectParseError(Error.UnknownMethod, "GETT ", .{});
+		try expectParseError(Error.UnknownMethod, " PUT ", .{});
 	}
 
 	{
@@ -420,12 +429,12 @@ test "request: parse method" {
 
 test "request: parse request target" {
 	{
-		try expectParseError(Error.InvalidRequestTarget, "GET NOPE");
-		try expectParseError(Error.InvalidRequestTarget, "GET nope ");
-		try expectParseError(Error.InvalidRequestTarget, "GET http://www.goblgobl.com/test "); // this should be valid
-		try expectParseError(Error.InvalidRequestTarget, "PUT hello ");
-		try expectParseError(Error.InvalidRequestTarget, "POST  /hello ");
-		try expectParseError(Error.InvalidRequestTarget, "POST *hello ");
+		try expectParseError(Error.InvalidRequestTarget, "GET NOPE", .{});
+		try expectParseError(Error.InvalidRequestTarget, "GET nope ", .{});
+		try expectParseError(Error.InvalidRequestTarget, "GET http://www.goblgobl.com/test ", .{}); // this should be valid
+		try expectParseError(Error.InvalidRequestTarget, "PUT hello ", .{});
+		try expectParseError(Error.InvalidRequestTarget, "POST  /hello ", .{});
+		try expectParseError(Error.InvalidRequestTarget, "POST *hello ", .{});
 	}
 
 	{
@@ -455,11 +464,11 @@ test "request: parse request target" {
 
 test "request: parse protocol" {
 	{
-		try expectParseError(Error.ConnectionClosed, "GET / ");
-		try expectParseError(Error.ConnectionClosed, "GET /  ");
-		try expectParseError(Error.ConnectionClosed, "GET / H\r\n");
-		try expectParseError(Error.UnknownProtocol, "GET / http/1.1\r\n");
-		try expectParseError(Error.UnsupportedProtocol, "GET / HTTP/2.0\r\n");
+		try expectParseError(Error.ConnectionClosed, "GET / ", .{});
+		try expectParseError(Error.ConnectionClosed, "GET /  ", .{});
+		try expectParseError(Error.ConnectionClosed, "GET / H\r\n", .{});
+		try expectParseError(Error.UnknownProtocol, "GET / http/1.1\r\n", .{});
+		try expectParseError(Error.UnsupportedProtocol, "GET / HTTP/2.0\r\n", .{});
 	}
 
 	{
@@ -477,10 +486,10 @@ test "request: parse protocol" {
 
 test "request: parse headers" {
 	{
-		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nH");
-		try expectParseError(Error.InvalidHeaderLine, "GET / HTTP/1.1\r\nHost\r\n");
-		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nHost:another\r\n\r");
-		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nHost: goblgobl.com\r\n");
+		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nH", .{});
+		try expectParseError(Error.InvalidHeaderLine, "GET / HTTP/1.1\r\nHost\r\n", .{});
+		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nHost:another\r\n\r", .{});
+		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nHost: goblgobl.com\r\n", .{});
 	}
 
 	{
@@ -542,12 +551,12 @@ fn testParse(input: []const u8) !*Request {
 	return request;
 }
 
-fn expectParseError(expected: Error, input: []const u8) !void {
+fn expectParseError(expected: Error, input: []const u8, config: Config) !void {
 	var s = t.Stream.init();
 	_ = s.add(input);
 	defer s.deinit();
 
-	var request = try init(t.allocator, .{});
+	var request = try init(t.allocator, config);
 	defer cleanupRequest(request);
 	try t.expectError(expected, request.parse(*t.Stream, &s));
 }

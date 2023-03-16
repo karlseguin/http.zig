@@ -53,6 +53,9 @@ pub const Stream = struct {
 		if (read_index == items.len) {
 			return 0;
 		}
+		if (buf.len == 0) {
+			return 0;
+		}
 
 		// let's fragment this message
 		const left_to_read = items.len - read_index;

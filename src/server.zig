@@ -146,6 +146,11 @@ pub const Handler = struct {
 				res.setBody("Invalid Request");
 				res.write(S, stream) catch {};
 			},
+			error.HeaderTooBig => {
+				res.status = 431;
+				res.setBody("Request header too big");
+				res.write(S, stream) catch {};
+			},
 			else => {},
 		}
 	}
