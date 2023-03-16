@@ -5,8 +5,6 @@ const cm = @import("concurrent_map.zig");
 // async: const Lock = std.event.Lock;
 const Allocator = std.mem.Allocator;
 
-pub const io_mode = .evented;
-
 pub fn Pool(comptime E: type, comptime S: type) type {
 	const initFnPtr = *const fn (Allocator, S) anyerror!E;
 	const ConcurrentMap = cm.ConcurrentMap(usize, void);
@@ -51,7 +49,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 		}
 
 		pub fn acquire(self: *Self) !E {
-		   // async:  var held = self.lock.acquire();
+			// async: var held = self.lock.acquire();
 			const items = self.items;
 			const available = self.available;
 			if (available == 0) {

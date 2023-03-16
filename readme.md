@@ -47,7 +47,7 @@ fn errorHandler(err: anyerror, _res: *httpz.Request, res: *httpz.Response) void 
 ```
 
 ## httpz.Request
-The main most important fields for this method are:
+The main fields for this type are:
 
 * `method` - an httpz.Method enum
 * `arena` - an arena allocator that will be reset at the end of the request
