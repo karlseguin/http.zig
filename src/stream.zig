@@ -7,12 +7,7 @@ pub const Stream = struct {
 	const Self = @This();
 
 	pub fn read(self: Self, buffer: []u8) !usize {
-		const h = self.stream.handle;
-		if (std.io.is_async) {
-			return std.event.Loop.instance.?.read(h, buffer, false);
-		} else {
-			return std.os.read(h, buffer);
-		}
+		return self.stream.read(buffer);
 	}
 
 	pub fn close(self: Self) void {

@@ -28,7 +28,7 @@ pub const Response = struct {
 
 	const Self = @This();
 
-	pub fn deinit(self: *Self) void {
+	pub fn deinit(self: *Self, _: Allocator) void {
 		self.headers.deinit();
 	}
 
@@ -174,8 +174,7 @@ test "response: write" {
 }
 
 fn cleanupWrite(r: *Response, s: *t.Stream) void {
-	r.deinit();
+	r.deinit(t.allocator);
 	t.allocator.destroy(r);
-
 	defer s.deinit();
 }

@@ -43,7 +43,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 		pub fn deinit(self: *Self) void {
 			const allocator = self.allocator;
 			for (self.items) |e| {
-				e.deinit();
+				e.deinit(allocator);
 				allocator.destroy(e);
 			}
 			self.dynamic.deinit();
@@ -80,8 +80,9 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 			const available = self.available;
 			if (available == items.len) {
 				// async: held.release();
-				e.deinit();
-				self.allocator.destroy(e);
+				const allocator = self.allocator;
+				e.deinit(allocator);
+				allocator.destroy(e);
 				return;
 			}
 			items[available] = e;
@@ -105,7 +106,7 @@ const TestEntry = struct {
 		return entry;
 	}
 
-	pub fn deinit(self: *TestEntry) void {
+	pub fn deinit(self: *TestEntry, _: Allocator) void {
 		self.deinited = true;
 	}
 

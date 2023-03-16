@@ -35,7 +35,7 @@ pub fn init(allocator: Allocator, config: Config) !*Request {
 	var request = try allocator.create(Request);
 	request.body_read = false;
 	request.query_read = false;
-	request.buffer = try Buffer.init(allocator, config.buffer_size, config.max_body_size);
+	request.static = try allocator.alloc(u8, config.buffer_size);
 	request.headers = try KeyValue.init(allocator, config.max_header_count);
 	request.params = try Params.init(allocator, config.max_param_count);
 	request.query = try KeyValue.init(allocator, config.max_query_count);
@@ -45,7 +45,6 @@ pub fn init(allocator: Allocator, config: Config) !*Request {
 pub const Request = struct {
 	url: Url,
 	params: Params,
-	buffer: Buffer,
 	headers: KeyValue,
 	method: http.Method,
 	protocol: http.Protocol,
@@ -54,6 +53,7 @@ pub const Request = struct {
 	body: ?[]const u8,
 	query_read: bool,
 	query: KeyValue,
+	static: []u8,
 
 	const Self = @This();
 
@@ -69,11 +69,11 @@ pub const Request = struct {
 		buf_len: usize,
 	};
 
-	pub fn deinit(self: *Self) void {
+	pub fn deinit(self: *Self, allocator: Allocator) void {
 		self.query.deinit();
 		self.params.deinit();
 		self.headers.deinit();
-		self.buffer.deinit();
+		allocator.free(self.static);
 	}
 
 	pub fn reset(self: *Self) void {
@@ -86,6 +86,14 @@ pub const Request = struct {
 
 	pub fn parse(self: *Self, comptime S: type, stream: S) !void {
 		try self.parseHeader(S, stream);
+	}
+
+	pub fn ensureBodyIsRead(self: *Self, comptime S: type, stream: S) !void {
+		if (self.body_read == true) {
+			// body has already been read
+			return;
+		}
+		_ = stream;
 	}
 
 	pub fn canKeepAlive(self: *Self) bool {
@@ -101,8 +109,8 @@ pub const Request = struct {
 	}
 
 	fn parseHeader(self: *Self, comptime S: type, stream: S) !void {
-		// Header always fits inside the static portion of our buffer
-		const buf = self.buffer.static;
+		// Header must always fits inside our static buffer
+		const buf = self.static;
 
 		var res = try self.parseMethod(S, stream, buf);
 		var pos = res.used;
@@ -292,64 +300,6 @@ fn read(comptime S: type, stream: S, buffer: []u8) !usize {
 	}
 	return n;
 }
-
-const Buffer = struct {
-	allocator: Allocator,
-
-	// Maximum size that we'll dynamically allocate
-	max_size: usize,
-
-	// Our static buffer. Initialized upfront.
-	// Always enough to at least hold the header, but depending on our
-	// configuration, this could optionally or exclusively be used
-	// for the body as well.
-	static: []u8,
-
-	// Dynamic buffer, depending on the configuration and the request
-	// this might never be initialized. It will never be more than max_size.
-	// Since headers will always fit inside of static, this is only ever
-	// used to read bodies (and in some configuration/cases, static is used for
-	// bodies instead)
-	dynamic: ?[]u8,
-
-	// The current buffer we should be reading into. Either points to static
-	// or dynamic and it's up to our caller to manage what this is pointing to
-	// (i.e. to switch it from static to dynamic)
-	buf: []u8,
-
-	const Self = @This();
-
-	pub fn init(allocator: Allocator, size: usize, max_size: usize) !Self{
-		const static = try allocator.alloc(u8, size);
-		return Self{
-			.buf = static,
-			.dynamic = null,
-			.static = static,
-			.max_size = max_size,
-			.allocator = allocator,
-		};
-	}
-
-	pub fn deinit(self: *Self) void {
-		const allocator = self.allocator;
-		allocator.free(self.static);
-		if (self.dynamic) |dynamic| {
-			allocator.free(dynamic);
-		}
-		self.* = undefined;
-	}
-
-	// // Reads as much as it can from stream into the current buf (self.buf).
-	// // Returns the amount read
-	// pub fn read(self: *Self, comptime S: type, stream: S) !usize {
-	// 	var len = self.len;
-	// 	var buf = self.buf;
-
-	// 	const n = try stream.read(buf[len..]);
-	// 	self.len = len + n;
-	// 	return n;
-	// }
-};
 
 const Error = error {
 	ConnectionClosed,
@@ -547,6 +497,6 @@ fn expectParseError(expected: Error, input: []const u8) !void {
 // We need this because we use init to create the request (the way the real
 // code does, for pooling), so we need to free(r) not just deinit it.
 fn cleanupRequest(r: *Request) void {
-	r.deinit();
+	r.deinit(t.allocator);
 	t.allocator.destroy(r);
 }

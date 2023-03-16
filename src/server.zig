@@ -106,6 +106,8 @@ pub fn Server(comptime H: type) type {
 					handler.requestParseError(S, stream, err, res);
 					return;
 				}
+
+				req.ensureBodyIsRead(S, stream) catch { return false; };
 				req.reset();
 				res.reset();
 			}
