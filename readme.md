@@ -166,6 +166,12 @@ try httpz.listen(allocator, &router, .{
     }
     // various options for tweaking response object
     .response = .{
+        // Similar to request.buffer_size, but is currently only used for
+        // buffering the header (unlike the request one which CAN be used for
+        // body as well). This MUST be at least as big as your largest
+        // individual header+value (+4 for the colon+space and the \r\n)
+        buffer_size: usize = 4096,
+
         // Minimum number of response objects to keep pooled
         // This should be set to the same value as request.pool_size
         pool_size: usize = 100,

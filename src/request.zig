@@ -24,7 +24,7 @@ const V1P1 = @bitCast(u32, [4]u8{'/', '1', '.', '1'});
 pub const Config = struct {
 	pool_size: usize = 100,
 	max_body_size: usize = 1_048_576,
-	buffer_size: usize = 65_536,
+	buffer_size: usize = 65_8536,
 	max_header_count: usize = 32,
 	max_param_count: usize = 10,
 	max_query_count: usize = 32,
@@ -60,12 +60,7 @@ pub const Request = struct {
 	method: http.Method,
 
 	// The request protocol.
-
 	protocol: http.Protocol,
-
-	// // The request line (the first line of the HTTP request)
-	// // e.g. GET /tea/keemun HTTP/1.1
-	// request_line: []const u8,
 
 	// Whether or not the body has been read.
 	// Used for two reasons. First, we only lazily read the body.
