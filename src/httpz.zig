@@ -1,19 +1,19 @@
 const std = @import("std");
 
 const t = @import("t.zig");
-pub const r = @import("router.zig");
 pub const server = @import("server.zig");
+pub const routing = @import("router.zig");
+pub const request = @import("request.zig");
+pub const response = @import("response.zig");
 
-const Stream = @import("stream.zig").Stream;
 pub const Config = @import("config.zig").Config;
-pub const Request = @import("request.zig").Request;
-pub const Response = @import("response.zig").Response;
 
 const Allocator = std.mem.Allocator;
-
 pub const Server = server.Server;
 pub const Handler = server.Handler;
-pub const Router = r.Router(Action);
+pub const Request = request.Request;
+pub const Response = response.Response;
+pub const Router = routing.Router(Action);
 pub const Action = *const fn(req: *Request, res: *Response) anyerror!void;
 pub const ActionError = *const fn(err: anyerror, req: *Request, res: *Response) void;
 
@@ -46,7 +46,6 @@ pub const Method = enum {
 	OPTIONS,
 };
 
-
 test {
 	std.testing.refAllDecls(@This());
 }
@@ -59,7 +58,7 @@ test "httpz: invalid request (not enough data, assume closed)" {
 	var rtr = router(t.allocator) catch unreachable;
 	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
-	srv.handleConnection(*t.Stream, &stream);
+	srv.handleConnection(stream);
 
 	try t.expectEqual(true, stream.closed);
 	try t.expectEqual(@as(usize, 0), stream.received.items.len);
@@ -73,7 +72,7 @@ test "httpz: invalid request" {
 	var rtr = router(t.allocator) catch unreachable;
 	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
-	srv.handleConnection(*t.Stream, &stream);
+	srv.handleConnection(stream);
 
 	try t.expectString("HTTP/1.1 400\r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received.items);
 }
@@ -86,7 +85,7 @@ test "httpz: no route" {
 	var rtr = router(t.allocator) catch unreachable;
 	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
-	srv.handleConnection(*t.Stream, &stream);
+	srv.handleConnection(stream);
 
 	try t.expectString("HTTP/1.1 404\r\nContent-Length: 9\r\n\r\nNot Found", stream.received.items);
 }
@@ -101,7 +100,7 @@ test "httpz: no route with custom notFound handler" {
 
 	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
-	srv.handleConnection(*t.Stream, &stream);
+	srv.handleConnection(stream);
 
 	try t.expectString("HTTP/1.1 404\r\nContent-Length: 10\r\n\r\nwhere lah?", stream.received.items);
 }
@@ -118,7 +117,7 @@ test "httpz: unhandled exception" {
 	try rtr.get("/fail", testFail);
 	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
-	srv.handleConnection(*t.Stream, &stream);
+	srv.handleConnection(stream);
 
 	try t.expectString("HTTP/1.1 500\r\nContent-Length: 21\r\n\r\nInternal Server Error", stream.received.items);
 }
@@ -135,7 +134,7 @@ test "httpz: unhandled exception with custom error handler" {
 	try rtr.get("/fail", testFail);
 	var srv = testServer(&rtr, .{.errorHandler = testErrorHandler});
 	defer srv.deinit();
-	srv.handleConnection(*t.Stream, &stream);
+	srv.handleConnection(stream);
 
 	try t.expectString("HTTP/1.1 500\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", stream.received.items);
 }
@@ -149,7 +148,7 @@ test "httpz: route params" {
 	try rtr.all("/api/:version/users/:UserId", testParams);
 	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
-	srv.handleConnection(*t.Stream, &stream);
+	srv.handleConnection(stream);
 
 	try t.expectString("HTTP/1.1 200\r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", stream.received.items);
 }
@@ -163,7 +162,7 @@ test "httpz: request and response headers" {
 	try rtr.get("/test/headers", testHeaders);
 	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
-	srv.handleConnection(*t.Stream, &stream);
+	srv.handleConnection(stream);
 
 	try t.expectString("HTTP/1.1 200\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", stream.received.items);
 }

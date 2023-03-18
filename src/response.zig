@@ -1,10 +1,12 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const t = @import("t.zig");
 const KeyValue = @import("key_value.zig").KeyValue;
 
 const mem = std.mem;
 const Allocator = std.mem.Allocator;
+const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
 
 pub const Config = struct {
 	pool_size: usize = 100,
@@ -60,7 +62,7 @@ pub const Response = struct {
 		self.headers.add(name, value);
 	}
 
-	pub fn write(self: Self, comptime S: type, stream: S) !void {
+	pub fn write(self: Self, stream: Stream) !void {
 		var buf = self.static;
 		var pos: usize = 14; // "HTTP/1.1 XXX\r\n".len
 
@@ -227,12 +229,12 @@ test "writeInt" {
 test "response: write" {
 	var s = t.Stream.init();
 	var res = try init(t.allocator, .{});
-	defer cleanupWrite(res, &s);
+	defer cleanupWrite(res, s);
 
 	{
 		// no body
 		res.status = 401;
-		try res.write(*t.Stream, &s);
+		try res.write(s);
 		try t.expectString("HTTP/1.1 401\r\nContent-Length: 0\r\n\r\n", s.received.items);
 	}
 
@@ -241,7 +243,7 @@ test "response: write" {
 		s.reset(); res.reset();
 		res.status = 200;
 		res.setBody("hello");
-		try res.write(*t.Stream, &s);
+		try res.write(s);
 		try t.expectString("HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello", s.received.items);
 	}
 }
@@ -253,10 +255,10 @@ test "response: write buffer sizes" {
 		for (19..40) |i| {
 			var s = t.Stream.init();
 			var res = try init(t.allocator, .{.buffer_size = i});
-			defer cleanupWrite(res, &s);
+			defer cleanupWrite(res, s);
 
 			res.status = 792;
-			try res.write(*t.Stream, &s);
+			try res.write(s);
 			try t.expectString("HTTP/1.1 792\r\nContent-Length: 0\r\n\r\n", s.received.items);
 		}
 	}
@@ -267,13 +269,13 @@ test "response: write buffer sizes" {
 		for (19..110) |i| {
 			var s = t.Stream.init();
 			var res = try init(t.allocator, .{.buffer_size = i});
-			defer cleanupWrite(res, &s);
+			defer cleanupWrite(res, s);
 
 			res.status = 401;
 			res.header("a-header", "a-value");
 			res.header("b-hdr", "b-val");
 			res.header("c-header11", "cv");
-			try res.write(*t.Stream, &s);
+			try res.write(s);
 			try t.expectString("HTTP/1.1 401\r\na-header: a-value\r\nb-hdr: b-val\r\nc-header11: cv\r\nContent-Length: 0\r\n\r\n", s.received.items);
 		}
 	}
@@ -283,14 +285,14 @@ test "response: write buffer sizes" {
 		for (22..110) |i| {
 			var s = t.Stream.init();
 			var res = try init(t.allocator, .{.buffer_size = i});
-			defer cleanupWrite(res, &s);
+			defer cleanupWrite(res, s);
 
 			res.status = 8;
 			res.header("a-header", "a-value");
 			res.header("b-hdr", "b-val");
 			res.header("c-header11", "cv");
 			res.setBody("hello world!");
-			try res.write(*t.Stream, &s);
+			try res.write(s);
 			try t.expectString("HTTP/1.1 8\r\na-header: a-value\r\nb-hdr: b-val\r\nc-header11: cv\r\nContent-Length: 12\r\n\r\nhello world!", s.received.items);
 		}
 	}

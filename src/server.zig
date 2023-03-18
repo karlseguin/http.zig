@@ -8,10 +8,10 @@ const response = @import("response.zig");
 
 const Pool = @import("pool.zig").Pool;
 const Config = @import("config.zig").Config;
-const Stream = @import("stream.zig").Stream;
 
 const Loop = std.event.Loop;
 const Allocator = std.mem.Allocator;
+const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
 
 const os = std.os;
 const net = std.net;
@@ -71,12 +71,12 @@ pub fn Server(comptime H: type) type {
 
 			while (true) {
 				if (socket.accept()) |conn| {
-					const stream = Stream{ .stream = conn.stream };
+					const stream: Stream = if (comptime builtin.is_test) undefined else conn.stream;
 					if (comptime std.io.is_async) {
-						const args = .{ Stream, stream };
+						const args = .{ stream };
 						try Loop.instance.?.runDetached(allocator, self.handleConnection, args);
 					} else {
-						const args = .{ self, Stream, stream };
+						const args = .{ self, stream };
 						const thrd = try std.Thread.spawn(.{}, handleConnection, args);
 						thrd.detach();
 					}
@@ -86,7 +86,7 @@ pub fn Server(comptime H: type) type {
 			}
 		}
 
-		pub fn handleConnection(self: *Self, comptime S: type, stream: S) void {
+		pub fn handleConnection(self: *Self, stream: Stream) void {
 			defer stream.close();
 
 			var reqPool = self.reqPool;
@@ -107,18 +107,18 @@ pub fn Server(comptime H: type) type {
 			while (true) {
 				req.reset();
 				res.reset();
-				if (req.parse(S, stream)) {
-					if (!handler.handle(S, stream, req, res)) {
+				if (req.parse(stream)) {
+					if (!handler.handle(stream, req, res)) {
 						return;
 					}
 				} else |err| {
 					// hard to keep this request alive on a parseError since in a lot of
 					// failure cases, it's unclear where 1 request stops and another starts.
-					handler.requestParseError(S, stream, err, res);
+					handler.requestParseError(stream, err, res);
 					return;
 				}
 
-				req.ensureBodyIsRead(S, stream) catch { return false; };
+				req.drainRequest() catch { return; };
 			}
 		}
 	};
@@ -134,31 +134,31 @@ pub const Handler = struct {
 		self.router.deinit();
 	}
 
-	pub fn handle(self: Self, comptime S: type, stream: S, req: *request.Request, res: *response.Response) bool {
+	pub fn handle(self: Self, stream: Stream, req: *request.Request, res: *response.Response) bool {
 		const router = self.router;
 		const action = router.route(req.method, req.url.path, &req.params);
 		action(req, res) catch |err| {
 			self.errorHandler(err, req, res);
 		};
 
-		res.write(S, stream) catch {
+		res.write(stream) catch {
 			return false;
 		};
 
 		return req.canKeepAlive();
 	}
 
-	pub fn requestParseError(_: Self, comptime S: type, stream: S, err: anyerror, res: *httpz.Response) void {
+	pub fn requestParseError(_: Self, stream: Stream, err: anyerror, res: *httpz.Response) void {
 		switch (err) {
 			error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
 				res.status = 400;
 				res.setBody("Invalid Request");
-				res.write(S, stream) catch {};
+				res.write(stream) catch {};
 			},
 			error.HeaderTooBig => {
 				res.status = 431;
 				res.setBody("Request header too big");
-				res.write(S, stream) catch {};
+				res.write(stream) catch {};
 			},
 			else => {},
 		}

@@ -25,14 +25,20 @@ pub const Stream = struct {
 
 	const Self = @This();
 
-	pub fn init() Stream {
-		return .{
-			.closed = false,
-			.read_index = 0,
-			.random = getRandom(),
-			.to_read = ArrayList(u8).init(allocator),
-			.received = ArrayList(u8).init(allocator),
-		};
+	pub fn init() *Stream {
+		var s = allocator.create(Stream) catch unreachable;
+		s.closed = false;
+		s.read_index = 0;
+		s.random = getRandom();
+		s.to_read = ArrayList(u8).init(allocator);
+		s.received = ArrayList(u8).init(allocator);
+		return s;
+	}
+
+	pub fn deinit(self: *Self) void {
+		self.to_read.deinit();
+		self.received.deinit();
+		allocator.destroy(self);
 	}
 
 	pub fn reset(self: *Self) void {
@@ -72,6 +78,7 @@ pub const Stream = struct {
 		}
 		self.read_index = read_index + data.len;
 
+		// std.debug.print("TEST: {d} {d} {d}\n", .{data.len, read_index, max_can_read});
 		for (data, 0..) |b, i| {
 			buf[i] = b;
 		}
@@ -86,12 +93,6 @@ pub const Stream = struct {
 
 	pub fn close(self: *Self) void {
 		self.closed = true;
-	}
-
-	pub fn deinit(self: *Self) void {
-		self.to_read.deinit();
-		self.received.deinit();
-		self.* = undefined;
 	}
 };
 
