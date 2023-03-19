@@ -14,7 +14,6 @@ fn main() !void {
 
     var router = try httpz.router();
 
-    // routes MUST be lowercase
     // use get/post/put/head/patch/options/delete
     // you can also use "all" to attach to all methods
     try router.get("/api/user/:id", getUser);
@@ -93,7 +92,7 @@ if (req.header("authorization")) |auth| {
 }
 ```
 
-Header names are always lowercase. Header values maintain their original casing.
+Header names are lowercase. Values maintain their original casing.
 
 ### QueryString
 The framework does not automatically parse the query string. Therefore, its API is slightly different.
@@ -109,7 +108,7 @@ if (query.get("search")) |search| {
 
 On first call, the `query` function attempts to parse the querystring. This requires memory allocations to unescape encoded values. The parsed value is internally cached, so subsequent calls to `query()` are fast and cannot fail.
 
-The query key is always lowercase. The query value is always lowercase.
+The original casing of both the key and the name are preserved.
 
 ### Body
 The body works like the querystring. It isn't automatically read from the socket and thus the initial call to `body()` can fail:

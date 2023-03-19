@@ -327,9 +327,7 @@ pub const Request = struct {
 			'/' => {
 				while (true) {
 					if (std.mem.indexOfScalar(u8, buf[0..buf_len], ' ')) |end_index| {
-						var target = buf[0..end_index];
-						_ = std.ascii.lowerString(target, target);
-						self.url = Url.parse(target);
+						self.url = Url.parse(buf[0..end_index]);
 						// +1 to consume the space
 						return .{.used = end_index + 1, .read = buf_len - len};
 					}
@@ -623,7 +621,7 @@ test "request: parse request target" {
 	{
 		const r = testParse("DELETE /API/v2?hack=true&over=9000%20!! HTTP/1.1\r\n\r\n", .{});
 		defer cleanupRequest(r);
-		try t.expectString("/api/v2?hack=true&over=9000%20!!", r.url.raw);
+		try t.expectString("/API/v2?hack=true&over=9000%20!!", r.url.raw);
 	}
 
 	{
@@ -752,8 +750,8 @@ test "request: query" {
 		defer cleanupRequest(r);
 		const query = try r.query();
 		try t.expectEqual(@as(usize, 3), query.len);
-		try t.expectString("tea", query.get("teg").?);
-		try t.expectString("over 9000$", query.get("it  is").?);
+		try t.expectString("Tea", query.get("Teg").?);
+		try t.expectString("over 9000$", query.get("it  IS").?);
 		try t.expectString("", query.get("ha\tck").?);
 	}
 }
