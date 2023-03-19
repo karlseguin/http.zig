@@ -203,7 +203,6 @@ pub const Request = struct {
 			}
 
 			while (read < length) {
-
 				const n = try stream.read(buffer[read..]);
 				if (n == 0) {
 					return Error.ConnectionClosed;
@@ -799,7 +798,7 @@ test "request: fuzz" {
 
 	var r = t.getRandom();
 	const random = r.random();
-	for (0..200) |_| {
+	for (0..500) |_| {
 
 		// important to test with different buffer sizes, since there's a lot of
 		// special handling for different cases (e.g the buffer is full and has

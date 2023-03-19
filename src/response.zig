@@ -181,7 +181,7 @@ pub const Response = struct {
 				// and the trailing \r\n
 				const header_line_length = name.len + value.len + 4;
 				if (buf.len < pos + header_line_length) {
-					try stream.write(buf[0..pos]);
+					try stream.writeAll(buf[0..pos]);
 					pos = 0;
 				}
 				mem.copy(u8, buf[pos..], name);
@@ -200,7 +200,7 @@ pub const Response = struct {
 
 		if (self.body) |b| {
 			if (buf.len < pos + 32) {
-				try stream.write(buf[0..pos]);
+				try stream.writeAll(buf[0..pos]);
 				pos = 0;
 			}
 			mem.copy(u8, buf[pos..], "Content-Length: ");
@@ -210,20 +210,20 @@ pub const Response = struct {
 			buf[pos+1] = '\n';
 			buf[pos+2] = '\r';
 			buf[pos+3] = '\n';
-			try stream.write(buf[0..(pos+4)]);
+			try stream.writeAll(buf[0..(pos+4)]);
 
-			try stream.write(b);
+			try stream.writeAll(b);
 		} else {
 			const fin = "Content-Length: 0\r\n\r\n";
 			const final_pos = pos + fin.len;
 			if (pos == 0) {
-				try stream.write(fin);
+				try stream.writeAll(fin);
 			} else if (buf.len < final_pos) {
-				try stream.write(buf[0..pos]);
-				try stream.write(fin);
+				try stream.writeAll(buf[0..pos]);
+				try stream.writeAll(fin);
 			} else {
 				mem.copy(u8, buf[pos..], fin);
-				try stream.write(buf[0..final_pos]);
+				try stream.writeAll(buf[0..final_pos]);
 			}
 		}
 	}

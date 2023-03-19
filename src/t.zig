@@ -88,7 +88,7 @@ pub const Stream = struct {
 	}
 
 	// store messages that are written to the stream
-	pub fn write(self: *Self, data: []const u8) !void {
+	pub fn writeAll(self: *Self, data: []const u8) !void {
 		self.received.appendSlice(data) catch unreachable;
 	}
 

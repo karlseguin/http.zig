@@ -12,7 +12,7 @@ fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var router = try httpz.router();
+    var router = try httpz.router(allocator);
 
     // use get/post/put/head/patch/options/delete
     // you can also use "all" to attach to all methods
