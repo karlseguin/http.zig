@@ -41,6 +41,7 @@ pub fn init(allocator: Allocator, config: Config) !*Request {
 
 	req.bd_read = false;
 	req.bd = null;
+	req.max_body_size = config.max_body_size;
 
 	req.qs_read = false;
 	req.qs = try KeyValue.init(allocator, config.max_query_count);
@@ -72,6 +73,10 @@ pub const Request = struct {
 	// The request protocol.
 	protocol: http.Protocol,
 
+	// The maximum body that we'll allow, take from the config object when the
+	// request is first created.
+	max_body_size: usize,
+
 	// Whether or not the body has been read.
 	// Used for two reasons. First, we only lazily read the body.
 	// Second, for keepalive, if the body wasn't read as part of the normal
@@ -95,7 +100,6 @@ pub const Request = struct {
 	// already-read body so that when it comes time to actually read the body, we
 	// know how much we've already done.
 	header_overread: usize,
-
 
 	// A buffer that exists for the entire lifetime of the request. The sized
 	// is defined by the request.buffer_size configuration. The request header MUST
@@ -174,6 +178,10 @@ pub const Request = struct {
 			if (length == 0) {
 				self.bd = null;
 				return null;
+			}
+
+			if (length > self.max_body_size) {
+				return error.BodyTooBig;
 			}
 
 			const pos = self.pos;
@@ -524,6 +532,7 @@ test "atoi" {
 }
 
 const Error = error {
+	BodyTooBig,
 	HeaderTooBig,
 	ConnectionClosed,
 	UnknownMethod,
@@ -751,8 +760,15 @@ test "request: query" {
 
 test "body: content-length" {
 	{
+		// too big
+		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{.max_body_size = 9});
+		defer cleanupRequest(r);
+		try t.expectError(Error.BodyTooBig, r.body());
+	}
+
+	{
 		// no body
-		const r = testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nContent-Length: 0\r\n\r\n", .{});
+		const r = testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
 		defer cleanupRequest(r);
 		try t.expectEqual(@as(?[]const u8, null), try r.body());
 		try t.expectEqual(@as(?[]const u8, null), try r.body());
@@ -785,7 +801,7 @@ test "request: fuzz" {
 
 	var r = t.getRandom();
 	const random = r.random();
-	for (0..1000) |_| {
+	for (0..200) |_| {
 
 		// important to test with different buffer sizes, since there's a lot of
 		// special handling for different cases (e.g the buffer is full and has

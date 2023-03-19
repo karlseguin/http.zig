@@ -167,6 +167,20 @@ test "httpz: request and response headers" {
 	try t.expectString("HTTP/1.1 200\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", stream.received.items);
 }
 
+test "httpz: content-length body" {
+	var stream = t.Stream.init();
+	defer stream.deinit();
+	_ = stream.add("GET /test/body/cl HTTP/1.1\r\nHeader-Name: Header-Value\r\nContent-Length: 4\r\n\r\nabcz");
+
+	var rtr = router(t.allocator) catch unreachable;
+	try rtr.get("/test/body/cl", testCLBody);
+	var srv = testServer(&rtr, .{});
+	defer srv.deinit();
+	srv.handleConnection(stream);
+
+	try t.expectString("HTTP/1.1 200\r\nEcho-Body: abcz\r\nContent-Length: 0\r\n\r\n", stream.received.items);
+}
+
 fn testServer(rtr: *Router, config: Config) Server(Handler) {
 	const handler = Handler{.router = rtr, .errorHandler = config.errorHandler};
 	return Server(Handler).init(t.allocator, handler, config) catch unreachable;
@@ -185,6 +199,11 @@ fn testParams(req: *Request, res: *Response) !void {
 fn testHeaders(req: *Request, res: *Response) !void {
 	res.header("Echo", req.header("header-name").?);
 	res.header("other", "test-value");
+}
+
+fn testCLBody(req: *Request, res: *Response) !void {
+	const body = try req.body();
+	res.header("Echo-Body", body.?);
 }
 
 fn testNotFound(_: *Request, res: *Response) !void {

@@ -137,8 +137,13 @@ pub const Handler = struct {
 	pub fn handle(self: Self, stream: Stream, req: *request.Request, res: *response.Response) bool {
 		const router = self.router;
 		const action = router.route(req.method, req.url.path, &req.params);
-		action(req, res) catch |err| {
-			self.errorHandler(err, req, res);
+		action(req, res) catch |err| switch (err) {
+			error.BodyTooBig => {
+				res.status = 431;
+				res.setBody("Request body is too big");
+				res.write(stream) catch {};
+			},
+			else => self.errorHandler(err, req, res)
 		};
 
 		res.write(stream) catch {
@@ -157,7 +162,7 @@ pub const Handler = struct {
 			},
 			error.HeaderTooBig => {
 				res.status = 431;
-				res.setBody("Request header too big");
+				res.setBody("Request header is too big");
 				res.write(stream) catch {};
 			},
 			else => {},

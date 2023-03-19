@@ -100,24 +100,28 @@ The framework does not automatically parse the query string. Therefore, its API 
 
 ```zig
 const query = try req.query();
-const value = query.get(KEY);
+if (query.get("search")) |search| {
+
+} else {
+    // no search parameter
+};
 ```
 
-On first call, the `query` function attempts to parse the querystring. This requires memory allocations to unescape encoded values. The parsed value is internally cached, so subsequent calls to query() is fast and cannot fail.
+On first call, the `query` function attempts to parse the querystring. This requires memory allocations to unescape encoded values. The parsed value is internally cached, so subsequent calls to `query()` are fast and cannot fail.
 
 The query key is always lowercase. The query value is always lowercase.
 
 ### Body
-Similarly, use `body()` to get the body of the request:
+The body works like the querystring. It isn't automatically read from the socket and thus the initial call to `body()` can fail:
 
 ```zig
-// body() return ?![]const u8
 if (try req.body()) |body| {
 
 }
 ```
 
-The result of `req.body()` is interally cached, so calling it multiple times  is ok and efficient.
+Like `query`, the body is internally cached and subsequent calls are fast and cannot fail. If there is no body, `body()` returns null.
+
 
 ## http.Response
 You can set the status using the `status` field. By default, the status is set to 200.
