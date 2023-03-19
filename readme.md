@@ -64,7 +64,18 @@ const query = try req.query();
 const value = query.get(KEY);
 ```
 
-Note that `query()` can fail (parsing the querystring can require allocations if values are URL encoded). The `KEY` must be lowercase. The value will be lowercase (if the query value exists). The results of `req.query()` are internally cached, so calling it multiple times is ok.
+Note that `query()` can fail (parsing the querystring can require allocations if values are URL encoded). The `KEY` must be lowercase. The value will be lowercase (if the query value exists). The results of `req.query()` are internally cached, so calling it multiple times is ok and efficient.
+
+Similarly, use `body()` to get the body of the request:
+
+```zig
+// body() return ?![]const u8
+if (try req.body()) |body| {
+
+}
+```
+
+The result of `req.body()` is interally cached, so calling it multiple times  is ok and efficient.
 
 ## http.Response
 You can set the status using the `status` field. By default, the status is set to 200.

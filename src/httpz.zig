@@ -192,7 +192,6 @@ fn testNotFound(_: *Request, res: *Response) !void {
 	res.setBody("where lah?");
 }
 
-
 fn testErrorHandler(_: anyerror, _: *Request, res: *Response) void {
 	res.status = 500;
 	res.setBody("#/why/arent/tags/hierarchical");

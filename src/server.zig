@@ -118,7 +118,7 @@ pub fn Server(comptime H: type) type {
 					return;
 				}
 
-				req.drainRequest() catch { return; };
+				req.drain() catch { return; };
 			}
 		}
 	};

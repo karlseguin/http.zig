@@ -56,6 +56,7 @@ pub const Stream = struct {
 
 		const read_index = self.read_index;
 		const items = self.to_read.items;
+
 		if (read_index == items.len) {
 			return 0;
 		}

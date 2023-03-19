@@ -118,7 +118,7 @@ pub const Request = struct {
 		used: usize,
 
 		// total data read from the socket (by a particular step)
-		buf_len: usize,
+		read: usize,
 	};
 
 	pub fn deinit(self: *Self, allocator: Allocator) void {
@@ -195,7 +195,7 @@ pub const Request = struct {
 			}
 
 			while (read < length) {
-				// std.debug.print("READ {d} {d} {d} {s} {s}\n", .{read, length, buffer.len, buffer[0..read], buffer[0..length]});
+
 				const n = try stream.read(buffer[read..]);
 				if (n == 0) {
 					return Error.ConnectionClosed;
@@ -217,22 +217,22 @@ pub const Request = struct {
 
 		var res = try self.parseMethod(stream, buf);
 		var pos = res.used;
-		var buf_len = res.buf_len;
+		var buf_len = res.read;
 
 		res = try self.parseURL(stream, buf[pos..], buf_len - pos);
 		pos += res.used;
-		buf_len += res.buf_len;
+		buf_len += res.read;
 
 		res = try self.parseProtocol(stream, buf[pos..], buf_len - pos);
 		pos += res.used;
-		buf_len += res.buf_len;
-
+		buf_len += res.read;
 
 		while (true) {
 			res = try self.parseOneHeader(stream, buf[pos..], buf_len - pos);
-			buf_len += res.buf_len;
-			pos += res.used;
-			if (res.used == 2) { // it only consumed the trailing \r\n
+			const used = res.used;
+			pos += used;
+			buf_len += res.read;
+			if (used == 2) { // it only consumed the trailing \r\n
 				break;
 			}
 		}
@@ -251,11 +251,11 @@ pub const Request = struct {
 			const used = switch (@bitCast(u32, buf[0..4].*)) {
 				GET_ => {
 					self.method = .GET;
-					return .{.buf_len = buf_len, .used = 4};
+					return .{.read = buf_len, .used = 4};
 				},
 				PUT_ => {
 					self.method = .PUT;
-					return .{.buf_len = buf_len, .used = 4};
+					return .{.read = buf_len, .used = 4};
 				},
 				POST => {
 					// only need 1 more byte, so at most, we need 1 more read
@@ -264,7 +264,7 @@ pub const Request = struct {
 						return error.UnknownMethod;
 					}
 					self.method = .POST;
-					return .{.buf_len = buf_len, .used = 5};
+					return .{.read = buf_len, .used = 5};
 				},
 				HEAD => {
 					// only need 1 more byte, so at most, we need 1 more read
@@ -273,7 +273,7 @@ pub const Request = struct {
 						return error.UnknownMethod;
 					}
 					self.method = .HEAD;
-					return .{.buf_len = buf_len, .used = 5};
+					return .{.read = buf_len, .used = 5};
 				},
 				PATC => {
 					while (buf_len < 6)  buf_len += try readForHeader(stream, buf[buf_len..]);
@@ -281,7 +281,7 @@ pub const Request = struct {
 						return error.UnknownMethod;
 					}
 					self.method = .PATCH;
-					return .{.buf_len = buf_len, .used = 6};
+					return .{.read = buf_len, .used = 6};
 				},
 				DELE => {
 					while (buf_len < 7) buf_len += try readForHeader(stream, buf[buf_len..]);
@@ -289,7 +289,7 @@ pub const Request = struct {
 						return error.UnknownMethod;
 					}
 					self.method = .DELETE;
-					return .{.buf_len = buf_len, .used = 7};
+					return .{.read = buf_len, .used = 7};
 				},
 				OPTI => {
 					while (buf_len < 8) buf_len += try readForHeader(stream, buf[buf_len..]);
@@ -297,7 +297,7 @@ pub const Request = struct {
 						return error.UnknownMethod;
 					}
 					self.method = .OPTIONS;
-					return .{.buf_len = buf_len, .used = 8};
+					return .{.read = buf_len, .used = 8};
 				},
 				else => return error.UnknownMethod,
 			};
@@ -312,18 +312,18 @@ pub const Request = struct {
 	fn parseURL(self: *Self, stream: Stream, buf: []u8, len: usize) !ParseResult {
 		var buf_len = len;
 		if (buf_len == 0) {
-			buf_len += try readForHeader(stream, buf);
+			buf_len = try readForHeader(stream, buf);
 		}
 
 		switch (buf[0]) {
 			'/' => {
 				while (true) {
-					if (std.mem.indexOfScalar(u8, buf, ' ')) |end_index| {
+					if (std.mem.indexOfScalar(u8, buf[0..buf_len], ' ')) |end_index| {
 						var target = buf[0..end_index];
 						_ = std.ascii.lowerString(target, target);
 						self.url = Url.parse(target);
 						// +1 to consume the space
-						return .{.used = end_index + 1, .buf_len = buf_len - len};
+						return .{.used = end_index + 1, .read = buf_len - len};
 					}
 					buf_len += try readForHeader(stream, buf[buf_len..]);
 				}
@@ -338,7 +338,7 @@ pub const Request = struct {
 					return error.InvalidRequestTarget;
 				}
 				self.url = Url.star();
-				return .{.used = 2, .buf_len = buf_len - len};
+				return .{.used = 2, .read = buf_len - len};
 			},
 			// TODO: Support absolute-form target (e.g. http://....)
 			else => return error.InvalidRequestTarget,
@@ -363,14 +363,14 @@ pub const Request = struct {
 			return error.UnknownProtocol;
 		}
 
-		return .{.buf_len = buf_len - len, .used = 10};
+		return .{.read = buf_len - len, .used = 10};
 	}
 
 	fn parseOneHeader(self: *Self, stream: Stream, buf: []u8, len: usize) !ParseResult {
 		var buf_len = len;
 
 		while (true) {
-			if (std.mem.indexOfScalar(u8, buf, '\r')) |header_end| {
+			if (std.mem.indexOfScalar(u8, buf[0..buf_len], '\r')) |header_end| {
 
 				const next = header_end + 1;
 				if (next == buf_len) buf_len += try readForHeader(stream, buf[buf_len..]);
@@ -380,14 +380,14 @@ pub const Request = struct {
 				}
 
 				if (header_end == 0) {
-					return .{.buf_len = buf_len - len, .used = 2};
+					return .{.read = buf_len - len, .used = 2};
 				}
 
 				if (std.mem.indexOfScalar(u8, buf[0..header_end], ':')) |name_end| {
 					const name = buf[0..name_end];
 					lowerCase(name);
 					self.headers.add(name, trimLeadingSpace(buf[name_end+1..header_end]));
-					return .{.buf_len = buf_len - len, .used = next + 1};
+					return .{.read = buf_len - len, .used = next + 1};
 				} else {
 					return error.InvalidHeaderLine;
 				}
@@ -428,7 +428,7 @@ pub const Request = struct {
 	// would be the start of the next one).
 	// We assume the request will be reset after this is called, so its ok for us
 	// to c the static buffer (which various header elements point to)
-	pub fn drainRequest(self: *Self) !void {
+	pub fn drain(self: *Self) !void {
 		if (self.bd_read == true) {
 			// body has already been read
 			return;
@@ -444,15 +444,15 @@ pub const Request = struct {
 			length -= self.header_overread;
 
 			while (length > 0) {
-				var drain = if (buffer.len > length) buffer[0..length] else buffer;
-				length -= try stream.read(drain);
+				var n = if (buffer.len > length) buffer[0..length] else buffer;
+				length -= try stream.read(n);
 			}
 		} else {
 			// TODO: support chunked encoding
 		}
 
 		// This should not be necessary, since we expect the request to be reset
-		// immediately after drainRequest is called. However, it's a cheap thing
+		// immediately after drain is called. However, it's a cheap thing
 		// to add which might prevent weird accidental interactions.
 		self.bd_read = true;
 	}
@@ -775,6 +775,132 @@ test "body: content-length" {
 	}
 }
 
+// our t.Stream already simulates random TCP fragmentation.
+test "request: fuzz" {
+	// We have a bunch of data to allocate for testing, like header names and
+	// values. Easier to use this arena and reset it after each test run.
+	var arena = std.heap.ArenaAllocator.init(t.allocator);
+	const aa = arena.allocator();
+	defer arena.deinit();
+
+	var r = t.getRandom();
+	const random = r.random();
+	for (0..1000) |_| {
+
+		// important to test with different buffer sizes, since there's a lot of
+		// special handling for different cases (e.g the buffer is full and has
+		// some of the body in it, so we need to copy that to a dynamically allocated
+		// buffer)
+
+		// how many requests should we make on this 1 individual socket (simulating
+		// keepalive AND the request pool)
+		const buffer_size = random.uintAtMost(u16, 1024) + 1024;
+		var request = init(t.allocator, .{.buffer_size = buffer_size}) catch unreachable;
+		defer {
+			request.deinit(t.allocator);
+			t.allocator.destroy(request);
+		}
+
+		var s = t.Stream.init();
+		defer s.deinit();
+
+		const number_of_requests = random.uintAtMost(u8, 10) + 1;
+		for (0..number_of_requests) |_| {
+			_ = arena.reset(.retain_capacity);
+			const method = randomMethod(random);
+			const url = randomString(random, aa, 20);
+
+			_ = s.add(method);
+			_ = s.add(" /");
+			_ = s.add(url);
+
+			const number_of_qs = random.uintAtMost(u8, 4);
+			if (number_of_qs != 0) {
+				_ = s.add("?");
+			}
+			var query = std.StringHashMap([]const u8).init(aa);
+			for (0..number_of_qs) |_| {
+				const key = randomString(random, aa, 20);
+				const value = randomString(random, aa, 20);
+				if (!query.contains(key)) {
+					// TODO: figure out how we want to handle duplicate query values
+					// (the spec doesn't specifiy what to do)
+					query.put(key, value) catch unreachable;
+					_ = s.add(key);
+					_ = s.add("=");
+					_ = s.add(value);
+					_ = s.add("&");
+				}
+			}
+
+			_ = s.add(" HTTP/1.1\r\n");
+
+			var headers = std.StringHashMap([]const u8).init(aa);
+			for (0..random.uintAtMost(u8, 4)) |_| {
+				const name = randomString(random, aa, 20);
+				const value = randomString(random, aa, 20);
+				if (!headers.contains(name)) {
+					// TODO: figure out how we want to handle duplicate query values
+					// Note, the spec says we should merge these!
+					headers.put(name, value) catch unreachable;
+					_ = s.add(name);
+					_ = s.add(": ");
+					_ = s.add(value);
+					_ = s.add("\r\n");
+				}
+			}
+
+			var body: ?[]u8 = null;
+			if (random.uintAtMost(u8, 4) == 0) {
+				_ = s.add("\r\n"); // no body
+			} else {
+				body = randomString(random, aa, 8000);
+				const cl = std.fmt.allocPrint(aa, "{d}", .{body.?.len}) catch unreachable;
+				headers.put("content-length", cl) catch unreachable;
+				_ = s.add("content-length: ");
+				_ = s.add(cl);
+				_ = s.add("\r\n\r\n");
+				_ = s.add(body.?);
+			}
+
+			request.parse(s) catch |err| {
+				std.debug.print("\nParse Error: {}\nInput: {s}", .{err, s.to_read.items[s.read_index..]});
+				unreachable;
+			};
+
+
+			// assert the querystring
+			var actualQuery = request.query() catch unreachable;
+			var it = query.iterator();
+			while (it.next()) |entry| {
+				try t.expectString(entry.value_ptr.*, actualQuery.get(entry.key_ptr.*).?);
+			}
+
+			// assert the headers
+			it = headers.iterator();
+			while (it.next()) |entry| {
+				try t.expectString(entry.value_ptr.*, request.header(entry.key_ptr.*).?);
+			}
+
+			// We dont' read the body by defalt. We donly read the body when the app
+			// calls req.body(). It's important that we test both cases. When the body
+			// isn't read, we still need to drain the bytes from the socket for when
+			// the socket is reused.
+			if (random.uintAtMost(u8, 4) != 0) {
+				var actual = request.body() catch unreachable;
+				if (body) |b| {
+					try t.expectString(b, actual.?);
+				} else {
+					try t.expectEqual(@as(?[]const u8, null), actual);
+				}
+			}
+
+			request.drain() catch unreachable;
+			request.reset();
+		}
+	}
+}
+
 fn testParse(input: []const u8, config: Config) *Request {
 	var s = t.Stream.init();
 	_ = s.add(input);
@@ -782,7 +908,7 @@ fn testParse(input: []const u8, config: Config) *Request {
 	var request = init(t.allocator, config) catch unreachable;
 	request.parse(s) catch |err| {
 		cleanupRequest(request);
-		std.debug.print("\nparse err: {}\n", .{err});
+		std.debug.print("\nParse Error: {}\nInput: {s}", .{err, input});
 		unreachable;
 	};
 	return request;
@@ -803,4 +929,26 @@ fn cleanupRequest(r: *Request) void {
 	r.stream.deinit();
 	r.deinit(t.allocator);
 	t.allocator.destroy(r);
+}
+
+fn randomString(random: std.rand.Random, allocator: Allocator, max: usize) []u8 {
+	var buf = allocator.alloc(u8, random.uintAtMost(usize, max) + 1) catch unreachable;
+	const valid = "abcdefghijklmnopqrstuvwxyz0123456789-_/";
+	for (0..buf.len) |i| {
+		buf[i] = valid[random.uintAtMost(usize, valid.len)];
+	}
+	return buf;
+}
+
+fn randomMethod(random: std.rand.Random) []const u8 {
+	return switch (random.uintAtMost(usize, 6)) {
+		0 => "GET",
+		1 => "PUT",
+		2 => "POST",
+		3 => "PATCH",
+		4 => "DELETE",
+		5 => "OPTIONS",
+		6 => "HEAD",
+		else => unreachable,
+	};
 }
