@@ -244,3 +244,6 @@ try httpz.listen(allocator, &router, .{
 
 # HTTP Compliance
 This implementation may never be fully HTTP/1.1 compliant, as it is built with the assumption that it will sit behind a reverse proxy that is tolerant of non-compliant upstreams (e.g. nginx). 
+
+# websocket.zig
+I'm also working on a websocket server implementation for zig: [https://github.com/karlseguin/websocket.zig](https://github.com/karlseguin/websocket.zig).

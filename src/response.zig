@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const t = @import("t.zig");
+const httpz = @import("httpz.zig");
 const KeyValue = @import("key_value.zig").KeyValue;
 
 const mem = std.mem;
@@ -19,6 +20,7 @@ pub fn init(allocator: Allocator, config: Config) !*Response {
 	var response = try allocator.create(Response);
 	response.body = null;
 	response.status = 200;
+	response.content_type = null;
 	response.static = try allocator.alloc(u8, config.buffer_size);
 	response.headers = try KeyValue.init(allocator, config.max_header_count);
 	return response;
@@ -34,6 +36,10 @@ pub const Response = struct {
 	// The response headers.
 	// Using res.header(NAME, VALUE) is preferred.
 	headers: KeyValue,
+
+	// The content type. Use header("content-type", value) for a content type
+	// which isn't available in the httpz.ContentType enum.
+	content_type: ?httpz.ContentType,
 
 	// A buffer that exists for the entire lifetime of the response. This is used
 	// internally to buffer writes to the socket. As a general rule, this should
@@ -51,6 +57,7 @@ pub const Response = struct {
 	pub fn reset(self: *Self) void {
 		self.body = null;
 		self.status = 200;
+		self.content_type = null;
 		self.headers.reset();
 	}
 
@@ -138,6 +145,30 @@ pub const Response = struct {
 				buf[pos+1] = '\n';
 				pos += 2;
 			}
+		}
+
+		if (self.content_type) |ct| {
+			const content_type = switch (ct) {
+				.BINARY => "Content-Type: application/octet-stream\r\n",
+				.CSS => "Content-Type: text/css\r\n",
+				.CSV => "Content-Type: text/csv\r\n",
+				.GIF => "Content-Type: image/gif\r\n",
+				.GZ => "Content-Type: application/gzip\r\n",
+				.HTML => "Content-Type: text/html\r\n",
+				.ICO => "Content-Type: image/vnd.microsoft.icon\r\n",
+				.JPG => "Content-Type: image/jpeg\r\n",
+				.JS => "Content-Type: application/javascript\r\n",
+				.JSON => "Content-Type: application/json\r\n",
+				.PDF => "Content-Type: application/pdf\r\n",
+				.PNG => "Content-Type: image/png\r\n",
+				.SVG => "Content-Type: image/svg+xml\r\n",
+				.TAR => "Content-Type: application/x-tar\r\n",
+				.TEXT => "Content-Type: text/plain\r\n",
+				.WEBP => "Content-Type: image/webp\r\n",
+				.XML => "Content-Type: application/xml\r\n",
+			};
+			mem.copy(u8, buf[pos..], content_type);
+			pos += content_type.len;
 		}
 
 		{
@@ -245,6 +276,18 @@ test "response: write" {
 		res.setBody("hello");
 		try res.write(s);
 		try t.expectString("HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello", s.received.items);
+	}
+}
+
+test "response: content_type" {
+	var s = t.Stream.init();
+	var res = try init(t.allocator, .{});
+	defer cleanupWrite(res, s);
+
+	{
+		res.content_type = httpz.ContentType.WEBP;
+		try res.write(s);
+		try t.expectString("HTTP/1.1 200\r\nContent-Type: image/webp\r\nContent-Length: 0\r\n\r\n", s.received.items);
 	}
 }
 

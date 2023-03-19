@@ -46,6 +46,27 @@ pub const Method = enum {
 	OPTIONS,
 };
 
+
+pub const ContentType = enum {
+	BINARY,
+	CSS,
+	CSV,
+	GIF,
+	GZ,
+	HTML,
+	ICO,
+	JPG,
+	JS,
+	JSON,
+	PDF,
+	PNG,
+	SVG,
+	TAR,
+	TEXT,
+	WEBP,
+	XML,
+};
+
 test {
 	std.testing.refAllDecls(@This());
 }
