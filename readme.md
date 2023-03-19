@@ -14,7 +14,9 @@ fn main() !void {
 
     var router = try httpz.router();
 
-    // routes MUST be lowercase (params can use any casing).
+    // routes MUST be lowercase
+    // use get/post/put/head/patch/options/delete
+    // you can also use "all" to attach to all methods
     try router.get("/api/user/:id", getUser);
 
     // Overwrite the default notFound handler
@@ -28,7 +30,7 @@ fn main() !void {
 
 fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
     // the request comes with an arena allocator that you can use as needed
-        const allocator = req.arena.allocator();
+    const allocator = req.arena.allocator();
     var out = try std.fmt.allocPrint(allocator, "Hello {s}", req.param("id").?);
     res.setBody(out);
 }
@@ -47,25 +49,65 @@ fn errorHandler(err: anyerror, _res: *httpz.Request, res: *httpz.Response) void 
 ```
 
 ## httpz.Request
-The main fields for this type are:
+The following fields are the most useful:
 
 * `method` - an httpz.Method enum
 * `arena` - an arena allocator that will be reset at the end of the request
-* `url.path` - the path of the request 
+* `url.path` - the path of the request (`[]const u8`)
 
-To get a value from a URL parameter (as defined by the route using the `:NAME` syntax), use the `req.param(PARAM_NAME) ?[]const u8` method. Note that the parameter name matches the casing that you used when defining the route. The value will be lowercase (if the parameter exists).
+### Path Parameters
+The `param` method of `*Request` returns an `?[]const u8`. For example, given the following path:
 
-To get a header vlaue, use `req.header(HEADER_NAME) ?[]const u8`. The `HEADER_NAME` must be lowercase. The value will be lowercase (if the header exists).
+```zig
+try router.get("/api/users/:user_id/favorite/:id", user.getFavorite);
+```
 
-Getting a query string value is different than getting a header or parameter value. By default, httpz does not parse the querystring (because httpz itself doesn't need any information contained inside of it, unlike URL parameters and headers). To get a query value use:
+Then we could access the `user_id` and `id` via:
+
+```zig
+pub fn getFavorite(req *http.Request, res: *http.Response) !void {
+    const user_id = req.param("user_id").?;
+    const favorite_id = req.param("id").?;
+    ...
+```
+
+In the above, passing any other value to `param` would return a null object (since the route associated with `getFavorite` only defines these 2 parameters). Given that routes are generally statically defined, it should not be possible for `req.param` to return an unexpected null. However, it *is* possible to define two routes to the same action:
+
+```zig
+try router.put("/api/users/:user_id/favorite/:id", user.updateFavorite);
+
+// currently logged in user, maybe?
+try router.put("/api/use/favorite/:id", user.updateFavorite);
+```
+
+In which case the optional return value of `param` might be useful.
+
+### Header Values
+Similar to `param`, header values can be fetched via the `header` function, which also returns a `?[]const u8`:
+
+```zig
+if (req.header("authorization")) |auth| {
+
+} else { 
+    // not logged in?:
+}
+```
+
+Header names are always lowercase. Header values maintain their original casing.
+
+### QueryString
+The framework does not automatically parse the query string. Therefore, its API is slightly different.
 
 ```zig
 const query = try req.query();
 const value = query.get(KEY);
 ```
 
-Note that `query()` can fail (parsing the querystring can require allocations if values are URL encoded). The `KEY` must be lowercase. The value will be lowercase (if the query value exists). The results of `req.query()` are internally cached, so calling it multiple times is ok and efficient.
+On first call, the `query` function attempts to parse the querystring. This requires memory allocations to unescape encoded values. The parsed value is internally cached, so subsequent calls to query() is fast and cannot fail.
 
+The query key is always lowercase. The query value is always lowercase.
+
+### Body
 Similarly, use `body()` to get the body of the request:
 
 ```zig
