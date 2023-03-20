@@ -2,7 +2,7 @@ const std = @import("std");
 const t = @import("t.zig");
 const cm = @import("concurrent_map.zig");
 
-// async: const Lock = std.event.Lock;
+const Mutex = std.Thread.Mutex;
 const Allocator = std.mem.Allocator;
 
 pub fn Pool(comptime E: type, comptime S: type) type {
@@ -10,7 +10,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 	const ConcurrentMap = cm.ConcurrentMap(usize, void);
 
 	return struct {
-		// async: lock: Lock,
+		lock: Mutex,
 		items: []E,
 		available: usize,
 		allocator: Allocator,
@@ -28,7 +28,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 			}
 
 			return Self{
-				// async: .lock = RwLock.init(),
+				.lock = Mutex{},
 				.items = items,
 				.initFn = initFn,
 				.initState = initState,
@@ -49,12 +49,13 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 		}
 
 		pub fn acquire(self: *Self) !E {
-			// async: var held = self.lock.acquire();
+			var l = self.lock;
+			l.lock();
 			const items = self.items;
 			const available = self.available;
 			if (available == 0) {
 				// dont hold the lock over factory
-				// async: held.release();;
+				l.unlock();
 				const e = try self.initFn(self.allocator, self.initState);
 				try self.dynamic.put(@ptrToInt(e), {});
 				return e;
@@ -62,7 +63,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 			const index = available - 1;
 			const e = items[index];
 			self.available = index;
-			// async: held.release();
+			l.unlock();
 			return e;
 		}
 
@@ -72,11 +73,12 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 			// Even if this was a dynamically created item, we'll add it back
 			// to the pool [if there's space]
 
-			// async: var held = self.lock.acquire();
+			var l = self.lock;
+			l.lock();
 			var items = self.items;
 			const available = self.available;
 			if (available == items.len) {
-				// async: held.release();
+				l.unlock();
 				const allocator = self.allocator;
 				e.deinit(allocator);
 				allocator.destroy(e);
@@ -84,7 +86,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 			}
 			items[available] = e;
 			self.available = available + 1;
-			// async: held.release();
+			l.unlock();
 		}
 	};
 }
