@@ -2,7 +2,6 @@ const std = @import("std");
 const t = @import("t.zig");
 
 const RwLock = std.Thread.RwLock;
-// async: const RwLock = std.event.RwLock;
 const Allocator = std.mem.Allocator;
 
 pub fn ConcurrentMap(comptime K: type, comptime V: type) type {

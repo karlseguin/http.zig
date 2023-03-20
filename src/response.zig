@@ -10,21 +10,9 @@ const Allocator = std.mem.Allocator;
 const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
 
 pub const Config = struct {
-	pool_size: usize = 100,
 	max_header_count: usize = 16,
 	buffer_size: usize = 4096,
 };
-
-// Should not be called directly, but initialized through a pool
-pub fn init(allocator: Allocator, config: Config) !*Response {
-	var response = try allocator.create(Response);
-	response.body = null;
-	response.status = 200;
-	response.content_type = null;
-	response.static = try allocator.alloc(u8, config.buffer_size);
-	response.headers = try KeyValue.init(allocator, config.max_header_count);
-	return response;
-}
 
 pub const Response = struct {
 	// The body to write, if any
@@ -41,13 +29,27 @@ pub const Response = struct {
 	// which isn't available in the httpz.ContentType enum.
 	content_type: ?httpz.ContentType,
 
-	// A buffer that exists for the entire lifetime of the response. This is used
-	// internally to buffer writes to the socket. As a general rule, this should
-	// be large enough most of your response headers to fit in. Unless you're using
-	// unusually large headers, 4096 should be fine.
+	// A buffer that exists for the entire lifetime of the response. As we piece
+	// our header together (e.g. looping through the headers to create NAME: value\r\n)
+	// we buffer it in here to limit the # of calls we make to stream.write
 	static: []u8,
 
+	// An arena that will be reset at the end of each request. Can be used
+	// internally by this framework. The application is also free to make use of
+	// this arena. This is the same arena as request.arena.
+	arena: Allocator,
+
 	const Self = @This();
+
+	// Should not be called directly, but initialized through a pool
+	pub fn init(self: *Self, allocator: Allocator, arena: Allocator, config: Config) !void {
+		self.arena = arena;
+		self.body = null;
+		self.status = 200;
+		self.content_type = null;
+		self.static = try allocator.alloc(u8, config.buffer_size);
+		self.headers = try KeyValue.init(allocator, config.max_header_count);
+	}
 
 	pub fn deinit(self: *Self, allocator: Allocator) void {
 		self.headers.deinit();
@@ -259,8 +261,8 @@ test "writeInt" {
 
 test "response: write" {
 	var s = t.Stream.init();
-	var res = try init(t.allocator, .{});
-	defer cleanupWrite(res, s);
+	var res = testResponse(.{});
+	defer testCleanup(res, s);
 
 	{
 		// no body
@@ -281,8 +283,8 @@ test "response: write" {
 
 test "response: content_type" {
 	var s = t.Stream.init();
-	var res = try init(t.allocator, .{});
-	defer cleanupWrite(res, s);
+	var res = testResponse(.{});
+	defer testCleanup(res, s);
 
 	{
 		res.content_type = httpz.ContentType.WEBP;
@@ -291,14 +293,14 @@ test "response: content_type" {
 	}
 }
 
-test "response: write buffer sizes" {
+test "response: write static sizes" {
 	{
 		// no header or bodys
 		// 19 is the length of our longest header line
 		for (19..40) |i| {
 			var s = t.Stream.init();
-			var res = try init(t.allocator, .{.buffer_size = i});
-			defer cleanupWrite(res, s);
+			var res = testResponse(.{.buffer_size = i});
+			defer testCleanup(res, s);
 
 			res.status = 792;
 			try res.write(s);
@@ -311,8 +313,8 @@ test "response: write buffer sizes" {
 		// 19 is the length of our longest header line
 		for (19..110) |i| {
 			var s = t.Stream.init();
-			var res = try init(t.allocator, .{.buffer_size = i});
-			defer cleanupWrite(res, s);
+			var res = testResponse(.{.buffer_size = i});
+			defer testCleanup(res, s);
 
 			res.status = 401;
 			res.header("a-header", "a-value");
@@ -327,8 +329,8 @@ test "response: write buffer sizes" {
 		// 22 is the length of our longest header line (the content-length)
 		for (22..110) |i| {
 			var s = t.Stream.init();
-			var res = try init(t.allocator, .{.buffer_size = i});
-			defer cleanupWrite(res, s);
+			var res = testResponse(.{.buffer_size = i});
+			defer testCleanup(res, s);
 
 			res.status = 8;
 			res.header("a-header", "a-value");
@@ -341,7 +343,13 @@ test "response: write buffer sizes" {
 	}
 }
 
-fn cleanupWrite(r: *Response, s: *t.Stream) void {
+fn testResponse(config: Config) *Response {
+	var res = t.allocator.create(Response) catch unreachable;
+	res.init(t.allocator, t.allocator, config) catch unreachable;
+	return res;
+}
+
+fn testCleanup(r: *Response, s: *t.Stream) void {
 	r.deinit(t.allocator);
 	t.allocator.destroy(r);
 	defer s.deinit();

@@ -189,10 +189,6 @@ try httpz.listen(allocator, &router, .{
 
     // various options for tweaking request processing
     .request = .{
-        // Minimum number of request objects to keep pooled
-        // This should be set to the same value as response.pool_size
-        pool_size: usize = 100,
-
         // The maximum body size that we'll process. We'll can allocate up 
         // to this much memory per request for the body. Internally, we might
         // keep this memory around for a number of requests as an optimization.
@@ -228,10 +224,6 @@ try httpz.listen(allocator, &router, .{
         // individual header+value (+4 for the colon+space and the \r\n)
         buffer_size: usize = 4096,
 
-        // Minimum number of response objects to keep pooled
-        // This should be set to the same value as request.pool_size
-        pool_size: usize = 100,
-        
         // The maximum number of headers to accept. 
         // Additional headers will be silently ignored.
         max_header_count: usize = 16,

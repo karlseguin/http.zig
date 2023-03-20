@@ -17,16 +17,15 @@ const os = std.os;
 const net = std.net;
 const assert = std.debug.assert;
 
+
 pub fn Server(comptime H: type) type {
 	return struct {
-		const ReqPool = Pool(*request.Request, request.Config);
-		const ResPool = Pool(*response.Response, response.Config);
+		const ReqResPool = Pool(*RequestResponsePair, Config);
 
 		handler: H,
 		config: Config,
-		reqPool: ReqPool,
-		resPool: ResPool,
 		allocator: Allocator,
+		reqResPool: ReqResPool,
 		socket: net.StreamServer,
 
 		const Self = @This();
@@ -37,14 +36,12 @@ pub fn Server(comptime H: type) type {
 				.handler = handler,
 				.socket = undefined,
 				.allocator = allocator,
-				.reqPool = try ReqPool.init(allocator, config.request.pool_size, request.init, config.request),
-				.resPool = try ResPool.init(allocator, config.response.pool_size, response.init, config.response),
+				.reqResPool = try ReqResPool.init(allocator, config.pool_size, reqResInit, config),
 			};
 		}
 
 		pub fn deinit(self: *Self) void {
-			self.reqPool.deinit();
-			self.resPool.deinit();
+			self.reqResPool.deinit();
 			self.handler.deinit();
 		}
 
@@ -89,25 +86,26 @@ pub fn Server(comptime H: type) type {
 		pub fn handleConnection(self: *Self, stream: Stream) void {
 			defer stream.close();
 
-			var reqPool = self.reqPool;
-			var req = reqPool.acquire() catch |err| {
-				std.log.err("failed to acquire request object from the pool {}", .{err});
+			var reqResPool = self.reqResPool;
+			const reqResPair = reqResPool.acquire() catch |err| {
+				std.log.err("failed to acquire request and response object from the pool {}", .{err});
 				return;
 			};
-			defer reqPool.release(req);
+			defer reqResPool.release(reqResPair);
 
-			var resPool = self.resPool;
-			var res = resPool.acquire() catch |err| {
-				std.log.err("failed to acquire response object from the pool {}", .{err});
-				return;
-			};
-			defer resPool.release(res);
+			const req = reqResPair.request;
+			const res = reqResPair.response;
+			var arena = reqResPair.arena;
+
+			req.prepareForNewStream(stream);
 
 			const handler = self.handler;
 			while (true) {
 				req.reset();
 				res.reset();
-				if (req.parse(stream)) {
+				defer _ = arena.reset(.free_all);
+
+				if (req.parse()) {
 					if (!handler.handle(stream, req, res)) {
 						return;
 					}
@@ -179,6 +177,46 @@ pub fn errorHandler(err: anyerror, req: *httpz.Request, res: *httpz.Response) vo
 pub fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
 	res.status = 404;
 	res.setBody("Not Found");
+}
+
+// We pair together requests and responses, not because they're tightly coupled,
+// but so that we have a 1 pool instead of 2, and thus have half the locking.
+// Also, both the request and response can require dynamic memory allocation.
+// Grouping them this way means we can create 1 arena per pair.
+const RequestResponsePair = struct{
+	request: *httpz.Request,
+	response: *httpz.Response,
+	arena: std.heap.ArenaAllocator,
+	allocator: Allocator,
+
+	const Self = @This();
+
+	pub fn deinit(self: *Self, allocator: Allocator) void {
+		self.request.deinit(allocator);
+		allocator.destroy(self.request);
+
+		self.response.deinit(allocator);
+		allocator.destroy(self.response);
+		self.arena.deinit();
+	}
+};
+
+// Should not be called directly, but initialized through a pool
+pub fn reqResInit(allocator: Allocator, config: Config) !*RequestResponsePair {
+	var pair = try allocator.create(RequestResponsePair);
+	pair.arena = std.heap.ArenaAllocator.init(allocator);
+
+	var aa = pair.arena.allocator();
+	var req = try allocator.create(httpz.Request);
+	try req.init(allocator, aa, config.request);
+
+	var res = try allocator.create(httpz.Response);
+	try res.init(allocator, aa, config.response);
+
+	pair.request = req;
+	pair.response = res;
+	pair.allocator = aa;
+	return pair;
 }
 
 // All of this logic is largely tested in httpz.zig

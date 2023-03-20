@@ -25,7 +25,6 @@ const V1P0 = @bitCast(u32, [4]u8{'/', '1', '.', '0'});
 const V1P1 = @bitCast(u32, [4]u8{'/', '1', '.', '1'});
 
 pub const Config = struct {
-	pool_size: usize = 100,
 	max_body_size: usize = 1_048_576,
 	buffer_size: usize = 65_8536,
 	max_header_count: usize = 32,
@@ -33,25 +32,6 @@ pub const Config = struct {
 	max_query_count: usize = 32,
 };
 
-// Should not be called directly, but initialized through a pool
-pub fn init(allocator: Allocator, config: Config) !*Request {
-	var req = try allocator.create(Request);
-	var arena = std.heap.ArenaAllocator.init(allocator);
-	req.arena = arena;
-
-	req.bd_read = false;
-	req.bd = null;
-	req.max_body_size = config.max_body_size;
-
-	req.qs_read = false;
-	req.qs = try KeyValue.init(allocator, config.max_query_count);
-
-	req.stream = undefined;
-	req.static = try allocator.alloc(u8, config.buffer_size);
-	req.headers = try KeyValue.init(allocator, config.max_header_count);
-	req.params = try Params.init(allocator, config.max_param_count);
-	return req;
-}
 
 pub const Request = struct {
 	// The URL of the request
@@ -108,10 +88,28 @@ pub const Request = struct {
 	static: []u8,
 
 	// An arena that will be reset at the end of each request. Can be used
-	// internally by this framework, or externally by the application.
-	arena: std.heap.ArenaAllocator,
+	// internally by this framework. The application is also free to make use of
+	// this arena. This is the same arena as response.arena.
+	arena: Allocator,
 
 	const Self = @This();
+
+	// Should not be called directly, but initialized through a pool, see server.zig reqResInit
+	pub fn init(self: *Self, allocator: Allocator, arena: Allocator, config: Config) !void {
+		self.arena = arena;
+
+		self.bd_read = false;
+		self.bd = null;
+		self.max_body_size = config.max_body_size;
+
+		self.qs_read = false;
+		self.qs = try KeyValue.init(allocator, config.max_query_count);
+
+		self.stream = undefined;
+		self.static = try allocator.alloc(u8, config.buffer_size);
+		self.headers = try KeyValue.init(allocator, config.max_header_count);
+		self.params = try Params.init(allocator, config.max_param_count);
+	}
 
 	// Each parsing step (method, target, protocol, headers, body)
 	// return (a) how much data they've read from the socket and
@@ -130,7 +128,6 @@ pub const Request = struct {
 		self.params.deinit();
 		self.headers.deinit();
 		allocator.free(self.static);
-		self.arena.deinit();
 	}
 
 	pub fn reset(self: *Self) void {
@@ -142,7 +139,6 @@ pub const Request = struct {
 
 		self.params.reset();
 		self.headers.reset();
-		_ = self.arena.reset(std.heap.ArenaAllocator.ResetMode.free_all);
 	}
 
 	pub fn header(self: *Self, name: []const u8) ?[]const u8 {
@@ -160,9 +156,39 @@ pub const Request = struct {
 		return self.parseQuery();
 	}
 
-	pub fn parse(self: *Self, stream: Stream) !void {
+	pub fn prepareForNewStream(self: *Self, stream: Stream) void {
 		self.stream = stream;
-		try self.parseHeader();
+	}
+
+	pub fn parse(self: *Self) !void {
+		// Header must always fits inside our static buffer
+		const buf = self.static;
+		const stream = self.stream;
+
+		var res = try self.parseMethod(stream, buf);
+		var pos = res.used;
+		var buf_len = res.read;
+
+		res = try self.parseURL(stream, buf[pos..], buf_len - pos);
+		pos += res.used;
+		buf_len += res.read;
+
+		res = try self.parseProtocol(stream, buf[pos..], buf_len - pos);
+		pos += res.used;
+		buf_len += res.read;
+
+		while (true) {
+			res = try self.parseOneHeader(stream, buf[pos..], buf_len - pos);
+			const used = res.used;
+			pos += used;
+			buf_len += res.read;
+			if (used == 2) { // it only consumed the trailing \r\n
+				break;
+			}
+		}
+
+		self.pos = pos;
+		self.header_overread = buf_len - pos;
 	}
 
 	pub fn body(self: *Self) !?[]const u8 {
@@ -198,7 +224,7 @@ pub const Request = struct {
 
 			var buffer = self.static[pos..];
 			if (length > buffer.len) {
-				buffer = try self.arena.allocator().alloc(u8, length);
+				buffer = try self.arena.alloc(u8, length);
 				std.mem.copy(u8, buffer, self.static[pos..(pos+read)]);
 			}
 
@@ -215,37 +241,6 @@ pub const Request = struct {
 		}
 		// TODO: support chunked encoding
 		return self.bd;
-	}
-
-	fn parseHeader(self: *Self) !void {
-		// Header must always fits inside our static buffer
-		const buf = self.static;
-		const stream = self.stream;
-
-		var res = try self.parseMethod(stream, buf);
-		var pos = res.used;
-		var buf_len = res.read;
-
-		res = try self.parseURL(stream, buf[pos..], buf_len - pos);
-		pos += res.used;
-		buf_len += res.read;
-
-		res = try self.parseProtocol(stream, buf[pos..], buf_len - pos);
-		pos += res.used;
-		buf_len += res.read;
-
-		while (true) {
-			res = try self.parseOneHeader(stream, buf[pos..], buf_len - pos);
-			const used = res.used;
-			pos += used;
-			buf_len += res.read;
-			if (used == 2) { // it only consumed the trailing \r\n
-				break;
-			}
-		}
-
-		self.pos = pos;
-		self.header_overread = buf_len - pos;
 	}
 
 	fn parseMethod(self: *Self, stream: Stream, buf: []u8) !ParseResult {
@@ -409,7 +404,7 @@ pub const Request = struct {
 		}
 
 		var qs = &self.qs;
-		var allocator = self.arena.allocator();
+		var allocator = self.arena;
 
 		var it = std.mem.split(u8, raw, "&");
 		while (it.next()) |pair| {
@@ -554,43 +549,43 @@ test "request: parse method" {
 
 	{
 		const r = testParse("GET / HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(http.Method.GET, r.method);
 	}
 
 	{
 		const r = testParse("PUT / HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(http.Method.PUT, r.method);
 	}
 
 	{
 		const r = testParse("POST / HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(http.Method.POST, r.method);
 	}
 
 	{
 		const r = testParse("HEAD / HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(http.Method.HEAD, r.method);
 	}
 
 	{
 		const r = testParse("PATCH / HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(http.Method.PATCH, r.method);
 	}
 
 	{
 		const r = testParse("DELETE / HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(http.Method.DELETE, r.method);
 	}
 
 	{
 		const r = testParse("OPTIONS / HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(http.Method.OPTIONS, r.method);
 	}
 }
@@ -607,25 +602,25 @@ test "request: parse request target" {
 
 	{
 		const r = testParse("PUT / HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectString("/", r.url.raw);
 	}
 
 	{
 		const r = testParse("PUT /api/v2 HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectString("/api/v2", r.url.raw);
 	}
 
 	{
 		const r = testParse("DELETE /API/v2?hack=true&over=9000%20!! HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectString("/API/v2?hack=true&over=9000%20!!", r.url.raw);
 	}
 
 	{
 		const r = testParse("PUT * HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectString("*", r.url.raw);
 	}
 }
@@ -641,13 +636,13 @@ test "request: parse protocol" {
 
 	{
 		const r = testParse("PUT / HTTP/1.0\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(http.Protocol.HTTP10, r.protocol);
 	}
 
 	{
 		const r = testParse("PUT / HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(http.Protocol.HTTP11, r.protocol);
 	}
 }
@@ -662,13 +657,13 @@ test "request: parse headers" {
 
 	{
 		const r = testParse("PUT / HTTP/1.0\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(@as(usize, 0), r.headers.len);
 	}
 
 	{
 		const r = testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 
 		try t.expectEqual(@as(usize, 1), r.headers.len);
 		try t.expectString("goblgobl.com", r.headers.get("host").?);
@@ -676,7 +671,7 @@ test "request: parse headers" {
 
 	{
 		const r = testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nMisc:  Some-Value\r\nAuthorization:none\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 
 		try t.expectEqual(@as(usize, 3), r.headers.len);
 		try t.expectString("goblgobl.com", r.header("host").?);
@@ -689,21 +684,21 @@ test "request: canKeepAlive" {
 	{
 		// implicitly keepalive for 1.1
 		const r = testParse("GET / HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(true, r.canKeepAlive());
 	}
 
 	{
 		// explicitly keepalive for 1.1
 		const r = testParse("GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(true, r.canKeepAlive());
 	}
 
 	{
 		// explicitly not keepalive for 1.1
 		const r = testParse("GET / HTTP/1.1\r\nConnection: close\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(false, r.canKeepAlive());
 	}
 }
@@ -712,21 +707,21 @@ test "request: query" {
 	{
 		// none
 		const r = testParse("PUT / HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(@as(usize, 0), (try r.query()).len);
 	}
 
 	{
 		// none with path
 		const r = testParse("PUT /why/would/this/matter HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(@as(usize, 0), (try r.query()).len);
 	}
 
 	{
 		// value-less
 		const r = testParse("PUT /?a HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		const query = try r.query();
 		try t.expectEqual(@as(usize, 1), query.len);
 		try t.expectString("", query.get("a").?);
@@ -736,7 +731,7 @@ test "request: query" {
 	{
 		// single
 		const r = testParse("PUT /?a=1 HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		const query = try r.query();
 		try t.expectEqual(@as(usize, 1), query.len);
 		try t.expectString("1", query.get("a").?);
@@ -746,7 +741,7 @@ test "request: query" {
 	{
 		// multiple
 		const r = testParse("PUT /path?Teg=Tea&it%20%20IS=over%209000%24&ha%09ck HTTP/1.1\r\n\r\n", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		const query = try r.query();
 		try t.expectEqual(@as(usize, 3), query.len);
 		try t.expectString("Tea", query.get("Teg").?);
@@ -759,14 +754,14 @@ test "body: content-length" {
 	{
 		// too big
 		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{.max_body_size = 9});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectError(Error.BodyTooBig, r.body());
 	}
 
 	{
 		// no body
 		const r = testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectEqual(@as(?[]const u8, null), try r.body());
 		try t.expectEqual(@as(?[]const u8, null), try r.body());
 	}
@@ -774,7 +769,7 @@ test "body: content-length" {
 	{
 		// fits into static buffer
 		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{});
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectString("Over 9000!", (try r.body()).?);
 		try t.expectString("Over 9000!", (try r.body()).?);
 	}
@@ -782,7 +777,7 @@ test "body: content-length" {
 	{
 		// Requires dynamic buffer
 		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 11\r\n\r\nOver 9001!!", .{.buffer_size = 40 });
-		defer cleanupRequest(r);
+		defer testCleanup(r);
 		try t.expectString("Over 9001!!", (try r.body()).?);
 		try t.expectString("Over 9001!!", (try r.body()).?);
 	}
@@ -808,8 +803,10 @@ test "request: fuzz" {
 		// how many requests should we make on this 1 individual socket (simulating
 		// keepalive AND the request pool)
 		const buffer_size = random.uintAtMost(u16, 1024) + 1024;
-		var request = init(t.allocator, .{.buffer_size = buffer_size}) catch unreachable;
+		var request = testRequest(.{.buffer_size = buffer_size});
 		defer {
+			// normally the arena
+			t.reset();
 			request.deinit(t.allocator);
 			t.allocator.destroy(request);
 		}
@@ -817,6 +814,7 @@ test "request: fuzz" {
 		var s = t.Stream.init();
 		defer s.deinit();
 
+		request.prepareForNewStream(s);
 		const number_of_requests = random.uintAtMost(u8, 10) + 1;
 		for (0..number_of_requests) |_| {
 			_ = arena.reset(.retain_capacity);
@@ -876,7 +874,7 @@ test "request: fuzz" {
 				_ = s.add(body.?);
 			}
 
-			request.parse(s) catch |err| {
+			request.parse() catch |err| {
 				std.debug.print("\nParse Error: {}\nInput: {s}", .{err, s.to_read.items[s.read_index..]});
 				unreachable;
 			};
@@ -918,9 +916,10 @@ fn testParse(input: []const u8, config: Config) *Request {
 	var s = t.Stream.init();
 	_ = s.add(input);
 
-	var request = init(t.allocator, config) catch unreachable;
-	request.parse(s) catch |err| {
-		cleanupRequest(request);
+	var request = testRequest(config);
+	request.prepareForNewStream(s);
+	request.parse() catch |err| {
+		testCleanup(request);
 		std.debug.print("\nParse Error: {}\nInput: {s}", .{err, input});
 		unreachable;
 	};
@@ -931,15 +930,21 @@ fn expectParseError(expected: Error, input: []const u8, config: Config) !void {
 	var s = t.Stream.init();
 	_ = s.add(input);
 
-	var request = try init(t.allocator, config);
-	defer cleanupRequest(request);
-	try t.expectError(expected, request.parse(s));
+	var request = testRequest(config);
+	defer testCleanup(request);
+	request.prepareForNewStream(s);
+	try t.expectError(expected, request.parse());
 }
 
-// We need this because we use init to create the request (the way the real
-// code does, for pooling), so we need to free(r) not just deinit it.
-fn cleanupRequest(r: *Request) void {
+fn testRequest(config: Config, ) *Request {
+	var req = t.allocator.create(Request) catch unreachable;
+	req.init(t.allocator, t.arena, config) catch unreachable;
+	return req;
+}
+
+fn testCleanup(r: *Request) void {
 	r.stream.deinit();
+	t.reset();
 	r.deinit(t.allocator);
 	t.allocator.destroy(r);
 }

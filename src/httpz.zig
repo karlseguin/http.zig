@@ -213,7 +213,7 @@ fn testFail(_: *Request, _: *Response) !void {
 
 fn testParams(req: *Request, res: *Response) !void {
 	var args = .{req.param("version").?, req.param("UserId").?};
-	var out = try std.fmt.allocPrint(req.arena.allocator(), "version={s},user={s}", args);
+	var out = try std.fmt.allocPrint(req.arena, "version={s},user={s}", args);
 	res.setBody(out);
 }
 

@@ -10,6 +10,13 @@ pub const expectEqual = std.testing.expectEqual;
 pub const expectError = std.testing.expectError;
 pub const expectString = std.testing.expectEqualStrings;
 
+pub var aa = std.heap.ArenaAllocator.init(allocator);
+pub const arena = aa.allocator();
+
+pub fn reset() void {
+	_ = aa.reset(.free_all);
+}
+
 pub fn getRandom() std.rand.DefaultPrng {
 	var seed: u64 = undefined;
 	std.os.getrandom(std.mem.asBytes(&seed)) catch unreachable;
@@ -97,7 +104,6 @@ pub const Stream = struct {
 	}
 };
 
-
 // Code often takes a []u8, but, in a test, we only have a []const u8 (e.g. a string literal)
 pub fn mutableString(str: []const u8) []u8 {
 	var b = allocator.alloc(u8, str.len) catch unreachable;
@@ -119,7 +125,6 @@ pub fn clearMutableStrings(strings: [][]u8) void {
 	}
 	allocator.destroy(strings);
 }
-
 
 pub fn clearMutableString(s: []u8) void {
 	allocator.free(s);
