@@ -187,6 +187,9 @@ try httpz.listen(allocator, &router, .{
 
     .errorHandler = // defaults to a basic handler that will output 500 and log the error
 
+    // Minimum number of request & response objects to keep pooled
+    pool_size: usize = 100,
+
     // various options for tweaking request processing
     .request = .{
         // The maximum body size that we'll process. We'll can allocate up 

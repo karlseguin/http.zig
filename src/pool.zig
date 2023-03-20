@@ -75,6 +75,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 
 			var l = self.lock;
 			l.lock();
+
 			var items = self.items;
 			const available = self.available;
 			if (available == items.len) {
