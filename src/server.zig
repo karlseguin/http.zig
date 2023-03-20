@@ -12,11 +12,11 @@ const Config = @import("config.zig").Config;
 const Loop = std.event.Loop;
 const Allocator = std.mem.Allocator;
 const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
+const Conn = if (builtin.is_test) *t.Stream else std.net.StreamServer.Connection;
 
 const os = std.os;
 const net = std.net;
 const assert = std.debug.assert;
-
 
 pub fn Server(comptime H: type) type {
 	return struct {
@@ -49,7 +49,10 @@ pub fn Server(comptime H: type) type {
 			const config = self.config;
 			const allocator = self.allocator;
 
-			var socket = net.StreamServer.init(.{ .reuse_address = true });
+			var socket = net.StreamServer.init(.{
+				.reuse_address = true,
+				.kernel_backlog = 1024,
+			});
 			defer socket.deinit();
 			self.socket = socket;
 
@@ -68,12 +71,12 @@ pub fn Server(comptime H: type) type {
 
 			while (true) {
 				if (socket.accept()) |conn| {
-					const stream: Stream = if (comptime builtin.is_test) undefined else conn.stream;
+					const c: Conn = if (comptime builtin.is_test) undefined else conn;
 					if (comptime std.io.is_async) {
-						const args = .{ stream };
+						const args = .{ c };
 						try Loop.instance.?.runDetached(allocator, self.handleConnection, args);
 					} else {
-						const args = .{ self, stream };
+						const args = .{ self, c };
 						const thrd = try std.Thread.spawn(.{}, handleConnection, args);
 						thrd.detach();
 					}
@@ -83,10 +86,11 @@ pub fn Server(comptime H: type) type {
 			}
 		}
 
-		pub fn handleConnection(self: *Self, stream: Stream) void {
+		pub fn handleConnection(self: *Self, conn: Conn) void {
+			const stream = if (comptime builtin.is_test) conn else conn.stream;
 			defer stream.close();
 
-			var reqResPool = self.reqResPool;
+			var reqResPool = &self.reqResPool;
 			const reqResPair = reqResPool.acquire() catch |err| {
 				std.log.err("failed to acquire request and response object from the pool {}", .{err});
 				return;
@@ -115,7 +119,6 @@ pub fn Server(comptime H: type) type {
 					handler.requestParseError(stream, err, res);
 					return;
 				}
-
 				req.drain() catch { return; };
 			}
 		}

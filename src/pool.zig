@@ -10,7 +10,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 	const ConcurrentMap = cm.ConcurrentMap(usize, void);
 
 	return struct {
-		lock: Mutex,
+		mutex: Mutex,
 		items: []E,
 		available: usize,
 		allocator: Allocator,
@@ -28,7 +28,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 			}
 
 			return Self{
-				.lock = Mutex{},
+				.mutex = Mutex{},
 				.items = items,
 				.initFn = initFn,
 				.initState = initState,
@@ -49,13 +49,13 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 		}
 
 		pub fn acquire(self: *Self) !E {
-			var l = self.lock;
-			l.lock();
+			var m = self.mutex;
+			m.lock();
 			const items = self.items;
 			const available = self.available;
 			if (available == 0) {
 				// dont hold the lock over factory
-				l.unlock();
+				m.unlock();
 				const e = try self.initFn(self.allocator, self.initState);
 				try self.dynamic.put(@ptrToInt(e), {});
 				return e;
@@ -63,7 +63,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 			const index = available - 1;
 			const e = items[index];
 			self.available = index;
-			l.unlock();
+			m.unlock();
 			return e;
 		}
 
@@ -73,13 +73,13 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 			// Even if this was a dynamically created item, we'll add it back
 			// to the pool [if there's space]
 
-			var l = self.lock;
-			l.lock();
+			var m = self.mutex;
+			m.lock();
 
 			var items = self.items;
 			const available = self.available;
 			if (available == items.len) {
-				l.unlock();
+				m.unlock();
 				const allocator = self.allocator;
 				e.deinit(allocator);
 				allocator.destroy(e);
@@ -87,7 +87,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 			}
 			items[available] = e;
 			self.available = available + 1;
-			l.unlock();
+			m.unlock();
 		}
 	};
 }

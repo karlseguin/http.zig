@@ -32,7 +32,6 @@ pub const Config = struct {
 	max_query_count: usize = 32,
 };
 
-
 pub const Request = struct {
 	// The URL of the request
 	url: Url,
