@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) !void {
 	const target = b.standardTargetOptions(.{});
 	const optimize = b.standardOptimizeOption(.{});
 
-		const httpzig_module = b.addModule("httpz", .{
+		const httpz_module = b.addModule("httpz", .{
 				.source_file = .{ .path = "src/httpz.zig" },
 		});
 
@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) !void {
 		.target = target,
 		.optimize = optimize,
 	});
-	exe.addModule("httpz", httpzig_module);
+	exe.addModule("httpz", httpz_module);
 	exe.install();
 
 	const run_cmd = exe.run();

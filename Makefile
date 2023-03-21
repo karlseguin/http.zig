@@ -1,7 +1,6 @@
 .PHONY: t
 t:
-	# 2>&1|cat from: https://github.com/ziglang/zig/issues/10203
-	zig build test 2>&1|cat
+	zig test src/httpz.zig
 
 .PHONY: s
 s:

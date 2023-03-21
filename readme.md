@@ -41,7 +41,7 @@ fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
 fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
     res.status = 404;
 
-    // you can set the body directly to a []const u8, but note that the memory
+    // you can set the body directly to a []u8, but note that the memory
     // must be valid beyond your handler. Use the res.arena if you need to allocate
     // memory for the body.
     res.body = "Not Found";
@@ -155,6 +155,19 @@ const name = query.get("name") orelse "stranger";
 var out = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
 res.body = out;
 ```
+
+## io.Writer
+`res.writer()` returns an `std.io.Writer`. Various types support writing to an io.Writer. For example, the built-in JSON stream writer can use this writer:
+
+```zig
+var ws = std.json.writeStream(res.writer(), 4);
+try ws.beginObject();
+try ws.objectField("name");
+try ws.emitString(req.param("name").?);
+try ws.endObject();
+```
+
+See the `json` function for an explanation on how this writer behaves.
 
 ## Header Value
 Set header values using the `res.header(NAME, VALUE) function`:
