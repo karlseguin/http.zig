@@ -141,7 +141,7 @@ pub const Handler = struct {
 		action(req, res) catch |err| switch (err) {
 			error.BodyTooBig => {
 				res.status = 431;
-				res.setBody("Request body is too big");
+				res.body = "Request body is too big";
 				res.write(stream) catch {};
 			},
 			else => self.errorHandler(err, req, res)
@@ -158,12 +158,12 @@ pub const Handler = struct {
 		switch (err) {
 			error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
 				res.status = 400;
-				res.setBody("Invalid Request");
+				res.body = "Invalid Request";
 				res.write(stream) catch {};
 			},
 			error.HeaderTooBig => {
 				res.status = 431;
-				res.setBody("Request header is too big");
+				res.body = "Request header is too big";
 				res.write(stream) catch {};
 			},
 			else => {},
@@ -173,13 +173,13 @@ pub const Handler = struct {
 
 pub fn errorHandler(err: anyerror, req: *httpz.Request, res: *httpz.Response) void {
 	res.status = 500;
-	res.setBody("Internal Server Error");
+	res.body = "Internal Server Error";
 	std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
 }
 
 pub fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
 	res.status = 404;
-	res.setBody("Not Found");
+	res.body = "Not Found";
 }
 
 // We pair together requests and responses, not because they're tightly coupled,

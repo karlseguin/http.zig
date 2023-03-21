@@ -202,6 +202,20 @@ test "httpz: content-length body" {
 	try t.expectString("HTTP/1.1 200\r\nEcho-Body: abcz\r\nContent-Length: 0\r\n\r\n", stream.received.items);
 }
 
+test "httpz: json response" {
+	var stream = t.Stream.init();
+	defer stream.deinit();
+	_ = stream.add("GET /test/json HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+	var rtr = router(t.allocator) catch unreachable;
+	try rtr.get("/test/json", testJsonRes);
+	var srv = testServer(&rtr, .{});
+	defer srv.deinit();
+	srv.handleConnection(stream);
+
+	try t.expectString("HTTP/1.1 201\r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", stream.received.items);
+}
+
 fn testServer(rtr: *Router, config: Config) Server(Handler) {
 	const handler = Handler{.router = rtr, .errorHandler = config.errorHandler};
 	return Server(Handler).init(t.allocator, handler, config) catch unreachable;
@@ -214,7 +228,7 @@ fn testFail(_: *Request, _: *Response) !void {
 fn testParams(req: *Request, res: *Response) !void {
 	var args = .{req.param("version").?, req.param("UserId").?};
 	var out = try std.fmt.allocPrint(req.arena, "version={s},user={s}", args);
-	res.setBody(out);
+	res.body = out;
 }
 
 fn testHeaders(req: *Request, res: *Response) !void {
@@ -227,12 +241,17 @@ fn testCLBody(req: *Request, res: *Response) !void {
 	res.header("Echo-Body", body.?);
 }
 
+fn testJsonRes(_: *Request, res: *Response) !void {
+	res.status = 201;
+	try res.json(.{.over = 9000, .teg = "soup" });
+}
+
 fn testNotFound(_: *Request, res: *Response) !void {
 	res.status = 404;
-	res.setBody("where lah?");
+	res.body = "where lah?";
 }
 
 fn testErrorHandler(_: anyerror, _: *Request, res: *Response) void {
 	res.status = 500;
-	res.setBody("#/why/arent/tags/hierarchical");
+	res.body = "#/why/arent/tags/hierarchical";
 }

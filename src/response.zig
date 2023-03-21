@@ -11,7 +11,8 @@ const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
 
 pub const Config = struct {
 	max_header_count: usize = 16,
-	buffer_size: usize = 4096,
+	body_buffer_size: usize = 32_768,
+	header_buffer_size: usize = 4096,
 };
 
 pub const Response = struct {
@@ -32,7 +33,12 @@ pub const Response = struct {
 	// A buffer that exists for the entire lifetime of the response. As we piece
 	// our header together (e.g. looping through the headers to create NAME: value\r\n)
 	// we buffer it in here to limit the # of calls we make to stream.write
-	static: []u8,
+	header_buffer: []u8,
+
+	// When possible (when it fits), we'll buffer the body into this static buffer,
+	// which exists for the entire lifetime of the response. If the response doesn't
+	// fit, we'll allocate the necessary space using the arena allocator.
+	body_buffer: []u8,
 
 	// An arena that will be reset at the end of each request. Can be used
 	// internally by this framework. The application is also free to make use of
@@ -44,16 +50,16 @@ pub const Response = struct {
 	// Should not be called directly, but initialized through a pool
 	pub fn init(self: *Self, allocator: Allocator, arena: Allocator, config: Config) !void {
 		self.arena = arena;
-		self.body = null;
-		self.status = 200;
-		self.content_type = null;
-		self.static = try allocator.alloc(u8, config.buffer_size);
 		self.headers = try KeyValue.init(allocator, config.max_header_count);
+		self.body_buffer = try allocator.alloc(u8, config.body_buffer_size);
+		self.header_buffer = try allocator.alloc(u8, config.header_buffer_size);
+		self.reset();
 	}
 
 	pub fn deinit(self: *Self, allocator: Allocator) void {
 		self.headers.deinit();
-		allocator.free(self.static);
+		allocator.free(self.body_buffer);
+		allocator.free(self.header_buffer);
 	}
 
 	pub fn reset(self: *Self) void {
@@ -63,16 +69,24 @@ pub const Response = struct {
 		self.headers.reset();
 	}
 
-	pub fn setBody(self: *Self, value: []const u8) void {
-		self.body = value;
+	pub fn json(self: *Self, value: anytype) !void {
+		var writer = Writer.init(self);
+		const json_options = .{.string = .{.String = .{.escape_solidus = false}}};
+		try std.json.stringify(value, json_options, JsonWriter{.writer = &writer});
+
+		self.content_type = httpz.ContentType.JSON;
+
+		// the writer.body either references to res.body_buffer or memory that was
+		// dynamically allocated in our arena. Either way, this is safe.
+		self.body = writer.body[0..writer.pos];
 	}
 
 	pub fn header(self: *Self, name: []const u8, value: []const u8) void {
 		self.headers.add(name, value);
 	}
 
-	pub fn write(self: Self, stream: Stream) !void {
-		var buf = self.static;
+	pub fn write(self: *Self, stream: Stream) !void {
+		var buf = self.header_buffer;
 		var pos: usize = 14; // "HTTP/1.1 XXX\r\n".len
 
 		switch (self.status) {
@@ -229,6 +243,95 @@ pub const Response = struct {
 			}
 		}
 	}
+
+	// Would like to do away with this, but not sure how, since we need a
+	// @TypeOf(Writer).Error, and I don't know how to add an Error field to a *Type.
+	// And we need a *Type because we need it to be mutable.
+	const JsonWriter = struct {
+		writer: *Writer,
+		pub const Error = mem.Allocator.Error;
+		pub fn writeByte(self: JsonWriter, b: u8) !void {
+			try self.writer.writeByte(b);
+		}
+		pub fn writeByteNTimes(self: JsonWriter, b: u8, n: usize) !void {
+			try self.writer.writeByteNTimes(b, n);
+		}
+		pub fn writeAll(self: JsonWriter, data: []const u8) !void {
+			try self.writer.writeAll(data);
+		}
+	};
+
+	const Writer = struct {
+		pos: usize,
+		body: []u8,
+		res: *Response,
+
+		pub fn init(res: *Response) Writer {
+			return .{
+				.pos = 0,
+				.res = res,
+				.body = res.body_buffer,
+			};
+		}
+
+		pub fn writeByte(self: *Writer, b: u8) !void {
+			try self.ensureSpace(1);
+			const pos = self.pos;
+			self.body[pos] = b;
+			self.pos = pos + 1;
+		}
+
+		pub fn writeByteNTimes(self: *Writer, b: u8, n: usize) !void {
+			try self.ensureSpace(n);
+			var pos = self.pos;
+			const body = self.body;
+			for (0..n) |offset| {
+				body[pos+offset] = b;
+			}
+			self.pos = pos + n;
+		}
+
+		pub fn writeAll(self: *Writer, data: []const u8) !void {
+			try self.ensureSpace(data.len);
+			const pos = self.pos;
+			std.mem.copy(u8, self.body[pos..], data);
+			self.pos = pos + data.len;
+		}
+
+		fn ensureSpace(self: *Writer, n: usize) !void {
+			const pos = self.pos;
+			const body = self.body;
+			const required_capacity = pos + n;
+
+			if (body.len >= required_capacity) {
+				// we have enough space in our body as-is
+				return;
+			}
+
+			// taken from std.ArrayList
+			var new_capacity = body.len;
+			while (true) {
+				new_capacity +|= new_capacity / 2 + 8;
+				if (new_capacity >= required_capacity) break;
+			}
+
+			const res = self.res;
+			const arena = res.arena;
+
+			// If this is our static body_buffer, we need to allocate a new dynamic space
+			// If it's a dynamic buffer, we'll first try to resize it.
+			// You might be thinking that in the 2nd case, we need to free the previous
+			// body in the case that resize fails. We don't, because it'll be freed
+			// when the arena is freed
+			if (body.ptr == res.body_buffer.ptr or !arena.resize(body, new_capacity)) {
+				const new_body = try arena.alloc(u8, new_capacity);
+				mem.copy(u8, new_body, body);
+				self.body = new_body;
+			} else {
+				self.body = body.ptr[0..new_capacity];
+			}
+		}
+	};
 };
 
 fn writeInt(into: []u8, n: u32) usize {
@@ -275,7 +378,7 @@ test "response: write" {
 		// body
 		s.reset(); res.reset();
 		res.status = 200;
-		res.setBody("hello");
+		res.body = "hello";
 		try res.write(s);
 		try t.expectString("HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello", s.received.items);
 	}
@@ -293,13 +396,13 @@ test "response: content_type" {
 	}
 }
 
-test "response: write static sizes" {
+test "response: write header_buffer_size" {
 	{
 		// no header or bodys
 		// 19 is the length of our longest header line
 		for (19..40) |i| {
 			var s = t.Stream.init();
-			var res = testResponse(.{.buffer_size = i});
+			var res = testResponse(.{.header_buffer_size = i});
 			defer testCleanup(res, s);
 
 			res.status = 792;
@@ -313,7 +416,7 @@ test "response: write static sizes" {
 		// 19 is the length of our longest header line
 		for (19..110) |i| {
 			var s = t.Stream.init();
-			var res = testResponse(.{.buffer_size = i});
+			var res = testResponse(.{.header_buffer_size = i});
 			defer testCleanup(res, s);
 
 			res.status = 401;
@@ -329,28 +432,53 @@ test "response: write static sizes" {
 		// 22 is the length of our longest header line (the content-length)
 		for (22..110) |i| {
 			var s = t.Stream.init();
-			var res = testResponse(.{.buffer_size = i});
+			var res = testResponse(.{.header_buffer_size = i});
 			defer testCleanup(res, s);
 
 			res.status = 8;
 			res.header("a-header", "a-value");
 			res.header("b-hdr", "b-val");
 			res.header("c-header11", "cv");
-			res.setBody("hello world!");
+			res.body = "hello world!";
 			try res.write(s);
 			try t.expectString("HTTP/1.1 8\r\na-header: a-value\r\nb-hdr: b-val\r\nc-header11: cv\r\nContent-Length: 12\r\n\r\nhello world!", s.received.items);
 		}
 	}
 }
 
+test "response: json" {
+	var r = t.getRandom();
+	const random = r.random();
+
+	for (0..100) |_| {
+		const body = t.randomString(random, t.allocator, 4000);
+		defer t.allocator.free(body);
+		const expected_encoded_length = body.len + 2; // wrapped in double quotes
+
+		for (0..100) |i| {
+			var s = t.Stream.init();
+			var res = testResponse(.{.body_buffer_size = i});
+			defer testCleanup(res, s);
+
+			res.status = 200;
+			try res.json(body);
+			try res.write(s);
+
+			const expected = try std.fmt.allocPrint(t.arena, "HTTP/1.1 200\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n\"{s}\"", .{expected_encoded_length, body});
+			try t.expectString(expected, s.received.items);
+		}
+	}
+}
+
 fn testResponse(config: Config) *Response {
 	var res = t.allocator.create(Response) catch unreachable;
-	res.init(t.allocator, t.allocator, config) catch unreachable;
+	res.init(t.allocator, t.arena, config) catch unreachable;
 	return res;
 }
 
 fn testCleanup(r: *Response, s: *t.Stream) void {
 	r.deinit(t.allocator);
+	t.reset();
 	t.allocator.destroy(r);
 	defer s.deinit();
 }

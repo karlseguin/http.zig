@@ -96,18 +96,14 @@ pub const Request = struct {
 	// Should not be called directly, but initialized through a pool, see server.zig reqResInit
 	pub fn init(self: *Self, allocator: Allocator, arena: Allocator, config: Config) !void {
 		self.arena = arena;
-
-		self.bd_read = false;
-		self.bd = null;
+		self.stream = undefined;
 		self.max_body_size = config.max_body_size;
-
-		self.qs_read = false;
 		self.qs = try KeyValue.init(allocator, config.max_query_count);
 
-		self.stream = undefined;
 		self.static = try allocator.alloc(u8, config.buffer_size);
 		self.headers = try KeyValue.init(allocator, config.max_header_count);
 		self.params = try Params.init(allocator, config.max_param_count);
+		self.reset();
 	}
 
 	// Each parsing step (method, target, protocol, headers, body)
@@ -818,7 +814,7 @@ test "request: fuzz" {
 		for (0..number_of_requests) |_| {
 			_ = arena.reset(.retain_capacity);
 			const method = randomMethod(random);
-			const url = randomString(random, aa, 20);
+			const url = t.randomString(random, aa, 20);
 
 			_ = s.add(method);
 			_ = s.add(" /");
@@ -830,8 +826,8 @@ test "request: fuzz" {
 			}
 			var query = std.StringHashMap([]const u8).init(aa);
 			for (0..number_of_qs) |_| {
-				const key = randomString(random, aa, 20);
-				const value = randomString(random, aa, 20);
+				const key = t.randomString(random, aa, 20);
+				const value = t.randomString(random, aa, 20);
 				if (!query.contains(key)) {
 					// TODO: figure out how we want to handle duplicate query values
 					// (the spec doesn't specifiy what to do)
@@ -847,8 +843,8 @@ test "request: fuzz" {
 
 			var headers = std.StringHashMap([]const u8).init(aa);
 			for (0..random.uintAtMost(u8, 4)) |_| {
-				const name = randomString(random, aa, 20);
-				const value = randomString(random, aa, 20);
+				const name = t.randomString(random, aa, 20);
+				const value = t.randomString(random, aa, 20);
 				if (!headers.contains(name)) {
 					// TODO: figure out how we want to handle duplicate query values
 					// Note, the spec says we should merge these!
@@ -864,7 +860,7 @@ test "request: fuzz" {
 			if (random.uintAtMost(u8, 4) == 0) {
 				_ = s.add("\r\n"); // no body
 			} else {
-				body = randomString(random, aa, 8000);
+				body = t.randomString(random, aa, 8000);
 				const cl = std.fmt.allocPrint(aa, "{d}", .{body.?.len}) catch unreachable;
 				headers.put("content-length", cl) catch unreachable;
 				_ = s.add("content-length: ");
@@ -946,15 +942,6 @@ fn testCleanup(r: *Request) void {
 	t.reset();
 	r.deinit(t.allocator);
 	t.allocator.destroy(r);
-}
-
-fn randomString(random: std.rand.Random, allocator: Allocator, max: usize) []u8 {
-	var buf = allocator.alloc(u8, random.uintAtMost(usize, max) + 1) catch unreachable;
-	const valid = "abcdefghijklmnopqrstuvwxyz0123456789-_/";
-	for (0..buf.len) |i| {
-		buf[i] = valid[random.uintAtMost(usize, valid.len)];
-	}
-	return buf;
 }
 
 fn randomMethod(random: std.rand.Random) []const u8 {

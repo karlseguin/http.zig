@@ -28,21 +28,30 @@ fn main() !void {
 }
 
 fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
-    // the request comes with an arena allocator that you can use as needed
-    const allocator = req.arena.allocator();
-    var out = try std.fmt.allocPrint(allocator, "Hello {s}", req.param("id").?);
-    res.setBody(out);
+    // status code 200 is implicit. 
+
+    // The json helper will automatically set the res.content_type = httpz.ContentType.JSON;
+    // Here we're passing an inferred anonymous structure, but you can pass anytype 
+    // (so long as it can be serialized using std.json.stringify)
+
+    res.json(.{.name = "Teg"});
 }
+
 
 fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
     res.status = 404;
-    res.setBody("Not Found");
+
+    // you can set the body directly to a []const u8, but note that the memory
+    // must be valid beyond your handler. Use the res.arena if you need to allocate
+    // memory for the body.
+    res.body = "Not Found";
 }
+
 
 // note that the error handler return `void` and not `!void`
 fn errorHandler(err: anyerror, _res: *httpz.Request, res: *httpz.Response) void {
     res.status = 500;
-    res.setBody("Internal Server Error");
+    res.body = "Internal Server Error";
     std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
 }
 ```
@@ -122,12 +131,39 @@ if (try req.body()) |body| {
 Like `query`, the body is internally cached and subsequent calls are fast and cannot fail. If there is no body, `body()` returns null.
 
 
-## http.Response
-You can set the status using the `status` field. By default, the status is set to 200.
+## httpz.Response
+The following fields are the most useful:
 
-You can set an arbitrary body using `setBody`. If you need dynamically allocated memory to create the body, consider using `req.arena`.
+* `status` - set the status code, by default, each response starts off with a 200 status code
+* `content_type` - an httpz.ContentType enum value. This is a convenience and optimization over using the `res.header` function.
+* `body` - set the body to an explicit []const u8. The memory address pointed to by this value must be valid beyond the action handler. The `arena` field can help for dynamic values
+* `arena` - an arena allocator that will be reset at the end of the request
 
-You can set a header using `res.header(NAME, VALUE)`. The `NAME` and `VALUE` are written in the response as-is (i.e. no changes are made to the casing or whitespacing).
+## JSON
+The `json` function will set the content_type to `httpz.ContentType.JSON` and serialize the provided value using `std.json.stringify`.
+
+Because the final size of the serialized object cannot be known ahead of a time, a custom writer is used. Initially, this writer will use a static buffer defined by the `config.response.body_buffer_size`. However, as the object is being serialized, if this static buffer runs out of space, a dynamic buffer will be allocated and the static buffer will be copied into it (at this point, the dynamic buffer essentially behaves like an `ArrayList(u8)`.
+
+As a general rule, I'd suggest making sure `config.response.body_buffer_size` is large enough to fit 99% of your responses. As an alternative, you can always manage your own serialization and simply set the `res.content_type` and `res_body` fields.
+
+## Dynamic Content
+Besides helpers like `json`, you can use the `res.arena` to create dynamic content:
+
+```zig
+const query = try req.query();
+const name = query.get("name") orelse "stranger";
+var out = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
+res.body = out;
+```
+
+## Header Value
+Set header values using the `res.header(NAME, VALUE) function`:
+
+```zig
+res.header("Location", "/");
+```
+
+The header name and value are sent as provided.
 
 ## Router
 You can use the `get`, `put`, `post`, `head`, `patch`, `delete` or `option` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
@@ -221,11 +257,17 @@ try httpz.listen(allocator, &router, .{
     }
     // various options for tweaking response object
     .response = .{
-        // Similar to request.buffer_size, but is currently only used for
-        // buffering the header (unlike the request one which CAN be used for
-        // body as well). This MUST be at least as big as your largest
-        // individual header+value (+4 for the colon+space and the \r\n)
-        buffer_size: usize = 4096,
+        // Used to buffer the response header.
+        // This MUST be at least as big as your largest individual header+value+4
+        // (the +4 is for for the colon+space and the \r\n)
+        header_buffer_size: usize = 4096,
+
+        // Used to buffer dynamic responses. If the response body is larger than this
+        // value, a dynamic buffer will be allocated. It's possible to set this to 0,
+        // but this should only be done if the overwhelming majority of responses
+        // are set directly using res.body = "VALUE"; and not a dynamic response
+        // generator like res.json(..);
+        body_buffer_size: usize = 32_768,
 
         // The maximum number of headers to accept. 
         // Additional headers will be silently ignored.
