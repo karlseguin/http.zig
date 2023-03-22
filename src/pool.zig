@@ -1,13 +1,11 @@
 const std = @import("std");
 const t = @import("t.zig");
-const cm = @import("concurrent_map.zig");
 
 const Mutex = std.Thread.Mutex;
 const Allocator = std.mem.Allocator;
 
 pub fn Pool(comptime E: type, comptime S: type) type {
 	const initFnPtr = *const fn (Allocator, S) anyerror!E;
-	const ConcurrentMap = cm.ConcurrentMap(usize, void);
 
 	return struct {
 		mutex: Mutex,
@@ -16,7 +14,6 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 		allocator: Allocator,
 		initFn: initFnPtr,
 		initState: S,
-		dynamic: ConcurrentMap,
 
 		const Self = @This();
 
@@ -34,7 +31,6 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 				.initState = initState,
 				.available = size,
 				.allocator = allocator,
-				.dynamic = ConcurrentMap.init(allocator),
 			};
 		}
 
@@ -44,7 +40,6 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 				e.deinit(allocator);
 				allocator.destroy(e);
 			}
-			self.dynamic.deinit();
 			allocator.free(self.items);
 		}
 
@@ -56,9 +51,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 			if (available == 0) {
 				// dont hold the lock over factory
 				m.unlock();
-				const e = try self.initFn(self.allocator, self.initState);
-				try self.dynamic.put(@ptrToInt(e), {});
-				return e;
+				return try self.initFn(self.allocator, self.initState);
 			}
 			const index = available - 1;
 			const e = items[index];
@@ -68,11 +61,6 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 		}
 
 		pub fn release(self: *Self, e: E) void {
-			_ = self.dynamic.remove(@ptrToInt(e));
-
-			// Even if this was a dynamically created item, we'll add it back
-			// to the pool [if there's space]
-
 			var m = self.mutex;
 			m.lock();
 
