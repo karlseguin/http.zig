@@ -9,7 +9,6 @@ pub const KeyValue = struct {
 	len: usize,
 	keys: [][]const u8,
 	values: [][]const u8,
-	allocator: Allocator,
 
 	const Self = @This();
 
@@ -20,13 +19,12 @@ pub const KeyValue = struct {
 			.len = 0,
 			.keys = keys,
 			.values = values,
-			.allocator = allocator,
 		};
 	}
 
-	pub fn deinit(self: *Self) void {
-		self.allocator.free(self.keys);
-		self.allocator.free(self.values);
+	pub fn deinit(self: *Self, allocator: Allocator) void {
+		allocator.free(self.keys);
+		allocator.free(self.values);
 	}
 
 	pub fn add(self: *Self, key: []const u8, value: []const u8) void {
@@ -70,7 +68,7 @@ test "key_value: get" {
 	kv.add(key, "application/json2");
 	try t.expectEqual(@as(?[]const u8, "application/json2"), kv.get("content-type"));
 
-	kv.deinit();
+	kv.deinit(t.allocator);
 	allocator.free(key);
 }
 
@@ -89,7 +87,7 @@ test "key_value: ignores beyond max" {
 	try t.expectEqual(@as(?[]const u8, "www"), kv.get("host"));
 	try t.expectEqual(@as(?[]const u8, null), kv.get("authorization"));
 
-	kv.deinit();
+	kv.deinit(t.allocator);
 	t.clearMutableString(n1);
 	t.clearMutableString(n2);
 	t.clearMutableString(n3);

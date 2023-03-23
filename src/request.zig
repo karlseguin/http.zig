@@ -119,9 +119,9 @@ pub const Request = struct {
 	};
 
 	pub fn deinit(self: *Self, allocator: Allocator) void {
-		self.qs.deinit();
-		self.params.deinit();
-		self.headers.deinit();
+		self.qs.deinit(allocator);
+		self.params.deinit(allocator);
+		self.headers.deinit(allocator);
 		allocator.free(self.static);
 	}
 

@@ -15,7 +15,6 @@ pub const Params = struct {
 	len: usize,
 	names: [][]const u8,
 	values: [][]const u8,
-	allocator: Allocator,
 
 	const Self = @This();
 
@@ -26,13 +25,12 @@ pub const Params = struct {
 			.len = 0,
 			.names = names,
 			.values = values,
-			.allocator = allocator,
 		};
 	}
 
-	pub fn deinit(self: *Self) void {
-		self.allocator.free(self.names);
-		self.allocator.free(self.values);
+	pub fn deinit(self: *Self, allocator: Allocator) void {
+		allocator.free(self.names);
+		allocator.free(self.values);
 	}
 
 	pub fn addValue(self: *Self, value: []const u8) void {
@@ -92,5 +90,5 @@ test "params: get" {
 	params.addNames(names[0..1]);
 	try t.expectEqual(@as(?[]const u8, "!9000!"), params.get("over"));
 
-	params.deinit();
+	params.deinit(t.allocator);
 }
