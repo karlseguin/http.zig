@@ -12,10 +12,11 @@ fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var server = try httpz.Server().init(allocator,  .{.port = 5882});
+    var server = try httpz.Server().init(allocator, .{.port = 5882});
     
     // overwrite the default notFound handler
     server.notFound(notFound);
+
     // overwrite the default error handler
     server.errorHandler(errorHandler); 
 
@@ -73,7 +74,7 @@ router.get("/api/users/:user_id/favorite/:id", user.getFavorite);
 Then we could access the `user_id` and `id` via:
 
 ```zig
-pub fn getFavorite(req *http.Request, res: *http.Response, _ctx: C) !void {
+pub fn getFavorite(req *http.Request, res: *http.Response) !void {
     const user_id = req.param("user_id").?;
     const favorite_id = req.param("id").?;
     ...
@@ -326,7 +327,7 @@ fn increment(_: *httpz.Request, res: *httpz.Response, ctx: *ContextDemo) !void {
 }
 ```
 
-When `ServerCtx` is used, the `init` function as well as all actions, including the `notFound` and `errorHandler` take the 1 additional parameter: your application specific context.
+When `ServerCtx` is used, the `init` function as well as all actions, including the `notFound` and `errorHandler` take 1 additional parameter: your application specific context.
 
 If you plan on mutating your context within actions, you must do your own locking, as `increment` does above.
 
