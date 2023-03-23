@@ -1,41 +1,58 @@
 const std = @import("std");
 const httpz = @import("httpz");
 
+const Allocator = std.mem.Allocator;
+
 pub fn main() !void {
 	var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 	const allocator = gpa.allocator();
 
-	var server = try httpz.Server(void).init(allocator, {}, .{});
-	var router = server.router();
-	router.get("/", index);
-	router.get("/hello", hello);
-	router.get("/json/hello/:name", json);
-	router.get("/writer/hello/:name", writer);
-	try server.listen();
+	// This is a server with no context. It's started in a separate thread
+	// (so that we can start 2 servers, and to show how to start the server
+	// in a separate thread)
+	var server1 = try httpz.Server().init(allocator, .{.pool_size = 10});
+	var router1 = server1.router();
+	router1.get("/", index);
+	router1.get("/hello", hello);
+	router1.get("/json/hello/:name", json);
+	router1.get("/writer/hello/:name", writer);
+	const thread1 = try server1.listenInNewThread();
+
+	// This is a server with a context. It's started on the main thread
+	// (thus blocking the thread).
+	var ctx = ContextDemo{};
+	var server2 = try httpz.ServerCtx(*ContextDemo).init(allocator, .{.pool_size = 10, .port = 5883}, &ctx);
+	var router2 = server2.router();
+	router2.get("/increment", increment);
+	try server2.listen();
+
+	// for completeleness, let's block on thread1;
+	thread1.join();
 }
 
-fn index(_: *httpz.Request, res: *httpz.Response, _: void) !void {
+fn index(_: *httpz.Request, res: *httpz.Response) !void {
 	res.body = \\<!DOCTYPE html>
 	\\ <ul>
 	\\ <li><a href="/hello?name=Teg">/hello?name=Teg</a>
 	\\ <li><a href="/json/hello/Duncan">/json/hello/Duncan</a>
 	\\ <li><a href="/writer/hello/Ghanima">/writer/hello/Ghanima</a>
+	\\ <li><a href="http://localhost:5883/increment">http://localhost:5883/increment</a>
 	;
 }
 
-fn hello(req: *httpz.Request, res: *httpz.Response, _: void) !void {
+fn hello(req: *httpz.Request, res: *httpz.Response) !void {
 	const query = try req.query();
 	const name = query.get("name") orelse "stranger";
 	var out = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
 	res.body = out;
 }
 
-fn json(req: *httpz.Request, res: *httpz.Response, _: void) !void {
+fn json(req: *httpz.Request, res: *httpz.Response) !void {
 	const name = req.param("name").?;
 	try res.json(.{.hello = name});
 }
 
-fn writer(req: *httpz.Request, res: *httpz.Response, _: void) !void {
+fn writer(req: *httpz.Request, res: *httpz.Response) !void {
 	res.content_type = httpz.ContentType.JSON;
 
 	const name = req.param("name").?;
@@ -45,3 +62,20 @@ fn writer(req: *httpz.Request, res: *httpz.Response, _: void) !void {
 	try ws.emitString(name);
 	try ws.endObject();
 }
+
+// this route is used for the demoContextServer
+fn increment(_: *httpz.Request, res: *httpz.Response, ctx: *ContextDemo) !void {
+	ctx.l.lock();
+	var hits = ctx.hits + 1;
+	ctx.hits = hits;
+	ctx.l.unlock();
+
+	res.content_type = httpz.ContentType.TEXT;
+	var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
+	res.body = out;
+}
+
+const ContextDemo = struct {
+	hits: usize = 0,
+	l: std.Thread.Mutex = .{},
+};

@@ -10,7 +10,7 @@ const Allocator = std.mem.Allocator;
 const StringHashMap = std.StringHashMap;
 
 pub fn Router(comptime C: type) type {
-	const Action = *const fn(req: *Request, res: *Response, ctx: C) anyerror!void;
+	const Action = httpz.Action(C);
 
 	return struct {
 		_allocator: Allocator,

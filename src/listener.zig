@@ -3,8 +3,6 @@ const builtin = @import("builtin");
 
 const t = @import("t.zig");
 const httpz = @import("httpz.zig");
-const request = @import("request.zig");
-const response = @import("response.zig");
 
 const Pool = @import("pool.zig").Pool;
 const Config = @import("config.zig").Config;
@@ -102,7 +100,7 @@ pub fn Handler(comptime C: type) type {
 	return struct {
 		ctx: C,
 		router: httpz.Router(C),
-		errorHandler: *const fn(req: *httpz.Request, res: *httpz.Response, err: anyerror, ctx: C) void,
+		errorHandler: httpz.ErrorHandlerAction(C),
 
 		const Self = @This();
 
@@ -111,23 +109,33 @@ pub fn Handler(comptime C: type) type {
 			r.deinit();
 		}
 
-		pub fn handle(self: Self, stream: Stream, req: *request.Request, res: *response.Response) bool {
+		pub fn handle(self: Self, stream: Stream, req: *httpz.Request, res: *httpz.Response) bool {
 			const router = self.router;
 			const action = router.route(req.method, req.url.path, &req.params);
-			action(req, res, self.ctx) catch |err| switch (err) {
+			dispatch(action, req, res, self.ctx) catch |err| switch (err) {
 				error.BodyTooBig => {
 					res.status = 431;
 					res.body = "Request body is too big";
-					res.write(stream) catch {};
+					res.write(stream) catch return false;
 				},
-				else => self.errorHandler(req, res, err, self.ctx)
+				else => {
+					if (comptime C == void) {
+						self.errorHandler(req, res, err);
+					} else {
+						self.errorHandler(req, res, err, self.ctx);
+					}
+				}
 			};
-
-			res.write(stream) catch {
-				return false;
-			};
-
+			res.write(stream) catch return false;
 			return req.canKeepAlive();
+		}
+
+		pub fn dispatch(action: httpz.Action(C), req: *httpz.Request, res: *httpz.Response, ctx: C) !void {
+			if (comptime C == void) {
+				try action(req, res);
+			} else {
+				try action(req, res, ctx);
+			}
 		}
 
 		pub fn requestParseError(_: Self, stream: Stream, err: anyerror, res: *httpz.Response) void {

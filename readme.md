@@ -12,10 +12,7 @@ fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    // The server is defined with an application-specific context. This context
-    // is passed to all handlers. Many apps won't need a context. In such cases
-    // set the context type to void, and the context value to empty '{}';
-    var server = try httpz.Server(void).init(allocator, {}, .{.post = 5882});
+    var server = try httpz.Server().init(allocator,  .{.port = 5882});
     
     // overwrite the default notFound handler
     server.notFound(notFound);
@@ -28,11 +25,11 @@ fn main() !void {
     // you can also use "all" to attach to all methods
     router.get("/api/user/:id", getUser);
 
-    // start the server, this blocks.
+    // start the server in the current thread, blocking.
     try server.listen(); 
 }
 
-fn getUser(req: *httpz.Request, res: *httpz.Response, _: void) !void {
+fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
     // status code 200 is implicit. 
 
     // The json helper will automatically set the res.content_type = httpz.ContentType.JSON;
@@ -42,7 +39,7 @@ fn getUser(req: *httpz.Request, res: *httpz.Response, _: void) !void {
     res.json(.{.name = "Teg"});
 }
 
-fn notFound(_: *httpz.Request, res: *httpz.Response, _: void) !void {
+fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
     res.status = 404;
 
     // you can set the body directly to a []u8, but note that the memory
@@ -52,7 +49,7 @@ fn notFound(_: *httpz.Request, res: *httpz.Response, _: void) !void {
 }
 
 // note that the error handler return `void` and not `!void`
-fn errorHandler(_res: *httpz.Request, res: *httpz.Response, err: anyerror, _: void) void {
+fn errorHandler(_res: *httpz.Request, res: *httpz.Response, err: anyerror) void {
     res.status = 500;
     res.body = "Internal Server Error";
     std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
@@ -204,7 +201,7 @@ Routing supports parameters, via `:CAPTURE_NAME`. The captured values are availa
 You can glob an individual path segment, or the entire path suffix. For a suffix glob, it is important that no trailing slash is present.
 
 ```zig
-// prefer using `router.notFound(not_found)` than a global glob.
+// prefer using `server.notFound(not_found)` than a global glob.
 router.all("/*", not_found);
 router.get("/api/*/debug")
 ```
@@ -299,6 +296,39 @@ try httpz.listen(allocator, &router, .{
     }
 });
 ```
+
+## Server Context
+`httpz.Server()` is a thin wrapper around `httpz.ServerCtx(void)`. This context-aware server can be used in order to pass a 3rd, application-specific, variable to every action
+
+```zig
+const ContextDemo = struct {
+    hits: usize = 0,
+    l: std.Thread.Mutex = .{},
+};
+
+pub fn main() !void {
+    var ctx = ContextDemo{};
+    var server = try httpz.ServerCtx(*ContextDemo).init(allocator, .{}, &ctx);
+    var router = server.router();
+    router.post("/increment", increment);
+    try server.listen();
+}
+
+fn increment(_: *httpz.Request, res: *httpz.Response, ctx: *ContextDemo) !void {
+    ctx.l.lock();
+    var hits = ctx.hits + 1;
+    ctx.hits = hits;
+    ctx.l.unlock();
+
+    res.content_type = httpz.ContentType.TEXT;
+    var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
+    res.body = out;
+}
+```
+
+When `ServerCtx` is used, the `init` function as well as all actions, including the `notFound` and `errorHandler` take the 1 additional parameter: your application specific context.
+
+If you plan on mutating your context within actions, you must do your own locking, as `increment` does above.
 
 # Zig Compatibility
 0.11-dev is constantly changing, but the goal is to keep this library compatible with the latest development release. Since 0.11-dev does not support async, threads are currently and there are some thread-unsafe code paths. Since this library is itself a WIP, the entire thing is considered good enough for playing/testing, and should be stable when 0.11 itself becomes more stable.
