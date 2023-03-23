@@ -94,8 +94,8 @@ pub const Request = struct {
 	const Self = @This();
 
 	// Should not be called directly, but initialized through a pool, see server.zig reqResInit
-	pub fn init(self: *Self, allocator: Allocator, arena: Allocator, config: Config) !void {
-		self.arena = arena;
+	pub fn init(self: *Self, allocator: Allocator, config: Config) !void {
+		self.arena = undefined;
 		self.stream = undefined;
 		self.max_body_size = config.max_body_size;
 		self.qs = try KeyValue.init(allocator, config.max_query_count);
@@ -149,10 +149,6 @@ pub const Request = struct {
 			return self.qs;
 		}
 		return self.parseQuery();
-	}
-
-	pub fn prepareForNewStream(self: *Self, stream: Stream) void {
-		self.stream = stream;
 	}
 
 	pub fn parse(self: *Self) !void {
@@ -809,7 +805,8 @@ test "request: fuzz" {
 		var s = t.Stream.init();
 		defer s.deinit();
 
-		request.prepareForNewStream(s);
+		request.stream = s;
+		request.arena = t.arena;
 		const number_of_requests = random.uintAtMost(u8, 10) + 1;
 		for (0..number_of_requests) |_| {
 			_ = arena.reset(.retain_capacity);
@@ -912,7 +909,8 @@ fn testParse(input: []const u8, config: Config) *Request {
 	_ = s.add(input);
 
 	var request = testRequest(config);
-	request.prepareForNewStream(s);
+	request.stream = s;
+	request.arena = t.arena;
 	request.parse() catch |err| {
 		testCleanup(request);
 		std.debug.print("\nParse Error: {}\nInput: {s}", .{err, input});
@@ -927,13 +925,13 @@ fn expectParseError(expected: Error, input: []const u8, config: Config) !void {
 
 	var request = testRequest(config);
 	defer testCleanup(request);
-	request.prepareForNewStream(s);
+	request.stream = s;
 	try t.expectError(expected, request.parse());
 }
 
 fn testRequest(config: Config, ) *Request {
 	var req = t.allocator.create(Request) catch unreachable;
-	req.init(t.allocator, t.arena, config) catch unreachable;
+	req.init(t.allocator, config) catch unreachable;
 	return req;
 }
 

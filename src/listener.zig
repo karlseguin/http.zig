@@ -72,13 +72,17 @@ pub fn handleConnection(comptime H: type, handler: H, conn: Conn, reqResPool: *R
 	const req = reqResPair.request;
 	const res = reqResPair.response;
 	var arena = reqResPair.arena;
+	var allocator = arena.allocator();
 
-	req.prepareForNewStream(stream);
+	req.stream = stream;
+	req.arena = allocator;
+	res.arena = allocator;
+	defer _ = arena.reset(.free_all);
 
 	while (true) {
 		req.reset();
 		res.reset();
-		defer _ = arena.reset(.free_all);
+		defer _ = arena.reset(.{.retain_with_limit = 8192});
 
 		if (req.parse()) {
 			if (!handler.handle(stream, req, res)) {
@@ -152,7 +156,6 @@ const RequestResponsePair = struct{
 	request: *httpz.Request,
 	response: *httpz.Response,
 	arena: std.heap.ArenaAllocator,
-	allocator: Allocator,
 
 	const Self = @This();
 
@@ -171,16 +174,14 @@ pub fn initReqRes(allocator: Allocator, config: Config) !*RequestResponsePair {
 	var pair = try allocator.create(RequestResponsePair);
 	pair.arena = std.heap.ArenaAllocator.init(allocator);
 
-	var aa = pair.arena.allocator();
 	var req = try allocator.create(httpz.Request);
-	try req.init(allocator, aa, config.request);
+	try req.init(allocator, config.request);
 
 	var res = try allocator.create(httpz.Response);
-	try res.init(allocator, aa, config.response);
+	try res.init(allocator, config.response);
 
 	pair.request = req;
 	pair.response = res;
-	pair.allocator = aa;
 	return pair;
 }
 

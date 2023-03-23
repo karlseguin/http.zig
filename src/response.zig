@@ -56,8 +56,8 @@ pub const Response = struct {
 	const Self = @This();
 
 	// Should not be called directly, but initialized through a pool
-	pub fn init(self: *Self, allocator: Allocator, arena: Allocator, config: Config) !void {
-		self.arena = arena;
+	pub fn init(self: *Self, allocator: Allocator, config: Config) !void {
+		self.arena = undefined;
 		self.headers = try KeyValue.init(allocator, config.max_header_count);
 		self.body_buffer = try allocator.alloc(u8, config.body_buffer_size);
 		self.header_buffer = try allocator.alloc(u8, config.header_buffer_size);
@@ -509,7 +509,8 @@ test "response: writer fuzz" {
 
 fn testResponse(config: Config) *Response {
 	var res = t.allocator.create(Response) catch unreachable;
-	res.init(t.allocator, t.arena, config) catch unreachable;
+	res.init(t.allocator, config) catch unreachable;
+	res.arena = t.arena;
 	return res;
 }
 
