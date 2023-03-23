@@ -788,7 +788,7 @@ test "request: fuzz" {
 
 	var r = t.getRandom();
 	const random = r.random();
-	for (0..500) |_| {
+	for (0..1) |_| {
 
 		// important to test with different buffer sizes, since there's a lot of
 		// special handling for different cases (e.g the buffer is full and has

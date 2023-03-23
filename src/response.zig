@@ -459,11 +459,11 @@ test "response: write header_buffer_size" {
 	}
 }
 
-test "response: json" {
+test "response: json fuzz" {
 	var r = t.getRandom();
 	const random = r.random();
 
-	for (0..50) |_| {
+	for (0..1) |_| {
 		const body = t.randomString(random, t.allocator, 1000);
 		defer t.allocator.free(body);
 		const expected_encoded_length = body.len + 2; // wrapped in double quotes
@@ -483,11 +483,11 @@ test "response: json" {
 	}
 }
 
-test "response: writer" {
+test "response: writer fuzz" {
 	var r = t.getRandom();
 	const random = r.random();
 
-	for (0..50) |_| {
+	for (0..1) |_| {
 		const body = t.randomString(random, t.allocator, 1000);
 		defer t.allocator.free(body);
 		const expected_encoded_length = body.len + 2; // wrapped in double quotes

@@ -5,15 +5,16 @@ pub fn main() !void {
 	var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 	const allocator = gpa.allocator();
 
-	var router = try httpz.router(allocator);
+	var server = try httpz.Server(void).init(allocator, {}, .{});
+	var router = server.router();
 	router.get("/", index);
 	router.get("/hello", hello);
 	router.get("/json/hello/:name", json);
 	router.get("/writer/hello/:name", writer);
-	try httpz.listen(allocator, &router, .{});
+	try server.listen();
 }
 
-fn index(_: *httpz.Request, res: *httpz.Response) !void {
+fn index(_: *httpz.Request, res: *httpz.Response, _: void) !void {
 	res.body = \\<!DOCTYPE html>
 	\\ <ul>
 	\\ <li><a href="/hello?name=Teg">/hello?name=Teg</a>
@@ -22,19 +23,19 @@ fn index(_: *httpz.Request, res: *httpz.Response) !void {
 	;
 }
 
-fn hello(req: *httpz.Request, res: *httpz.Response) !void {
+fn hello(req: *httpz.Request, res: *httpz.Response, _: void) !void {
 	const query = try req.query();
 	const name = query.get("name") orelse "stranger";
 	var out = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
 	res.body = out;
 }
 
-fn json(req: *httpz.Request, res: *httpz.Response) !void {
+fn json(req: *httpz.Request, res: *httpz.Response, _: void) !void {
 	const name = req.param("name").?;
 	try res.json(.{.hello = name});
 }
 
-fn writer(req: *httpz.Request, res: *httpz.Response) !void {
+fn writer(req: *httpz.Request, res: *httpz.Response, _: void) !void {
 	res.content_type = httpz.ContentType.JSON;
 
 	const name = req.param("name").?;

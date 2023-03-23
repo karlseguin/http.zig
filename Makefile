@@ -1,6 +1,6 @@
 .PHONY: t
 t:
-	zig test src/httpz.zig
+	zig build test
 
 .PHONY: s
 s:
