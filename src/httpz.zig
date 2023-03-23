@@ -135,7 +135,7 @@ test "httpz: unhandled exception" {
 	_ = stream.add("GET /fail HTTP/1.1\r\n\r\n");
 
 	var rtr = router(t.allocator) catch unreachable;
-	try rtr.get("/fail", testFail);
+	rtr.get("/fail", testFail);
 	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
 	srv.handleConnection(stream);
@@ -152,7 +152,7 @@ test "httpz: unhandled exception with custom error handler" {
 	_ = stream.add("GET /fail HTTP/1.1\r\n\r\n");
 
 	var rtr = router(t.allocator) catch unreachable;
-	try rtr.get("/fail", testFail);
+	rtr.get("/fail", testFail);
 	var srv = testServer(&rtr, .{.errorHandler = testErrorHandler});
 	defer srv.deinit();
 	srv.handleConnection(stream);
@@ -166,7 +166,7 @@ test "httpz: route params" {
 	_ = stream.add("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
 
 	var rtr = router(t.allocator) catch unreachable;
-	try rtr.all("/api/:version/users/:UserId", testParams);
+	rtr.all("/api/:version/users/:UserId", testParams);
 	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
 	srv.handleConnection(stream);
@@ -180,7 +180,7 @@ test "httpz: request and response headers" {
 	_ = stream.add("GET /test/headers HTTP/1.1\r\nHeader-Name: Header-Value\r\n\r\n");
 
 	var rtr = router(t.allocator) catch unreachable;
-	try rtr.get("/test/headers", testHeaders);
+	rtr.get("/test/headers", testHeaders);
 	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
 	srv.handleConnection(stream);
@@ -194,7 +194,7 @@ test "httpz: content-length body" {
 	_ = stream.add("GET /test/body/cl HTTP/1.1\r\nHeader-Name: Header-Value\r\nContent-Length: 4\r\n\r\nabcz");
 
 	var rtr = router(t.allocator) catch unreachable;
-	try rtr.get("/test/body/cl", testCLBody);
+	rtr.get("/test/body/cl", testCLBody);
 	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
 	srv.handleConnection(stream);
@@ -208,7 +208,7 @@ test "httpz: json response" {
 	_ = stream.add("GET /test/json HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
 	var rtr = router(t.allocator) catch unreachable;
-	try rtr.get("/test/json", testJsonRes);
+	rtr.get("/test/json", testJsonRes);
 	var srv = testServer(&rtr, .{});
 	defer srv.deinit();
 	srv.handleConnection(stream);

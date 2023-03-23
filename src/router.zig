@@ -69,35 +69,68 @@ pub fn Router(comptime A: type) type {
 			self._not_found = action;
 		}
 
-		pub fn get(self: *Self, path: []const u8, action: A) !void {
+
+		pub fn get(self: *Self, path: []const u8, action: A) void {
+			self.tryGet(path, action) catch @panic("failed to create route");
+		}
+		pub fn tryGet(self: *Self, path: []const u8, action: A) !void {
 			try addRoute(A, self._allocator, &self._get, path, action);
 		}
-		pub fn put(self: *Self, path: []const u8, action: A) !void {
+
+		pub fn put(self: *Self, path: []const u8, action: A) void {
+			self.tryPut(path, action) catch @panic("failed to create route");
+		}
+		pub fn tryPut(self: *Self, path: []const u8, action: A) !void {
 			try addRoute(A, self._allocator, &self._put, path, action);
 		}
-		pub fn post(self: *Self, path: []const u8, action: A) !void {
+
+		pub fn post(self: *Self, path: []const u8, action: A) void {
+			self.tryPost(path, action) catch @panic("failed to create route");
+		}
+		pub fn tryPost(self: *Self, path: []const u8, action: A) !void {
 			try addRoute(A, self._allocator, &self._post, path, action);
 		}
-		pub fn head(self: *Self, path: []const u8, action: A) !void {
+
+		pub fn head(self: *Self, path: []const u8, action: A) void {
+			self.tryHead(path, action) catch @panic("failed to create route");
+		}
+		pub fn tryHead(self: *Self, path: []const u8, action: A) !void {
 			try addRoute(A, self._allocator, &self._head, path, action);
 		}
-		pub fn patch(self: *Self, path: []const u8, action: A) !void {
+
+		pub fn patch(self: *Self, path: []const u8, action: A) void {
+			self.tryPatch(path, action) catch @panic("failed to create route");
+		}
+		pub fn tryPatch(self: *Self, path: []const u8, action: A) !void {
 			try addRoute(A, self._allocator, &self._patch, path, action);
 		}
-		pub fn delete(self: *Self, path: []const u8, action: A) !void {
+
+		pub fn delete(self: *Self, path: []const u8, action: A) void {
+			self.tryDelete(path, action) catch @panic("failed to create route");
+		}
+		pub fn tryDelete(self: *Self, path: []const u8, action: A) !void {
 			try addRoute(A, self._allocator, &self._delete, path, action);
 		}
-		pub fn option(self: *Self, path: []const u8, action: A) !void {
+
+		pub fn option(self: *Self, path: []const u8, action: A) void {
+			self.tryOption(path, action) catch @panic("failed to create route");
+		}
+		pub fn tryOption(self: *Self, path: []const u8, action: A) !void {
 			try addRoute(A, self._allocator, &self._options, path, action);
 		}
-		pub fn all(self: *Self, path: []const u8, action: A) !void {
-			try self.get(path, action);
-			try self.put(path, action);
-			try self.post(path, action);
-			try self.head(path, action);
-			try self.patch(path, action);
-			try self.delete(path, action);
-			try self.option(path, action);
+
+		pub fn all(self: *Self, path: []const u8, action: A) void {
+			self.tryAll(path, action) catch @panic("failed to create route");
+		}
+
+		pub fn tryAll(self: *Self, path: []const u8, action: A) !void {
+			try self.tryGet(path, action);
+			try self.tryPut(path, action);
+			try self.tryPost(path, action);
+			try self.tryHead(path, action);
+			try self.tryPatch(path, action);
+			try self.tryDelete(path, action);
+			try self.tryOption(path, action);
 		}
 	};
 }
@@ -293,10 +326,10 @@ test "route: root" {
 
 	var router = Router(u32).init(t.allocator, 9999999) catch unreachable;
 	defer router.deinit();
-	try router.get("/", 1);
-	try router.put("/", 2);
-	try router.post("", 3);
-	try router.all("/all", 4);
+	router.get("/", 1);
+	router.put("/", 2);
+	router.post("", 3);
+	router.all("/all", 4);
 
 	var _urls = [_][]const u8{"/", "/other", "/all"};
 	var urls = t.mutableStrings(_urls[0..]);
@@ -327,7 +360,7 @@ test "route: not found" {
 	var router = Router(u32).init(t.allocator, 9999999) catch unreachable;
 	defer router.deinit();
 	router.notFound(99);
-	try router.get("/one", 4);
+	router.get("/one", 4);
 
 	{
 		var url = t.mutableString("nope");
@@ -349,8 +382,8 @@ test "route: static" {
 
 	var router = Router(u32).init(t.allocator, 9999999) catch unreachable;
 	defer router.deinit();
-	try router.get("hello/world", 1);
-	try router.get("/over/9000/", 2);
+	router.get("hello/world", 1);
+	router.get("/over/9000/", 2);
 
 	{
 		var _urls = [_][]const u8{"hello/world", "/hello/world", "hello/world/", "/hello/world/"};
@@ -394,12 +427,12 @@ test "route: params" {
 
 	var router = Router(u32).init(t.allocator, 9999999) catch unreachable;
 	defer router.deinit();
-	try router.get("/:p1", 1);
-	try router.get("/users/:p2", 2);
-	try router.get("/users/:p2/fav", 3);
-	try router.get("/users/:p2/like", 4);
-	try router.get("/users/:p2/fav/:p3", 5);
-	try router.get("/users/:p2/like/:p3", 6);
+	router.get("/:p1", 1);
+	router.get("/users/:p2", 2);
+	router.get("/users/:p2/fav", 3);
+	router.get("/users/:p2/like", 4);
+	router.get("/users/:p2/fav/:p3", 5);
+	router.get("/users/:p2/like/:p3", 6);
 
 	{
 		// root param
@@ -482,10 +515,10 @@ test "route: glob" {
 
 	var router = Router(u32).init(t.allocator, 9999999) catch unreachable;
 	defer router.deinit();
-	try router.get("/*", 1);
-	try router.get("/users/*", 2);
-	try router.get("/users/*/test", 3);
-	try router.get("/users/other/test", 4);
+	router.get("/*", 1);
+	router.get("/users/*", 2);
+	router.get("/users/*/test", 3);
+	router.get("/users/other/test", 4);
 
 	{
 		// root glob
@@ -541,8 +574,8 @@ test "route: glob" {
 
 // 	var router = Router(u32).init(t.allocator, 9999999) catch unreachable;
 // 	defer router.deinit();
-// 	try router.get("/:any/users", 1);
-// 	try router.get("/hello/users/test", 2);
+// 	router.get("/:any/users", 1);
+// 	router.get("/hello/users/test", 2);
 
 // 	{
 // 		try t.expectEqual(@as(u32, 1), router.route(httpz.Method.GET, "/x/users", &params));

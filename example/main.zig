@@ -6,10 +6,10 @@ pub fn main() !void {
 	const allocator = gpa.allocator();
 
 	var router = try httpz.router(allocator);
-	try router.get("/", index);
-	try router.get("/hello", hello);
-	try router.get("/json/hello/:name", json);
-	try router.get("/writer/hello/:name", writer);
+	router.get("/", index);
+	router.get("/hello", hello);
+	router.get("/json/hello/:name", json);
+	router.get("/writer/hello/:name", writer);
 	try httpz.listen(allocator, &router, .{});
 }
 

@@ -16,7 +16,7 @@ fn main() !void {
 
     // use get/post/put/head/patch/options/delete
     // you can also use "all" to attach to all methods
-    try router.get("/api/user/:id", getUser);
+    router.get("/api/user/:id", getUser);
 
     // Overwrite the default notFound handler
     router.notFound(notFound)
@@ -37,7 +37,6 @@ fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
     res.json(.{.name = "Teg"});
 }
 
-
 fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
     res.status = 404;
 
@@ -46,7 +45,6 @@ fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
     // memory for the body.
     res.body = "Not Found";
 }
-
 
 // note that the error handler return `void` and not `!void`
 fn errorHandler(err: anyerror, _res: *httpz.Request, res: *httpz.Response) void {
@@ -67,7 +65,7 @@ The following fields are the most useful:
 The `param` method of `*Request` returns an `?[]const u8`. For example, given the following path:
 
 ```zig
-try router.get("/api/users/:user_id/favorite/:id", user.getFavorite);
+router.get("/api/users/:user_id/favorite/:id", user.getFavorite);
 ```
 
 Then we could access the `user_id` and `id` via:
@@ -82,10 +80,10 @@ pub fn getFavorite(req *http.Request, res: *http.Response) !void {
 In the above, passing any other value to `param` would return a null object (since the route associated with `getFavorite` only defines these 2 parameters). Given that routes are generally statically defined, it should not be possible for `req.param` to return an unexpected null. However, it *is* possible to define two routes to the same action:
 
 ```zig
-try router.put("/api/users/:user_id/favorite/:id", user.updateFavorite);
+router.put("/api/users/:user_id/favorite/:id", user.updateFavorite);
 
 // currently logged in user, maybe?
-try router.put("/api/use/favorite/:id", user.updateFavorite);
+router.put("/api/use/favorite/:id", user.updateFavorite);
 ```
 
 In which case the optional return value of `param` might be useful.
@@ -181,6 +179,16 @@ The header name and value are sent as provided.
 ## Router
 You can use the `get`, `put`, `post`, `head`, `patch`, `delete` or `option` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
 
+These functions can all `@panic` as they allocate memory. Each function has an equivalent `tryXYZ` variant which returns an `!void`:
+
+```zig
+// this can panic if it fails to create the route
+router.get("/", index);
+
+// this returns a !void (which you can try/catch)
+router.tryGet("/", index);
+```
+
 ### Casing
 You **must** use a lowercase route. You can use any casing with parameter names, as long as you use that same casing when getting the parameter.
 
@@ -191,16 +199,16 @@ Routing supports parameters, via `:CAPTURE_NAME`. The captured values are availa
 You can glob an individual path segment, or the entire path suffix. For a suffix glob, it is important that no trailing slash is present.
 
 ```zig
-// prefer using `try router.notFound(not_found)` than a global glob.
-try router.all("/*", not_found);
-try router.get("/api/*/debug")
+// prefer using `router.notFound(not_found)` than a global glob.
+router.all("/*", not_found);
+router.get("/api/*/debug")
 ```
 
 When multiple globs are used, the most specific will be selected. E.g., give the following two routes:
 
 ```zig
-try router.get("/*", not_found);
-try router.get("/info/*", any_info)
+router.get("/*", not_found);
+router.get("/info/*", any_info)
 ```
 
 A request for "/info/debug/all" will be routed to `any_info`, whereas a request for "/over/9000" will be routed to `not_found`.
@@ -212,8 +220,8 @@ The router has several limitations which might not get fixed. These specifically
 Given the following routes:
 
 ```zig
-try router.get("/:any/users", route1);
-try router.get("/hello/users/test", route2);
+router.get("/:any/users", route1);
+router.get("/hello/users/test", route2);
 ```
 
 You would expect a request to "/hello/users" to be routed to `route1`. However, no route will be found. 
