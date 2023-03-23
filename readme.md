@@ -12,22 +12,27 @@ fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var router = try httpz.router(allocator);
+    // The server is defined with an application-specific context. This context
+    // is passed to all handlers. Many apps won't need a context. In such cases
+    // set the context type to void, and the context value to empty '{}';
+    var server = try httpz.Server(void).init(allocator, {}, .{.post = 5882});
+    
+    // overwrite the default notFound handler
+    server.notFound(notFound);
+    // overwrite the default error handler
+    server.errorHandler(errorHandler); 
+
+    var router = server.router();
 
     // use get/post/put/head/patch/options/delete
     // you can also use "all" to attach to all methods
     router.get("/api/user/:id", getUser);
 
-    // Overwrite the default notFound handler
-    router.notFound(notFound)
-
-    try httpz.listen(allocator, &router, .{
-        .port = 5882,
-        .errorHandler = errorHandler,
-    });
+    // start the server, this blocks.
+    try server.listen(); 
 }
 
-fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
+fn getUser(req: *httpz.Request, res: *httpz.Response, _: void) !void {
     // status code 200 is implicit. 
 
     // The json helper will automatically set the res.content_type = httpz.ContentType.JSON;
@@ -37,7 +42,7 @@ fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
     res.json(.{.name = "Teg"});
 }
 
-fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
+fn notFound(_: *httpz.Request, res: *httpz.Response, _: void) !void {
     res.status = 404;
 
     // you can set the body directly to a []u8, but note that the memory
@@ -47,7 +52,7 @@ fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
 }
 
 // note that the error handler return `void` and not `!void`
-fn errorHandler(err: anyerror, _res: *httpz.Request, res: *httpz.Response) void {
+fn errorHandler(_res: *httpz.Request, res: *httpz.Response, err: anyerror, _: void) void {
     res.status = 500;
     res.body = "Internal Server Error";
     std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
@@ -71,7 +76,7 @@ router.get("/api/users/:user_id/favorite/:id", user.getFavorite);
 Then we could access the `user_id` and `id` via:
 
 ```zig
-pub fn getFavorite(req *http.Request, res: *http.Response) !void {
+pub fn getFavorite(req *http.Request, res: *http.Response, _ctx: C) !void {
     const user_id = req.param("user_id").?;
     const favorite_id = req.param("id").?;
     ...
@@ -241,8 +246,6 @@ try httpz.listen(allocator, &router, .{
 
     // the interface address to bind to
     .address = "127.0.0.1",
-
-    .errorHandler = // defaults to a basic handler that will output 500 and log the error
 
     // Minimum number of request & response objects to keep pooled
     pool_size: usize = 100,
