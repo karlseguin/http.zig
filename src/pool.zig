@@ -1,14 +1,12 @@
 const std = @import("std");
 const t = @import("t.zig");
 
-const Mutex = std.Thread.Mutex;
 const Allocator = std.mem.Allocator;
 
 pub fn Pool(comptime E: type, comptime S: type) type {
 	const initFnPtr = *const fn (Allocator, S) anyerror!E;
 
 	return struct {
-		mutex: Mutex,
 		items: []E,
 		available: usize,
 		allocator: Allocator,
@@ -25,7 +23,6 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 			}
 
 			return Self{
-				.mutex = Mutex{},
 				.items = items,
 				.initFn = initFn,
 				.initState = initState,
@@ -44,38 +41,34 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 		}
 
 		pub fn acquire(self: *Self) !E {
-			var m = self.mutex;
-			m.lock();
 			const items = self.items;
-			const available = self.available;
-			if (available == 0) {
-				// dont hold the lock over factory
-				m.unlock();
-				return try self.initFn(self.allocator, self.initState);
+
+			var available = @atomicLoad(usize, &self.available, .SeqCst);
+			while (true) {
+				if (available == 0) {
+					return try self.initFn(self.allocator, self.initState);
+				}
+				const new_availability = available - 1;
+				available = @cmpxchgWeak(usize, &self.available, available, new_availability, .SeqCst, .SeqCst) orelse return items[new_availability];
 			}
-			const index = available - 1;
-			const e = items[index];
-			self.available = index;
-			m.unlock();
-			return e;
 		}
 
 		pub fn release(self: *Self, e: E) void {
-			var m = self.mutex;
-			m.lock();
-
 			var items = self.items;
-			const available = self.available;
-			if (available == items.len) {
-				m.unlock();
-				const allocator = self.allocator;
-				e.deinit(allocator);
-				allocator.destroy(e);
-				return;
+			var available = @atomicLoad(usize, &self.available, .SeqCst);
+			while (true) {
+				const new_availability = available + 1;
+				if (available == items.len) {
+					const allocator = self.allocator;
+					e.deinit(allocator);
+					allocator.destroy(e);
+					return;
+				}
+				available = @cmpxchgWeak(usize, &self.available, available, new_availability, .SeqCst, .SeqCst) orelse {
+					items[available] = e;
+					return;
+				};
 			}
-			items[available] = e;
-			self.available = available + 1;
-			m.unlock();
 		}
 	};
 }
@@ -83,13 +76,14 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 var id: i32 = 0;
 const TestEntry = struct {
 	id: i32,
+	acquired: bool,
 	deinited: bool,
-
 
 	pub fn init(allocator: Allocator, incr: i32) !*TestEntry {
 		id += incr;
 		var entry = try allocator.create(TestEntry);
 		entry.id = id;
+		entry.acquired = false;
 		return entry;
 	}
 
@@ -99,6 +93,7 @@ const TestEntry = struct {
 };
 
 test "pool: acquires & release" {
+	id = 0;
 	var p = try Pool(*TestEntry, i32).init(t.allocator, 2, TestEntry.init, 5);
 	defer p.deinit();
 
@@ -125,4 +120,32 @@ test "pool: acquires & release" {
 
 	p.release(e1);
 	// TODO: how to test that e1 was properly released?
+}
+
+test "pool: threadsafety" {
+	id = 0;
+	var p = try Pool(*TestEntry, i32).init(t.allocator, 4, TestEntry.init, 1);
+	defer p.deinit();
+
+	const t1 = try std.Thread.spawn(.{}, testPool, .{&p});
+	const t2 = try std.Thread.spawn(.{}, testPool, .{&p});
+	const t3 = try std.Thread.spawn(.{}, testPool, .{&p});
+	const t4 = try std.Thread.spawn(.{}, testPool, .{&p});
+	const t5 = try std.Thread.spawn(.{}, testPool, .{&p});
+
+	t1.join(); t2.join(); t3.join(); t4.join(); t5.join();
+}
+
+fn testPool(p: *Pool(*TestEntry, i32)) void {
+	var r = t.getRandom();
+	const random = r.random();
+
+	for (0..5000) |_| {
+		var e = p.acquire() catch unreachable;
+		std.debug.assert(e.acquired == false);
+		e.acquired = true;
+		std.time.sleep(random.uintAtMost(u32, 100000));
+		e.acquired = false;
+		p.release(e);
+	}
 }
