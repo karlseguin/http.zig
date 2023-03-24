@@ -15,10 +15,10 @@ const Conn = if (builtin.is_test) *t.Stream else std.net.StreamServer.Connection
 const os = std.os;
 const net = std.net;
 
-const ReqResPool = Pool(*RequestResponsePair, Config);
+const ReqResPool = Pool(*RequestResponsePair, RequestResponsePairConfig);
 
 pub fn listen(comptime H: type, allocator: Allocator, handler: H, config: Config) !void {
-	var reqResPool = try initReqResPool(allocator, config);
+	var reqResPool = try initReqResPool(allocator, allocator, config);
 	var socket = net.StreamServer.init(.{
 		.reuse_address = true,
 		.kernel_backlog = 1024,
@@ -53,8 +53,12 @@ pub fn listen(comptime H: type, allocator: Allocator, handler: H, config: Config
 	}
 }
 
-pub fn initReqResPool(allocator: Allocator, config: Config) !ReqResPool {
-	return try ReqResPool.init(allocator, config.pool_size, initReqRes, config);
+pub fn initReqResPool(allocator: Allocator, arena_child: Allocator, config: Config) !ReqResPool {
+	return try ReqResPool.init(allocator, config.pool_size, initReqRes, .{
+		.config = config,
+		.allocator = allocator,
+		.arena_child = arena_child,
+	});
 }
 
 pub fn handleConnection(comptime H: type, handler: H, conn: Conn, reqResPool: *ReqResPool) void {
@@ -177,16 +181,24 @@ const RequestResponsePair = struct{
 	}
 };
 
+const RequestResponsePairConfig = struct {
+	config: Config,
+	allocator: Allocator,
+	arena_child: Allocator,
+};
+
 // Should not be called directly, but initialized through a pool
-pub fn initReqRes(allocator: Allocator, config: Config) !*RequestResponsePair {
+pub fn initReqRes(c: RequestResponsePairConfig) !*RequestResponsePair {
+	const allocator = c.allocator;
 	var pair = try allocator.create(RequestResponsePair);
-	pair.arena = std.heap.ArenaAllocator.init(allocator);
+
+	pair.arena = std.heap.ArenaAllocator.init(c.arena_child);
 
 	var req = try allocator.create(httpz.Request);
-	try req.init(allocator, config.request);
+	try req.init(allocator, c.config.request);
 
 	var res = try allocator.create(httpz.Response);
-	try res.init(allocator, config.response);
+	try res.init(allocator, c.config.response);
 
 	pair.request = req;
 	pair.response = res;

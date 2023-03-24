@@ -4,7 +4,7 @@ const t = @import("t.zig");
 const Allocator = std.mem.Allocator;
 
 pub fn Pool(comptime E: type, comptime S: type) type {
-	const initFnPtr = *const fn (Allocator, S) anyerror!E;
+	const initFnPtr = *const fn (S) anyerror!E;
 
 	return struct {
 		items: []E,
@@ -19,7 +19,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 			const items = try allocator.alloc(E, size);
 
 			for (0..size) |i| {
-				items[i] = try initFn(allocator, initState);
+				items[i] = try initFn(initState);
 			}
 
 			return Self{
@@ -46,7 +46,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 			var available = @atomicLoad(usize, &self.available, .SeqCst);
 			while (true) {
 				if (available == 0) {
-					return try self.initFn(self.allocator, self.initState);
+					return try self.initFn(self.initState);
 				}
 				const new_availability = available - 1;
 				available = @cmpxchgWeak(usize, &self.available, available, new_availability, .SeqCst, .SeqCst) orelse return items[new_availability];
@@ -79,9 +79,9 @@ const TestEntry = struct {
 	acquired: bool,
 	deinited: bool,
 
-	pub fn init(allocator: Allocator, incr: i32) !*TestEntry {
+	pub fn init(incr: i32) !*TestEntry {
 		id += incr;
-		var entry = try allocator.create(TestEntry);
+		var entry = try t.allocator.create(TestEntry);
 		entry.id = id;
 		entry.acquired = false;
 		return entry;
