@@ -273,6 +273,18 @@ test "httpz: json response" {
 	try t.expectString("HTTP/1.1 201\r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", stream.received.items);
 }
 
+test "httpz: query" {
+	var stream = t.Stream.init();
+	defer stream.deinit();
+	_ = stream.add("GET /test/query?fav=keemun%20te%61%21 HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+	var srv = Server().init(t.allocator, .{}) catch unreachable;
+	srv.router().get("/test/query", testReqQuery);
+	testRequest(void, &srv, stream);
+
+	try t.expectString("HTTP/1.1 200\r\nContent-Length: 11\r\n\r\nkeemun tea!", stream.received.items);
+}
+
 fn testRequest(comptime C: type, srv: *ServerCtx(C), stream: *t.Stream) void {
 	var reqResPool = listener.initReqResPool(t.allocator, .{
 		.pool_size = 2,
@@ -308,6 +320,12 @@ fn testCLBody(req: *Request, res: *Response, _: u32) !void {
 fn testJsonRes(_: *Request, res: *Response) !void {
 	res.status = 201;
 	try res.json(.{.over = 9000, .teg = "soup" });
+}
+
+fn testReqQuery(req: *Request, res: *Response) !void {
+	res.status = 200;
+	const query = try req.query();
+	res.body = query.get("fav").?;
 }
 
 fn testNotFound(_: *Request, res: *Response, ctx: u32) !void {

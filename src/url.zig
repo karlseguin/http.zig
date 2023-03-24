@@ -1,5 +1,29 @@
 const std = @import("std");
 const t = @import("t.zig");
+const Allocator = std.mem.Allocator;
+
+const ENC_20 = @bitCast(u16, [2]u8{'2', '0'});
+const ENC_21 = @bitCast(u16, [2]u8{'2', '1'});
+const ENC_22 = @bitCast(u16, [2]u8{'2', '2'});
+const ENC_23 = @bitCast(u16, [2]u8{'2', '3'});
+const ENC_24 = @bitCast(u16, [2]u8{'2', '4'});
+const ENC_25 = @bitCast(u16, [2]u8{'2', '5'});
+const ENC_26 = @bitCast(u16, [2]u8{'2', '6'});
+const ENC_27 = @bitCast(u16, [2]u8{'2', '7'});
+const ENC_28 = @bitCast(u16, [2]u8{'2', '8'});
+const ENC_29 = @bitCast(u16, [2]u8{'2', '9'});
+const ENC_2A = @bitCast(u16, [2]u8{'2', 'A'});
+const ENC_2B = @bitCast(u16, [2]u8{'2', 'B'});
+const ENC_2C = @bitCast(u16, [2]u8{'2', 'C'});
+const ENC_2F = @bitCast(u16, [2]u8{'2', 'F'});
+const ENC_3A = @bitCast(u16, [2]u8{'3', 'A'});
+const ENC_3B = @bitCast(u16, [2]u8{'3', 'B'});
+const ENC_3D = @bitCast(u16, [2]u8{'3', 'D'});
+const ENC_3F = @bitCast(u16, [2]u8{'3', 'F'});
+const ENC_40 = @bitCast(u16, [2]u8{'4', '0'});
+const ENC_5B = @bitCast(u16, [2]u8{'5', 'B'});
+const ENC_5D = @bitCast(u16, [2]u8{'5', 'D'});
+
 
 pub const Url = struct {
 	raw: []const u8,
@@ -32,7 +56,99 @@ pub const Url = struct {
 			.query = "",
 		};
 	}
+
+	// std.Url.unescapeString has 2 problems
+	// First, it doesn't convert '+' -> ' '
+	// Second, it _always_ allocates a new string even if nothing needs to be escaped
+	pub fn unescape(allocator: Allocator, input: []const u8) ![]const u8 {
+		var has_plus = false;
+		var unescaped_len = input.len;
+
+		var in_i: usize = 0;
+		while (in_i < input.len) {
+			const b = input[in_i];
+			if (b == '%') {
+				if (in_i + 2 >= input.len or !isHex(input[in_i+1]) or !isHex(input[in_i+2])) {
+					return error.InvalidEscapeSequence;
+				}
+				in_i += 3;
+				unescaped_len -= 2;
+			}
+			else if (b == '+') {
+				has_plus = true;
+				in_i += 1;
+			} else {
+				in_i += 1;
+			}
+		}
+
+		// no encoding, and no plus? nothing to unescape
+		if (unescaped_len == input.len and !has_plus) {
+			return input;
+		}
+
+		var out = try allocator.alloc(u8, unescaped_len);
+
+		in_i = 0;
+		for (0..unescaped_len) |i| {
+			const b = input[in_i];
+			if (b == '%') {
+				const enc = input[in_i+1..in_i+3];
+				out[i] = switch (@bitCast(u16, enc[0..2].*)) {
+					ENC_20 => ' ',
+					ENC_21 => '!',
+					ENC_22 => '"',
+					ENC_23 => '#',
+					ENC_24 => '$',
+					ENC_25 => '%',
+					ENC_26 => '&',
+					ENC_27 => '\'',
+					ENC_28 => '(',
+					ENC_29 => ')',
+					ENC_2A => '*',
+					ENC_2B => '+',
+					ENC_2C => ',',
+					ENC_2F => '/',
+					ENC_3A => ':',
+					ENC_3B => ';',
+					ENC_3D => '=',
+					ENC_3F => '?',
+					ENC_40 => '@',
+					ENC_5B => '[',
+					ENC_5D => ']',
+					else => unHex(enc[0]) << 4 | unHex(enc[1]),
+				};
+				in_i += 3;
+			} else if (b == '+') {
+				out[i] = ' ';
+				in_i += 1;
+			} else {
+				out[i] = b;
+				in_i += 1;
+			}
+		}
+
+		return out;
+	}
 };
+fn isHex(b: u8) bool {
+	return switch (b) {
+		'0'...'9' => true,
+		'a'...'f' => true,
+		'A'...'F' => true,
+		else => false
+	};
+}
+
+fn unHex(b: u8) u8 {
+	return switch (b) {
+		'0'...'9' => b - '0',
+		'a'...'f' => b - 'a' + 10,
+		'A'...'F' => b - 'A' + 10,
+		else => unreachable, // should never have gotten here since isHex would have failed
+	};
+}
+
 
 test "url: parse" {
 	{
@@ -74,4 +190,22 @@ test "url: parse" {
 		try t.expectString("/hello/teg", url.path);
 		try t.expectString("duncan=idaho&ghanima=atreides", url.query);
 	}
+}
+
+test "url: unescape error" {
+	var arena = std.heap.ArenaAllocator.init(t.allocator);
+	const allocator = arena.allocator();
+	defer arena.deinit();
+
+	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, "%"));
+	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, "%a"));
+	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, "%1"));
+	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, "123%45%6"));
+	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, "%zzzzz"));
+	try t.expectString("a b", try Url.unescape(allocator, "a+b"));
+	try t.expectString("a b", try Url.unescape(allocator, "a%20b"));
+
+	const input = "%5C%C3%B6%2F%20%C3%A4%C3%B6%C3%9F%20~~.adas-https%3A%2F%2Fcanvas%3A123%2F%23ads%26%26sad";
+	const expected = "\\ö/ äöß ~~.adas-https://canvas:123/#ads&&sad";
+	try t.expectString(expected, try Url.unescape(allocator, input));
 }

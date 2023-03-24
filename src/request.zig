@@ -400,11 +400,11 @@ pub const Request = struct {
 		var it = std.mem.split(u8, raw, "&");
 		while (it.next()) |pair| {
 			if (std.mem.indexOfScalar(u8, pair, '=')) |sep| {
-				const key = try std.Uri.unescapeString(allocator, pair[0..sep]);
-				const value = try std.Uri.unescapeString(allocator, pair[sep+1..]);
+				const key = try Url.unescape(allocator, pair[0..sep]);
+				const value = try Url.unescape(allocator, pair[sep+1..]);
 				qs.add(key, value);
 			} else {
-				const key = try std.Uri.unescapeString(allocator, pair);
+				const key = try Url.unescape(allocator, pair);
 				qs.add(key, "");
 			}
 		}
