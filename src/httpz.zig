@@ -286,7 +286,7 @@ test "httpz: query" {
 }
 
 fn testRequest(comptime C: type, srv: *ServerCtx(C), stream: *t.Stream) void {
-	var reqResPool = listener.initReqResPool(t.allocator, .{
+	var reqResPool = listener.initReqResPool(t.allocator, t.allocator, .{
 		.pool_size = 2,
 		.request = .{.buffer_size = 4096},
 		.response = .{.body_buffer_size = 4096},
