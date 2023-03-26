@@ -234,6 +234,12 @@ pub const Request = struct {
 		return self.bd;
 	}
 
+	pub fn json(self: *Self, comptime T: type) !?T {
+		const b = try self.body() orelse return null;
+		var stream = std.json.TokenStream.init(b);
+		return try std.json.parse(T, &stream, .{.allocator = self.arena});
+	}
+
 	fn parseMethod(self: *Self, stream: Stream, buf: []u8) !ParseResult {
 		var buf_len: usize = 0;
 		while (buf_len < 4) {
@@ -771,6 +777,35 @@ test "body: content-length" {
 		defer testCleanup(r);
 		try t.expectString("Over 9001!!", (try r.body()).?);
 		try t.expectString("Over 9001!!", (try r.body()).?);
+	}
+}
+
+test "body: json" {
+	const Tea = struct {
+		type: []const u8,
+	};
+
+	{
+		// too big
+		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{.max_body_size = 16});
+		defer testCleanup(r);
+		try t.expectError(Error.BodyTooBig, r.json(Tea));
+	}
+
+	{
+		// no body
+		const r = testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
+		defer testCleanup(r);
+		try t.expectEqual(@as(?Tea, null), try r.json(Tea));
+		try t.expectEqual(@as(?Tea, null), try r.json(Tea));
+	}
+
+	{
+		// parses json
+		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
+		defer testCleanup(r);
+		try t.expectString("keemun", (try r.json(Tea)).?.type);
+		try t.expectString("keemun", (try r.json(Tea)).?.type);
 	}
 }
 

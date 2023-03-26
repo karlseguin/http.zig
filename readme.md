@@ -131,6 +131,14 @@ if (try req.body()) |body| {
 
 Like `query`, the body is internally cached and subsequent calls are fast and cannot fail. If there is no body, `body()` returns null.
 
+#### Json Body
+The `req.json(TYPE)` function is a wrapper around the `body()` function which will call `std.json.parse` on the body. This function does not consider the content-type of the request and will try to parse any body.
+
+```zig
+if (try req.json(User)) |user| {
+
+}
+````
 
 ## httpz.Response
 The following fields are the most useful:
