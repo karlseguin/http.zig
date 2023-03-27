@@ -1,3 +1,7 @@
+// Internal helpers used by this library
+// If you're looking for helpers to help you mock/test
+// httpz.Request and httpz.Response, checkout testing.zig
+// which is exposed as httpz.testing.
 const std = @import("std");
 
 const mem = std.mem;

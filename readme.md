@@ -138,7 +138,7 @@ The `req.json(TYPE)` function is a wrapper around the `body()` function which wi
 if (try req.json(User)) |user| {
 
 }
-````
+```
 
 ## httpz.Response
 The following fields are the most useful:
@@ -338,6 +338,93 @@ fn increment(_: *httpz.Request, res: *httpz.Response, ctx: *ContextDemo) !void {
 When `ServerCtx` is used, the `init` function as well as all actions, including the `notFound` and `errorHandler` take 1 additional parameter: your application specific context.
 
 If you plan on mutating your context within actions, you must do your own locking, as `increment` does above.
+
+# Testing
+The `httpz.testing` namespace exists to help application developers setup `*httpz.Requests` and assert `*httpz.Responses`.
+
+Imagine we have the following partial action:
+
+```zig
+fn search(req: *httpz.Request, res: *httpz.Response) !void {
+    const query = try req.query();
+    const search = query.get("search") orelse return missingParameter(res, "search");
+
+    // TODO ...
+}
+
+fn missingParameter(res: *httpz.Response, parameter: []const u8) !void {
+    res.status = 400;
+    return res.json(.{.@"error" = "missing parameter", .parameter = parameter});
+}
+```
+
+We have can test the above error case like so:
+
+```zig
+const ht = @import("httpz").testing;
+
+test "search: missing parameter" {
+    // init takes the same Configuration used when creating the real server
+    // but only the config.request and config.response settings have any impact
+    var web_test = ht.init(.{});
+    defer web_test.deinit();
+
+    try search(web_test.req, web_test.res);
+    try web_test.expectStatus(400);
+    try web_test.expectJson(.{.@"error" = "missing parameter", .parameter = "search"});
+}
+```
+
+## Building the test Request
+The testing structure returns from <code>httpz.testing.init</code> exposes helper functions to set param, query and query values as well as the body:
+
+```zig
+var web_test = ht.init(.{});
+defer web_test.deinit();
+
+web_test.param("id", "99382");
+web_test.query("search", "tea");
+web_test.header("Authorization", "admin");
+
+web_test.body("over 9000!");
+// OR
+web_test.json(.{.over = 9000});
+
+// at this point, web_test.req has a param value, a query string value, a header value and a body.
+```
+
+## Asserting the Response
+There are various methods to assert the response:
+
+```zig
+try web_test.expectStatus(200);
+try web_test.expectHeader("Location", "/");
+try web_test.expectHeader("Location", "/");
+try web_test.expectBody("{\"over\":9000}");
+```
+
+If the expected body is in JSON, there are two helpers available. First, to assert the entire JSON body, you can use `expectJson`:
+
+```zig
+try web_test.expectJson(.{.over = 9000});
+```
+
+Or, you can retrieve a `std.json.Value` object by calling `getJson`:
+```
+const json = try web_test.getJson();
+try std.testing.expectEqual(@as(i64, 9000), json.Object.get("over").?.Integer);
+```
+
+For more advanced validation, use the `parseResponse` function to return a structure representing the parsed response:
+
+```zig
+const res = try web_test.parsedResponse();
+try std.testing.expectEqual(@as(u16, 200), res.status);
+// use res.body for a []const u8  
+// use res.headers for a std.StringHashMap([]const u8)
+// use res.raw for the full raw response
+```
+
 
 # Zig Compatibility
 0.11-dev is constantly changing, but the goal is to keep this library compatible with the latest development release. Since 0.11-dev does not support async, threads are currently and there are some thread-unsafe code paths. Since this library is itself a WIP, the entire thing is considered good enough for playing/testing, and should be stable when 0.11 itself becomes more stable.

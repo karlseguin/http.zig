@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const t = @import("t.zig");
+pub const testing = @import("testing.zig");
 
 pub const routing = @import("router.zig");
 pub const request = @import("request.zig");
