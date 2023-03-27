@@ -7,9 +7,11 @@ const httpz = @import("httpz.zig");
 pub fn init(config: httpz.Config) Testing {
 	var req = t.allocator.create(httpz.Request) catch unreachable;
 	req.init(t.allocator, config.request) catch unreachable;
+	req.url = httpz.Url.parse("/");
 
 	var res = t.allocator.create(httpz.Response) catch unreachable;
 	res.init(t.allocator, config.response) catch unreachable;
+
 
 	return Testing{
 		.req = req,
@@ -67,15 +69,9 @@ pub const Testing = struct {
 		}
 	}
 
-	// pub fn param(self: *Self, name: []const u8, value: []const u8) void {
-	// 	// This is a big ugly, but the Param structure is optimized for how the router
-	// 	// works, so we don't have a clean API for setting 1 key=value pair. We'll
-	// 	// just dig into the internals instead
-	// 	var p = self.req.params;
-	// 	p.names[p.len] = name;
-	// 	p.values[p.len] = value;
-	// 	p.len += 1;
-	// }
+	pub fn url(self: *Self, u: []const u8) void {
+		self.req.url = httpz.Url.parse(u);
+	}
 
 	pub fn param(self: *Self, name: []const u8, value: []const u8) void {
 		// This is a big ugly, but the Param structure is optimized for how the router
@@ -226,6 +222,23 @@ test "testing: query" {
 	try t.expectString("tea", query.get("search").?);
 	try t.expectString("447", query.get("category").?);
 	try t.expectEqual(@as(?[]const u8, null), query.get("other"));
+}
+
+test "testing: empty query" {
+	var ht = init(.{});
+	defer ht.deinit();
+
+	const query = try ht.req.query();
+	try t.expectEqual(@as(usize, 0), query.len);
+}
+
+test "testing: query via url" {
+	var ht = init(.{});
+	defer ht.deinit();
+	ht.url("/hello?duncan=idaho");
+
+	const query = try ht.req.query();
+	try t.expectString("idaho", query.get("duncan").?);
 }
 
 test "testing: header" {

@@ -12,6 +12,7 @@ pub const Router = routing.Router;
 pub const Request = request.Request;
 pub const Response = response.Response;
 pub const Handler = listener.Handler;
+pub const Url = @import("url.zig").Url;
 pub const Config = @import("config.zig").Config;
 
 const Allocator = std.mem.Allocator;

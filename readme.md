@@ -393,6 +393,13 @@ web_test.json(.{.over = 9000});
 // at this point, web_test.req has a param value, a query string value, a header value and a body.
 ```
 
+As an alternative to the `query` function, the full URL can also be set. If you use `query` AND `url`, the query parameters of the URL will be ignored:
+
+```zig
+web_test.url("/power?over=9000");
+```
+
+
 ## Asserting the Response
 There are various methods to assert the response:
 
@@ -410,7 +417,8 @@ try web_test.expectJson(.{.over = 9000});
 ```
 
 Or, you can retrieve a `std.json.Value` object by calling `getJson`:
-```
+
+```zig
 const json = try web_test.getJson();
 try std.testing.expectEqual(@as(i64, 9000), json.Object.get("over").?.Integer);
 ```
