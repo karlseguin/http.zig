@@ -4,6 +4,9 @@ const std = @import("std");
 const t = @import("t.zig");
 const httpz = @import("httpz.zig");
 
+const ArrayList = std.ArrayList;
+const Allocator = std.mem.Allocator;
+
 pub fn init(config: httpz.Config) Testing {
 	var req = t.allocator.create(httpz.Request) catch unreachable;
 	req.init(t.allocator, config.request) catch unreachable;
@@ -100,7 +103,7 @@ pub const Testing = struct {
 	}
 
 	pub fn json(self: *Self, value: anytype) void {
-		var arr = std.ArrayList(u8).init(t.allocator);
+		var arr = ArrayList(u8).init(t.allocator);
 		defer arr.deinit();
 
 		std.json.stringify(value, .{}, arr.writer()) catch unreachable;
@@ -121,14 +124,22 @@ pub const Testing = struct {
 	}
 
 	pub fn expectJson(self: *Self, expected: anytype) !void {
-		var arr = std.ArrayList(u8).init(t.allocator);
-		defer arr.deinit();
-
-		const json_options = .{.string = .{.String = .{.escape_solidus = false}}};
-		try std.json.stringify(expected, json_options, arr.writer());
+		const pr = try self.parseResponse();
 
 		try self.expectHeader("Content-Type", "application/json");
-		try self.expectBody(arr.items);
+
+		var jc = JsonComparer.init(t.allocator);
+		defer jc.deinit();
+		const diffs = try jc.compare(expected, pr.body);
+		if (diffs.items.len == 0) {
+			return;
+		}
+
+		for (diffs.items, 0..) |diff, i| {
+			std.debug.print("\n==Difference #{d}==\n", .{i+1});
+			std.debug.print("  {s}: {s}\n  Left: {s}\n  Right: {s}\n", .{ diff.path, diff.err, diff.a, diff.b});
+		}
+		return error.JsonNotEqual;
 	}
 
 	pub fn expectHeader(self: *Self, name: []const u8, expected: []const u8) !void {
@@ -199,6 +210,146 @@ pub const Testing = struct {
 
 		self.parsed_response = pr;
 		return pr;
+	}
+};
+
+const JsonComparer = struct {
+	arena: std.heap.ArenaAllocator,
+
+	const Self = @This();
+
+	const Diff = struct {
+		err: []const u8,
+		path: []const u8,
+		a: []const u8,
+		b: []const u8,
+	};
+
+	fn init(allocator: Allocator) Self {
+		return .{
+			.arena = std.heap.ArenaAllocator.init(allocator),
+		};
+	}
+
+	fn deinit(self: *JsonComparer) void {
+		self.arena.deinit();
+	}
+
+	// We compare by getting the string representation of a and b
+	// and then parsing it into a std.json.ValueTree, which we can compare
+	// Either a or b might already be serialized JSON string.
+	fn compare(self: *Self, a: anytype, b: anytype) !ArrayList(Diff) {
+		const allocator = self.arena.allocator();
+		var a_bytes: []const u8 = undefined;
+		if (@TypeOf(a) != []const u8) {
+			// a isn't a string, let's serialize it
+			a_bytes = try self.stringify(a);
+		} else {
+			a_bytes = a;
+		}
+
+		var b_bytes: []const u8 = undefined;
+		if (@TypeOf(b) != []const u8) {
+			// b isn't a string, let's serialize it
+			b_bytes = try self.stringify(b);
+		} else {
+			b_bytes = b;
+		}
+
+		var a_parser = std.json.Parser.init(allocator, false);
+		const a_tree = try a_parser.parse(a_bytes);
+
+		var b_parser = std.json.Parser.init(allocator, false);
+		const b_tree = try b_parser.parse(b_bytes);
+
+		var diffs = ArrayList(Diff).init(allocator);
+		var path = ArrayList([]const u8).init(allocator);
+		try self.compareValue(a_tree.root, b_tree.root, &diffs, &path);
+		return diffs;
+	}
+
+	fn compareValue(self: *Self, a: std.json.Value, b: std.json.Value, diffs: *ArrayList(Diff), path: *ArrayList([]const u8)) !void {
+		const allocator = self.arena.allocator();
+
+		if (!std.mem.eql(u8, @tagName(a), @tagName(b))) {
+			diffs.append(self.diff("types don't match", path, @tagName(a), @tagName(b))) catch unreachable;
+			return;
+		}
+
+		switch (a) {
+			.Null => {},
+			.Bool => {
+				if (a.Bool != b.Bool) {
+					diffs.append(self.diff("not equal", path, self.format(a.Bool), self.format(b.Bool))) catch unreachable;
+				}
+			},
+			.Integer => {
+				if (a.Integer != b.Integer) {
+					diffs.append(self.diff("not equal", path, self.format(a.Integer), self.format(b.Integer))) catch unreachable;
+				}
+			},
+			.Float => {
+				if (a.Float != b.Float) {
+					diffs.append(self.diff("not equal", path, self.format(a.Float), self.format(b.Float))) catch unreachable;
+				}
+			},
+			.NumberString => {
+				if (!std.mem.eql(u8, a.NumberString, b.NumberString)) {
+					diffs.append(self.diff("not equal", path, a.NumberString, b.NumberString)) catch unreachable;
+				}
+			},
+			.String => {
+				if (!std.mem.eql(u8, a.String, b.String)) {
+					diffs.append(self.diff("not equal", path, a.String, b.String)) catch unreachable;
+				}
+			},
+			.Array => {
+				const a_len = a.Array.items.len;
+				const b_len = b.Array.items.len;
+				if (a_len != b_len) {
+					diffs.append(self.diff("array length", path, self.format(a_len), self.format(b_len))) catch unreachable;
+					return;
+				}
+				for (a.Array.items, b.Array.items, 0..) |a_item, b_item, i| {
+					try path.append(try std.fmt.allocPrint(allocator, "{d}", .{i}));
+					try self.compareValue(a_item, b_item, diffs, path);
+					_ = path.pop();
+				}
+			},
+			.Object => {
+				var it = a.Object.iterator();
+				while (it.next()) |entry| {
+					const key = entry.key_ptr.*;
+					try path.append(key);
+					if (b.Object.get(key)) |b_item| {
+						try self.compareValue(entry.value_ptr.*, b_item, diffs, path);
+					} else {
+						diffs.append(self.diff("field missing", path, key, "")) catch unreachable;
+					}
+					_ = path.pop();
+				}
+			},
+		}
+	}
+
+	fn diff(self: *Self, err: []const u8, path: *ArrayList([]const u8), a_rep: []const u8, b_rep: []const u8) Diff {
+		const full_path = std.mem.join(self.arena.allocator(), ".", path.items) catch unreachable;
+		return .{
+			.a = a_rep,
+			.b = b_rep,
+			.err = err,
+			.path = full_path,
+		};
+	}
+
+	fn stringify(self: *Self, value: anytype) ![]const u8 {
+		var arr = ArrayList(u8).init(self.arena.allocator());
+		try std.json.stringify(value, .{}, arr.writer());
+		return arr.items;
+	}
+
+	fn format(self: *Self, value: anytype) []const u8 {
+		return std.fmt.allocPrint(self.arena.allocator(), "{}", .{value}) catch unreachable;
 	}
 };
 
@@ -292,10 +443,10 @@ test "testing: expectJson" {
 	var ht = init(.{});
 	defer ht.deinit();
 	ht.res.status = 201;
-	try ht.res.json(.{.tea = "keemun"});
+	try ht.res.json(.{.tea = "keemun", .price = .{.amount = 4990, .discount = 0.1}});
 
 	try ht.expectStatus(201);
-	try ht.expectJson(.{.tea = "keemun"});
+	try ht.expectJson(.{ .price = .{.discount = 0.1, .amount = 4990}, .tea = "keemun"});
 }
 
 test "testing: getJson" {
