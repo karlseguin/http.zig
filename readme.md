@@ -37,7 +37,7 @@ fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
     // Here we're passing an inferred anonymous structure, but you can pass anytype 
     // (so long as it can be serialized using std.json.stringify)
 
-    res.json(.{.name = "Teg"});
+    try res.json(.{.id = req.param("id").?, .name = "Teg"});
 }
 
 fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
