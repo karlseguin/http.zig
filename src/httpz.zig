@@ -34,7 +34,7 @@ pub fn ErrorHandlerAction(comptime C: type) type {
 // Done this way so that Server and ServerCtx have a similar API
 pub fn Server() type {
 	return struct {
-		pub fn init(allocator: Allocator,	config: Config) !ServerCtx(void) {
+		pub fn init(allocator: Allocator, config: Config) !ServerCtx(void) {
 			return try ServerCtx(void).init(allocator, config, {});
 		}
 	};
@@ -44,7 +44,8 @@ pub fn ServerCtx(comptime C: type) type {
 	return struct {
 		config: Config,
 		handler: Handler(C),
-		allocator: Allocator,
+		app_allocator: Allocator,
+		httpz_allocator: Allocator,
 
 		const Self = @This();
 
@@ -61,7 +62,8 @@ pub fn ServerCtx(comptime C: type) type {
 			return .{
 				.config = config,
 				.handler = handler,
-				.allocator = allocator,
+				.app_allocator = allocator,
+				.httpz_allocator = allocator,
 			};
 		}
 
@@ -70,7 +72,7 @@ pub fn ServerCtx(comptime C: type) type {
 		}
 
 		pub fn listen(self: *Self) !void {
-			try listener.listen(*Handler(C), self.allocator, &self.handler, self.config);
+			try listener.listen(*Handler(C), self.httpz_allocator, self.app_allocator, &self.handler, self.config);
 		}
 
 		pub fn listenInNewThread(self: *Self) !std.Thread {

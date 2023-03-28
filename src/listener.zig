@@ -17,8 +17,8 @@ const net = std.net;
 
 const ReqResPool = Pool(*RequestResponsePair, RequestResponsePairConfig);
 
-pub fn listen(comptime H: type, allocator: Allocator, handler: H, config: Config) !void {
-	var reqResPool = try initReqResPool(allocator, allocator, config);
+pub fn listen(comptime H: type, httpz_allocator: Allocator, app_allocator: Allocator, handler: H, config: Config) !void {
+	var reqResPool = try initReqResPool(httpz_allocator, app_allocator, config);
 	var socket = net.StreamServer.init(.{
 		.reuse_address = true,
 		.kernel_backlog = 1024,
@@ -42,7 +42,7 @@ pub fn listen(comptime H: type, allocator: Allocator, handler: H, config: Config
 			const c: Conn = if (comptime builtin.is_test) undefined else conn;
 			const args = .{H, handler, c, &reqResPool};
 			if (comptime std.io.is_async) {
-				try Loop.instance.?.runDetached(allocator, handleConnection, args);
+				try Loop.instance.?.runDetached(httpz_allocator, handleConnection, args);
 			} else {
 				const thrd = try std.Thread.spawn(.{}, handleConnection, args);
 				thrd.detach();
@@ -53,11 +53,11 @@ pub fn listen(comptime H: type, allocator: Allocator, handler: H, config: Config
 	}
 }
 
-pub fn initReqResPool(allocator: Allocator, arena_child: Allocator, config: Config) !ReqResPool {
-	return try ReqResPool.init(allocator, config.pool_size, initReqRes, .{
+pub fn initReqResPool(httpz_allocator: Allocator, app_allocator: Allocator, config: Config) !ReqResPool {
+	return try ReqResPool.init(httpz_allocator, config.pool_size, initReqRes, .{
 		.config = config,
-		.allocator = allocator,
-		.arena_child = arena_child,
+		.app_allocator = app_allocator,
+		.httpz_allocator = httpz_allocator,
 	});
 }
 
@@ -183,22 +183,22 @@ const RequestResponsePair = struct{
 
 const RequestResponsePairConfig = struct {
 	config: Config,
-	allocator: Allocator,
-	arena_child: Allocator,
+	app_allocator: Allocator,
+	httpz_allocator: Allocator,
 };
 
 // Should not be called directly, but initialized through a pool
 pub fn initReqRes(c: RequestResponsePairConfig) !*RequestResponsePair {
-	const allocator = c.allocator;
-	var pair = try allocator.create(RequestResponsePair);
+	const httpz_allocator = c.httpz_allocator;
+	var pair = try httpz_allocator.create(RequestResponsePair);
 
-	pair.arena = std.heap.ArenaAllocator.init(c.arena_child);
+	pair.arena = std.heap.ArenaAllocator.init(c.app_allocator);
 
-	var req = try allocator.create(httpz.Request);
-	try req.init(allocator, c.config.request);
+	var req = try httpz_allocator.create(httpz.Request);
+	try req.init(httpz_allocator, c.config.request);
 
-	var res = try allocator.create(httpz.Response);
-	try res.init(allocator, c.config.response);
+	var res = try httpz_allocator.create(httpz.Response);
+	try res.init(httpz_allocator, c.config.response);
 
 	pair.request = req;
 	pair.response = res;
