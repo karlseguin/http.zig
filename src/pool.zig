@@ -12,6 +12,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 		allocator: Allocator,
 		initFn: initFnPtr,
 		initState: S,
+		mutex: std.Thread.Mutex,
 
 		const Self = @This();
 
@@ -28,6 +29,7 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 				.initState = initState,
 				.available = size,
 				.allocator = allocator,
+				.mutex = .{},
 			};
 		}
 
@@ -42,33 +44,35 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 
 		pub fn acquire(self: *Self) !E {
 			const items = self.items;
-
-			var available = @atomicLoad(usize, &self.available, .SeqCst);
-			while (true) {
-				if (available == 0) {
-					return try self.initFn(self.initState);
-				}
-				const new_availability = available - 1;
-				available = @cmpxchgWeak(usize, &self.available, available, new_availability, .SeqCst, .SeqCst) orelse return items[new_availability];
+			self.mutex.lock();
+			const available = self.available;
+			if (available == 0) {
+				self.mutex.unlock();
+				return try self.initFn(self.initState);
 			}
+			defer self.mutex.unlock();
+			const new_available = available - 1;
+			self.available = new_available;
+			return items[new_available];
 		}
 
 		pub fn release(self: *Self, e: E) void {
-			var items = self.items;
-			var available = @atomicLoad(usize, &self.available, .SeqCst);
-			while (true) {
-				const new_availability = available + 1;
-				if (available == items.len) {
-					const allocator = self.allocator;
-					e.deinit(allocator);
-					allocator.destroy(e);
-					return;
-				}
-				available = @cmpxchgWeak(usize, &self.available, available, new_availability, .SeqCst, .SeqCst) orelse {
-					items[available] = e;
-					return;
-				};
+			const items = self.items;
+
+			self.mutex.lock();
+			const available = self.available;
+
+			if (available == items.len) {
+				self.mutex.unlock();
+				const allocator = self.allocator;
+				e.deinit(allocator);
+				allocator.destroy(e);
+				return;
 			}
+
+			defer self.mutex.unlock();
+			items[available] = e;
+			self.available = available + 1;
 		}
 	};
 }
