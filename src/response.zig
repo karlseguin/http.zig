@@ -509,7 +509,7 @@ test "response: writer fuzz" {
 
 fn testResponse(config: Config) *Response {
 	var res = t.allocator.create(Response) catch unreachable;
-	res.init(t.allocator, config) catch unreachable;
+	res.init(t.allocator, t.allocator, config) catch unreachable;
 	res.arena = t.arena;
 	return res;
 }

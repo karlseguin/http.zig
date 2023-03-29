@@ -966,7 +966,7 @@ fn expectParseError(expected: Error, input: []const u8, config: Config) !void {
 
 fn testRequest(config: Config, ) *Request {
 	var req = t.allocator.create(Request) catch unreachable;
-	req.init(t.allocator, config) catch unreachable;
+	req.init(t.allocator, t.allocator, config) catch unreachable;
 	return req;
 }
 
