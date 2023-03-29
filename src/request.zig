@@ -94,8 +94,8 @@ pub const Request = struct {
 	const Self = @This();
 
 	// Should not be called directly, but initialized through a pool, see server.zig reqResInit
-	pub fn init(self: *Self, allocator: Allocator, config: Config) !void {
-		self.arena = undefined;
+	pub fn init(self: *Self, allocator: Allocator, arena: Allocator, config: Config) !void {
+		self.arena = arena;
 		self.stream = undefined;
 		self.max_body_size = config.max_body_size;
 		self.qs = try KeyValue.init(allocator, config.max_query_count);

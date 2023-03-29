@@ -74,17 +74,17 @@ pub fn handleConnection(comptime H: type, handler: H, conn: Conn, reqResPool: *R
 	const req = reqResPair.request;
 	const res = reqResPair.response;
 	var arena = reqResPair.arena;
-	var allocator = arena.allocator();
 
 	req.stream = stream;
-	req.arena = allocator;
-	res.arena = allocator;
 	defer _ = arena.reset(.free_all);
 
 	while (true) {
 		req.reset();
 		res.reset();
-		defer _ = arena.reset(.{.retain_with_limit = 8192});
+		// TODO: this does not work, if you keep trying to use the arena allocator
+		// after this, you'll get a segfault. It can take multiple hits before it
+		// happens, but it will happen.
+		// defer _ = arena.reset(.{.retain_with_limit = 8192});
 
 		if (req.parse()) {
 			if (!handler.handle(stream, req, res)) {
@@ -165,9 +165,10 @@ pub fn Handler(comptime C: type) type {
 // Also, both the request and response can require dynamic memory allocation.
 // Grouping them this way means we can create 1 arena per pair.
 const RequestResponsePair = struct{
+	allocator: Allocator,
 	request: *httpz.Request,
 	response: *httpz.Response,
-	arena: std.heap.ArenaAllocator,
+	arena: *std.heap.ArenaAllocator,
 
 	const Self = @This();
 
@@ -190,18 +191,25 @@ const RequestResponsePairConfig = struct {
 // Should not be called directly, but initialized through a pool
 pub fn initReqRes(c: RequestResponsePairConfig) !*RequestResponsePair {
 	const httpz_allocator = c.httpz_allocator;
-	var pair = try httpz_allocator.create(RequestResponsePair);
 
-	pair.arena = std.heap.ArenaAllocator.init(c.app_allocator);
+	var arena = try httpz_allocator.create(std.heap.ArenaAllocator);
+	arena.* = std.heap.ArenaAllocator.init(c.app_allocator);
+	const app_allocator = arena.allocator();
 
 	var req = try httpz_allocator.create(httpz.Request);
-	try req.init(httpz_allocator, c.config.request);
+	try req.init(httpz_allocator, app_allocator, c.config.request);
 
 	var res = try httpz_allocator.create(httpz.Response);
-	try res.init(httpz_allocator, c.config.response);
+	try res.init(httpz_allocator, app_allocator, c.config.response);
 
-	pair.request = req;
-	pair.response = res;
+	var pair = try httpz_allocator.create(RequestResponsePair);
+	pair.* = .{
+		.arena = arena,
+		.request = req,
+		.response = res,
+		.allocator = app_allocator,
+	};
+
 	return pair;
 }
 

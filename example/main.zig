@@ -43,8 +43,13 @@ fn index(_: *httpz.Request, res: *httpz.Response) !void {
 fn hello(req: *httpz.Request, res: *httpz.Response) !void {
 	const query = try req.query();
 	const name = query.get("name") orelse "stranger";
-	var out = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
-	res.body = out;
+
+	// One solution is to use res.arena
+	// var out = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
+	// res.body = out
+
+	// another is to use res.writer(), which might be more efficient in some cases
+	try std.fmt.format(res.writer(), "Hello {s}", .{name});
 }
 
 fn json(req: *httpz.Request, res: *httpz.Response) !void {

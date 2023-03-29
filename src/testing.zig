@@ -9,12 +9,11 @@ const Allocator = std.mem.Allocator;
 
 pub fn init(config: httpz.Config) Testing {
 	var req = t.allocator.create(httpz.Request) catch unreachable;
-	req.init(t.allocator, config.request) catch unreachable;
+	req.init(t.allocator, t.allocator, config.request) catch unreachable;
 	req.url = httpz.Url.parse("/");
 
 	var res = t.allocator.create(httpz.Response) catch unreachable;
-	res.init(t.allocator, config.response) catch unreachable;
-
+	res.init(t.allocator, t.allocator, config.response) catch unreachable;
 
 	return Testing{
 		.req = req,

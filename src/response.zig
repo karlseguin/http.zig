@@ -56,8 +56,8 @@ pub const Response = struct {
 	const Self = @This();
 
 	// Should not be called directly, but initialized through a pool
-	pub fn init(self: *Self, allocator: Allocator, config: Config) !void {
-		self.arena = undefined;
+	pub fn init(self: *Self, allocator: Allocator, arena: Allocator, config: Config) !void {
+		self.arena = arena;
 		self.headers = try KeyValue.init(allocator, config.max_header_count);
 		self.body_buffer = try allocator.alloc(u8, config.body_buffer_size);
 		self.header_buffer = try allocator.alloc(u8, config.header_buffer_size);
