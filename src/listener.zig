@@ -172,13 +172,14 @@ const RequestResponsePair = struct{
 
 	const Self = @This();
 
-	pub fn deinit(self: *Self, allocator: Allocator) void {
-		self.request.deinit(allocator);
-		allocator.destroy(self.request);
+	pub fn deinit(self: *Self, httpz_allocator: Allocator) void {
+		self.request.deinit(httpz_allocator);
+		httpz_allocator.destroy(self.request);
 
-		self.response.deinit(allocator);
-		allocator.destroy(self.response);
+		self.response.deinit(httpz_allocator);
+		httpz_allocator.destroy(self.response);
 		self.arena.deinit();
+		httpz_allocator.destroy(self.arena);
 	}
 };
 

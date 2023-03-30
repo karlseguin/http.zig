@@ -57,10 +57,21 @@ pub const Url = struct {
 		};
 	}
 
+	pub const UnescapeResult = struct {
+		// Set to the value, whether or not it required unescaped.
+		value: []const u8,
+
+		// true if the value WAS unesected AND placed in buffer
+		buffered: bool,
+	};
 	// std.Url.unescapeString has 2 problems
-	// First, it doesn't convert '+' -> ' '
-	// Second, it _always_ allocates a new string even if nothing needs to be escaped
-	pub fn unescape(allocator: Allocator, input: []const u8) ![]const u8 {
+	//   First, it doesn't convert '+' -> ' '
+	//   Second, it _always_ allocates a new string even if nothing needs to
+	//   be unescaped
+	// When we _have_ to unescape a key or value, we'll try to store the new
+	// value in our static buffer (if we have space), else we'll fallback to
+	// allocating memory in the arena.
+	pub fn unescape(allocator: Allocator, buffer: []u8, input: []const u8) !UnescapeResult {
 		var has_plus = false;
 		var unescaped_len = input.len;
 
@@ -84,10 +95,15 @@ pub const Url = struct {
 
 		// no encoding, and no plus? nothing to unescape
 		if (unescaped_len == input.len and !has_plus) {
-			return input;
+			return .{.value = input, .buffered = false};
 		}
 
-		var out = try allocator.alloc(u8, unescaped_len);
+		var out = buffer;
+		var buffered = true;
+		if (buffer.len < unescaped_len) {
+			out = try allocator.alloc(u8, unescaped_len);
+			buffered = false;
+		}
 
 		in_i = 0;
 		for (0..unescaped_len) |i| {
@@ -128,9 +144,10 @@ pub const Url = struct {
 			}
 		}
 
-		return out;
+		return .{.value = out[0..unescaped_len], .buffered = buffered};
 	}
 };
+
 fn isHex(b: u8) bool {
 	return switch (b) {
 		'0'...'9' => true,
@@ -192,20 +209,30 @@ test "url: parse" {
 	}
 }
 
-test "url: unescape error" {
+test "url: unescape" {
 	var arena = std.heap.ArenaAllocator.init(t.allocator);
 	const allocator = arena.allocator();
 	defer arena.deinit();
 
-	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, "%"));
-	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, "%a"));
-	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, "%1"));
-	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, "123%45%6"));
-	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, "%zzzzz"));
-	try t.expectString("a b", try Url.unescape(allocator, "a+b"));
-	try t.expectString("a b", try Url.unescape(allocator, "a%20b"));
+	var buffer: [10]u8 = undefined;
+
+	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, &buffer, "%"));
+	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, &buffer, "%a"));
+	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, &buffer, "%1"));
+	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, &buffer, "123%45%6"));
+	try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, &buffer, "%zzzzz"));
+
+	var res = try Url.unescape(allocator, &buffer, "a+b");
+	try t.expectString("a b", res.value);
+	try t.expectEqual(true, res.buffered);
+
+	res = try Url.unescape(allocator, &buffer, "a%20b");
+	try t.expectString("a b", res.value);
+	try t.expectEqual(true, res.buffered);
 
 	const input = "%5C%C3%B6%2F%20%C3%A4%C3%B6%C3%9F%20~~.adas-https%3A%2F%2Fcanvas%3A123%2F%23ads%26%26sad";
 	const expected = "\\ö/ äöß ~~.adas-https://canvas:123/#ads&&sad";
-	try t.expectString(expected, try Url.unescape(allocator, input));
+	res = try Url.unescape(allocator, &buffer, input);
+	try t.expectString(expected, res.value);
+	try t.expectEqual(false, res.buffered);
 }

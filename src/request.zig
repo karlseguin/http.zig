@@ -95,6 +95,7 @@ pub const Request = struct {
 
 	// Should not be called directly, but initialized through a pool, see server.zig reqResInit
 	pub fn init(self: *Self, allocator: Allocator, arena: Allocator, config: Config) !void {
+		self.pos = 0;
 		self.arena = arena;
 		self.stream = undefined;
 		self.max_body_size = config.max_body_size;
@@ -210,11 +211,14 @@ pub const Request = struct {
 			if (read == length) {
 				// we're already read the entire body into static
 				self.bd = self.static[pos..(pos+read)];
+				self.pos += read;
 				return self.bd;
 			}
 
 			var buffer = self.static[pos..];
-			if (length > buffer.len) {
+			if (buffer.len >= length ) {
+				self.pos = pos + length;
+			} else {
 				buffer = try self.arena.alloc(u8, length);
 				std.mem.copy(u8, buffer, self.static[pos..(pos+read)]);
 			}
@@ -393,6 +397,26 @@ pub const Request = struct {
 		}
 	}
 
+	// OK, this is a bit complicated.
+	// We might need to allocate memory to parse the querystring. Specifically, if
+	// there's a url-escaped component (a key or value), we need memory to store
+	// the un-escaped version. Ideally, we'd like to use our static buffer for this
+	// but, and this is where it gets complicated, we might:
+	// 1 - Not have enough space
+	// 2 - Might have over-read the header and have part (or all) of the body in there
+	// The 1st case is easy: if we have space in the static buffer, we use it. If
+	// we don't, we allocate space in our arena. The space of an un-escaped component
+	// is always < than space of the original, so we can determine this easily.
+	// The 2nd case, where the static buffer is being used by the body as well, is
+	// where things get tricky. We could try to be smart and figure out: is there
+	// a body? Did we read it all? Did we partially read it but have the length?
+	// Instead, for now, we just load the body. The net result is that whatever
+	// free space we have left in the static buffer, we can use for this.
+	// It's a simple solution and it causes virtually no overhead in the two most
+	// common cases: (1) there is no body (2) there is a body and the user want it.
+	// The only case where this makes it inefficient is where:
+	//    (there is a body AND the user doesn't want it) AND
+	//       (no keepalive OR (keepalive AND body > buffer)).
 	fn parseQuery(self: *Self) !KeyValue {
 		const raw = self.url.query;
 		if (raw.len == 0) {
@@ -400,21 +424,42 @@ pub const Request = struct {
 			return self.qs;
 		}
 
+		_ = try self.body();
+
 		var qs = &self.qs;
+		var pos = self.pos;
 		var allocator = self.arena;
+		var buffer = self.static[pos..];
 
 		var it = std.mem.split(u8, raw, "&");
 		while (it.next()) |pair| {
 			if (std.mem.indexOfScalar(u8, pair, '=')) |sep| {
-				const key = try Url.unescape(allocator, pair[0..sep]);
-				const value = try Url.unescape(allocator, pair[sep+1..]);
-				qs.add(key, value);
+				const key_res = try Url.unescape(allocator, buffer, pair[0..sep]);
+				if (key_res.buffered) {
+					const n = key_res.value.len;
+					pos += n;
+					buffer = buffer[n..];
+				}
+
+				const value_res = try Url.unescape(allocator, buffer, pair[sep+1..]);
+				if (value_res.buffered) {
+					const n = value_res.value.len;
+					pos += n;
+					buffer = buffer[n..];
+				}
+				qs.add(key_res.value, value_res.value);
 			} else {
-				const key = try Url.unescape(allocator, pair);
-				qs.add(key, "");
+				const key_res = try Url.unescape(allocator, buffer, pair);
+				if (key_res.buffered) {
+					const n = key_res.value.len;
+					pos += n;
+					buffer = buffer[n..];
+				}
+				qs.add(key_res.value, "");
 			}
 		}
 
+		self.pos = pos;
 		self.qs_read = true;
 		return self.qs;
 	}
@@ -747,7 +792,7 @@ test "request: query" {
 	}
 }
 
-test "body: content-length" {
+test "request: body content-length" {
 	{
 		// too big
 		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{.max_body_size = 9});
@@ -777,6 +822,34 @@ test "body: content-length" {
 		defer testCleanup(r);
 		try t.expectString("Over 9001!!", (try r.body()).?);
 		try t.expectString("Over 9001!!", (try r.body()).?);
+	}
+}
+
+// the query and body both (can) occupy space in our static buffer, so we want
+// to make sure they both work regardless of the order they're useds
+test "request: query & body" {
+	{
+		// query then body
+		const r = testParse("POST /?search=keemun%20tea HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{});
+		defer testCleanup(r);
+		try t.expectString("keemun tea", (try r.query()).get("search").?);
+		try t.expectString("Over 9000!", (try r.body()).?);
+
+		// results should be cached internally, but let's double check
+		try t.expectString("keemun tea", (try r.query()).get("search").?);
+		try t.expectString("Over 9000!", (try r.body()).?);
+	}
+
+	{
+		// body then query
+		const r = testParse("POST /?search=keemun%20tea HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{});
+		defer testCleanup(r);
+		try t.expectString("Over 9000!", (try r.body()).?);
+		try t.expectString("keemun tea", (try r.query()).get("search").?);
+
+		// results should be cached internally, but let's double check
+		try t.expectString("Over 9000!", (try r.body()).?);
+		try t.expectString("keemun tea", (try r.query()).get("search").?);
 	}
 }
 
@@ -906,18 +979,17 @@ test "request: fuzz" {
 				unreachable;
 			};
 
+			// assert the headers
+			var it = headers.iterator();
+			while (it.next()) |entry| {
+				try t.expectString(entry.value_ptr.*, request.header(entry.key_ptr.*).?);
+			}
 
 			// assert the querystring
 			var actualQuery = request.query() catch unreachable;
-			var it = query.iterator();
+			it = query.iterator();
 			while (it.next()) |entry| {
 				try t.expectString(entry.value_ptr.*, actualQuery.get(entry.key_ptr.*).?);
-			}
-
-			// assert the headers
-			it = headers.iterator();
-			while (it.next()) |entry| {
-				try t.expectString(entry.value_ptr.*, request.header(entry.key_ptr.*).?);
 			}
 
 			// We dont' read the body by defalt. We donly read the body when the app
