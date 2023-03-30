@@ -258,8 +258,12 @@ pub const Response = struct {
 		return .{.context = Writer.init(self)};
 	}
 
+	pub fn directWriter(self: *Self) Writer {
+		return Writer.init(self);
+	}
+
 	// writer optimized for std.json.stringify, but that can also be used as a
-	// more generic writer.
+	// more generic std.io.Writer.
 	const Writer = struct {
 		res: *Response,
 
@@ -276,6 +280,12 @@ pub const Response = struct {
 			res.body = buffer;
 			res.writer_buffer = buffer;
 			return Writer{.res = res};
+		}
+
+		pub fn truncate(self: Writer, n: usize) void {
+			var pos = self.res.pos;
+			const to_truncate = if (pos > n) n else self.res.pos;
+			self.res.pos = pos - to_truncate;
 		}
 
 		pub fn writeByte(self: Writer, b: u8) !void {
@@ -505,6 +515,28 @@ test "response: writer fuzz" {
 			try t.expectString(expected, s.received.items);
 		}
 	}
+}
+
+test "response: direct writer" {
+	var s = t.Stream.init();
+	var res = testResponse(.{});
+	defer testCleanup(res, s);
+
+	var writer = res.directWriter();
+	writer.truncate(1);
+	try writer.writeByte('[');
+	writer.truncate(4);
+	try writer.writeByte('[');
+	try writer.writeAll("12345");
+	writer.truncate(2);
+	try writer.writeByte(',');
+	try writer.writeAll("456");
+	try writer.writeByte(',');
+	writer.truncate(1);
+	try writer.writeByte(']');
+
+	try res.write(s);
+	try t.expectString("[123,456]", s.received.items);
 }
 
 fn testResponse(config: Config) *Response {
