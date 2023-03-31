@@ -50,7 +50,7 @@ fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
 }
 
 // note that the error handler return `void` and not `!void`
-fn errorHandler(_req: *httpz.Request, res: *httpz.Response, err: anyerror) void {
+fn errorHandler(req: *httpz.Request, res: *httpz.Response, err: anyerror) void {
     res.status = 500;
     res.body = "Internal Server Error";
     std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
