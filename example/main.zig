@@ -16,6 +16,7 @@ pub fn main() !void {
 	router1.get("/hello", hello);
 	router1.get("/json/hello/:name", json);
 	router1.get("/writer/hello/:name", writer);
+	std.log.info("listening on http://{s}:{d}", .{server1.config.address, server1.config.port});
 	const thread1 = try server1.listenInNewThread();
 
 	// This is a server with a context. It's started on the main thread
@@ -24,6 +25,7 @@ pub fn main() !void {
 	var server2 = try httpz.ServerCtx(*ContextDemo).init(allocator, .{.pool_size = 10, .port = 5883}, &ctx);
 	var router2 = server2.router();
 	router2.get("/increment", increment);
+	std.log.info("listening on http://{s}:{d}", .{server2.config.address, server2.config.port});
 	try server2.listen();
 
 	// for completeleness, let's block on thread1;
