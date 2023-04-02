@@ -1,6 +1,6 @@
 .PHONY: t
 t:
-	zig build test
+	zig build test -fsummary
 
 .PHONY: s
 s:
