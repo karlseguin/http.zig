@@ -536,7 +536,7 @@ test "response: direct writer" {
 	try writer.writeByte(']');
 
 	try res.write(s);
-	try t.expectString("[123,456]", s.received.items);
+	try t.expectString("HTTP/1.1 200\r\nContent-Length: 9\r\n\r\n[123,456]", s.received.items);
 }
 
 fn testResponse(config: Config) *Response {
