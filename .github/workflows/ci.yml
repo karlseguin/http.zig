@@ -8,7 +8,6 @@ jobs:
       - name: Install dependencies
         run: |
             sudo snap install zig --classic --edge
-            sudo docker pull williamyeh/wrk
             zig version
       - name: Module test
         run: zig build test

@@ -4,17 +4,9 @@ pub fn build(b: *std.Build) !void {
 	const target = b.standardTargetOptions(.{});
 	const optimize = b.standardOptimizeOption(.{});
 
-		const httpz_module = b.addModule("httpz", .{
-				.source_file = .{ .path = "src/httpz.zig" },
-		});
-
-		const lib = b.addStaticLibrary(.{
-				.name = "httpz",
-				.root_source_file = .{ .path = "src/httpz.zig" },
-				.target = target,
-				.optimize = optimize,
-		});
-		lib.install();
+	const httpz_module = b.addModule("httpz", .{
+		.source_file = .{ .path = "src/httpz.zig" },
+	});
 
 	// setup executable
 	const exe = b.addExecutable(.{
