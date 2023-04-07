@@ -15,7 +15,7 @@ fn main() !void {
     var server = try httpz.Server().init(allocator, .{.port = 5882});
     
     // overwrite the default notFound handler
-    server.notFound(notFound);
+    server.notFound(notFound, .{});
 
     // overwrite the default error handler
     server.errorHandler(errorHandler); 
@@ -24,7 +24,7 @@ fn main() !void {
 
     // use get/post/put/head/patch/options/delete
     // you can also use "all" to attach to all methods
-    router.get("/api/user/:id", getUser);
+    router.get("/api/user/:id", getUser, .{});
 
     // start the server in the current thread, blocking.
     try server.listen(); 
@@ -68,7 +68,7 @@ The following fields are the most useful:
 The `param` method of `*Request` returns an `?[]const u8`. For example, given the following path:
 
 ```zig
-router.get("/api/users/:user_id/favorite/:id", user.getFavorite);
+router.get("/api/users/:user_id/favorite/:id", user.getFavorite, .{});
 ```
 
 Then we could access the `user_id` and `id` via:
@@ -83,10 +83,10 @@ pub fn getFavorite(req *http.Request, res: *http.Response) !void {
 In the above, passing any other value to `param` would return a null object (since the route associated with `getFavorite` only defines these 2 parameters). Given that routes are generally statically defined, it should not be possible for `req.param` to return an unexpected null. However, it *is* possible to define two routes to the same action:
 
 ```zig
-router.put("/api/users/:user_id/favorite/:id", user.updateFavorite);
+router.put("/api/users/:user_id/favorite/:id", user.updateFavorite, .{});
 
 // currently logged in user, maybe?
-router.put("/api/use/favorite/:id", user.updateFavorite);
+router.put("/api/use/favorite/:id", user.updateFavorite, .{});
 ```
 
 In which case the optional return value of `param` might be useful.
@@ -212,15 +212,17 @@ The header name and value are sent as provided.
 ## Router
 You can use the `get`, `put`, `post`, `head`, `patch`, `delete` or `option` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
 
-These functions can all `@panic` as they allocate memory. Each function has an equivalent `tryXYZ` variant which returns an `!void`:
+These functions can all `@panic` as they allocate memory. Each function has an equivalent `tryXYZ` variant which will return an error rather than panicking:
 
 ```zig
 // this can panic if it fails to create the route
-router.get("/", index);
+router.get("/", index, .{});
 
 // this returns a !void (which you can try/catch)
-router.tryGet("/", index);
+router.tryGet("/", index, .{});
 ```
+
+The 3rd parameter is router configuration object. `.{}` is a Zig idiom that essentially means: use the defaults. See [Custom Dispatcher][#custom-dispatcher] for more information.
 
 ### Casing
 You **must** use a lowercase route. You can use any casing with parameter names, as long as you use that same casing when getting the parameter.
@@ -233,15 +235,15 @@ You can glob an individual path segment, or the entire path suffix. For a suffix
 
 ```zig
 // prefer using `server.notFound(not_found)` than a global glob.
-router.all("/*", not_found);
-router.get("/api/*/debug")
+router.all("/*", not_found, .{});
+router.get("/api/*/debug", .{})
 ```
 
 When multiple globs are used, the most specific will be selected. E.g., give the following two routes:
 
 ```zig
-router.get("/*", not_found);
-router.get("/info/*", any_info)
+router.get("/*", not_found, .{});
+router.get("/info/*", any_info, .{})
 ```
 
 A request for "/info/debug/all" will be routed to `any_info`, whereas a request for "/over/9000" will be routed to `not_found`.
@@ -253,8 +255,8 @@ The router has several limitations which might not get fixed. These specifically
 Given the following routes:
 
 ```zig
-router.get("/:any/users", route1);
-router.get("/hello/users/test", route2);
+router.get("/:any/users", route1, .{});
+router.get("/hello/users/test", route2, .{});
 ```
 
 You would expect a request to "/hello/users" to be routed to `route1`. However, no route will be found. 
@@ -263,6 +265,25 @@ Globs interact similarly poorly with parameters and static path segments.
 
 Resolving this issue requires keeping a stack (or visiting the routes recursively), in order to back-out of a dead-end and trying a different path.
 This seems like an unnecessarily expensive thing to do, on each request, when, in my opinion, such route hierarchies are quite uncommon. 
+
+### Custom Dispatcher
+While httpz doesn't support a traditional middleware stack, it does allow a custom dispatcher to be used on a per-route basis. A dispatcher is merely the function that calls the action. The default one is essentially:
+
+```zig
+fn dispatcher(action: httpz.Action(void), req: *httpz.Request, res: *httpz.Response) !void {
+    return action(req, res);
+}
+```
+
+A custom dispatcher does not need to invoke `action`. 
+
+The `action` type is `httpz.Action(void)` when `httpz.Server()` is used. However, if custom [Server Contexts](#server-context) are used, via `httpz.ServerCtx(T)`, then the action type will be: `httpz.Action(T)` and the dispatch will receive a 4th parameter of type T:
+
+```zig
+fn dispatcher(action: httpz.Action(*Context), req: *httpz.Request, res: *httpz.Response, ctx: *Context) !void {
+    return action(req, res, ctx);
+}
+```
 
 ## Configuration
 The third option given to `listen` is an `httpz.Config` instance. Possible values, along with their default, are:
@@ -341,7 +362,7 @@ pub fn main() !void {
     var ctx = ContextDemo{};
     var server = try httpz.ServerCtx(*ContextDemo).init(allocator, .{}, &ctx);
     var router = server.router();
-    router.post("/increment", increment);
+    router.post("/increment", increment, .{});
     try server.listen();
 }
 

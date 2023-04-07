@@ -12,10 +12,11 @@ pub fn main() !void {
 	// in a separate thread)
 	var server1 = try httpz.Server().init(allocator, .{.pool_size = 10});
 	var router1 = server1.router();
-	router1.get("/", index);
-	router1.get("/hello", hello);
-	router1.get("/json/hello/:name", json);
-	router1.get("/writer/hello/:name", writer);
+
+	router1.get("/", index, .{});
+	router1.get("/hello", hello, .{});
+	router1.get("/json/hello/:name", json, .{});
+	router1.get("/writer/hello/:name", writer, .{});
 	std.log.info("listening on http://{s}:{d}", .{server1.config.address, server1.config.port});
 	const thread1 = try server1.listenInNewThread();
 
@@ -24,7 +25,7 @@ pub fn main() !void {
 	var ctx = ContextDemo{};
 	var server2 = try httpz.ServerCtx(*ContextDemo).init(allocator, .{.pool_size = 10, .port = 5883}, &ctx);
 	var router2 = server2.router();
-	router2.get("/increment", increment);
+	router2.get("/increment", increment, .{});
 	std.log.info("listening on http://{s}:{d}", .{server2.config.address, server2.config.port});
 	try server2.listen();
 
@@ -86,3 +87,8 @@ const ContextDemo = struct {
 	hits: usize = 0,
 	l: std.Thread.Mutex = .{},
 };
+
+
+fn logMiddleware(_: *httpz.Request, _: *httpz.Response) !void {
+
+}

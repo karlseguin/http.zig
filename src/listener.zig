@@ -114,8 +114,8 @@ pub fn Handler(comptime C: type) type {
 
 		pub fn handle(self: Self, stream: Stream, req: *httpz.Request, res: *httpz.Response) bool {
 			const router = self.router;
-			const action = router.route(req.method, req.url.path, &req.params);
-			dispatch(action, req, res, self.ctx) catch |err| switch (err) {
+			const da = router.route(req.method, req.url.path, &req.params);
+			self.dispatch(da, req, res) catch |err| switch (err) {
 				error.BodyTooBig => {
 					res.status = 431;
 					res.body = "Request body is too big";
@@ -133,12 +133,11 @@ pub fn Handler(comptime C: type) type {
 			return req.canKeepAlive();
 		}
 
-		pub fn dispatch(action: httpz.Action(C), req: *httpz.Request, res: *httpz.Response, ctx: C) !void {
-			if (comptime C == void) {
-				try action(req, res);
-			} else {
-				try action(req, res, ctx);
+		fn dispatch(self: Self, da: httpz.DispatchableAction(C), req: *httpz.Request, res: *httpz.Response) !void {
+			if (C == void) {
+				return da.dispatcher(da.action, req, res);
 			}
+			return da.dispatcher(da.action, req, res, self.ctx);
 		}
 
 		pub fn requestParseError(_: Self, stream: Stream, err: anyerror, res: *httpz.Response) void {
