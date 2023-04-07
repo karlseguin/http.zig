@@ -218,7 +218,6 @@ pub const Response = struct {
 			}
 		}
 
-
 		if (self.body) |body| {
 			var b = body;
 			if (self.pos > 0) {
@@ -264,7 +263,7 @@ pub const Response = struct {
 
 	// writer optimized for std.json.stringify, but that can also be used as a
 	// more generic std.io.Writer.
-	const Writer = struct {
+	pub const Writer = struct {
 		res: *Response,
 
 		pub const Error = Allocator.Error;
@@ -284,7 +283,7 @@ pub const Response = struct {
 
 		pub fn truncate(self: Writer, n: usize) void {
 			var pos = self.res.pos;
-			const to_truncate = if (pos > n) n else self.res.pos;
+			const to_truncate = if (pos > n) n else pos;
 			self.res.pos = pos - to_truncate;
 		}
 

@@ -140,6 +140,28 @@ if (try req.json(User)) |user| {
 }
 ```
 
+#### JsonValueTree Body
+The `req.jsonValueTree()` function is a wrapper around the `body()` function which will call `std.json.Parse` on the body, returning a `!?std.jsonValueTree`. This function does not consider the content-type of the request and will try to parse any body.
+
+```zig
+if (try req.jsonValueTree()) |t| {
+    // probably want to be more defensive than this
+    const product_type = r.root.Object.get("type").?.String;
+    //...
+}
+```
+
+#### JsonObject Body
+The even more specific `jsonObject()` function will return an `std.json.ObjectMap` provided the body is a map
+
+```zig
+if (try req.jsonObject()) |t| {
+    // probably want to be more defensive than this
+    const product_type = t.get("type").?.String;
+    //...
+}
+```
+
 ## httpz.Response
 The following fields are the most useful:
 
@@ -399,7 +421,6 @@ As an alternative to the `query` function, the full URL can also be set. If you 
 web_test.url("/power?over=9000");
 ```
 
-
 ## Asserting the Response
 There are various methods to assert the response:
 
@@ -432,7 +453,6 @@ try std.testing.expectEqual(@as(u16, 200), res.status);
 // use res.headers for a std.StringHashMap([]const u8)
 // use res.raw for the full raw response
 ```
-
 
 # Zig Compatibility
 0.11-dev is constantly changing, but the goal is to keep this library compatible with the latest development release. Since 0.11-dev does not support async, threads are currently and there are some thread-unsafe code paths. Since this library is itself a WIP, the entire thing is considered good enough for playing/testing, and should be stable when 0.11 itself becomes more stable.

@@ -244,6 +244,21 @@ pub const Request = struct {
 		return try std.json.parse(T, &stream, .{.allocator = self.arena});
 	}
 
+	pub fn jsonValueTree(self: *Self) !?std.json.ValueTree {
+		const b = try self.body() orelse return null;
+		var parser = std.json.Parser.init(self.arena, false);
+		defer parser.deinit();
+		return try parser.parse(b);
+	}
+
+	pub fn jsonObject(self: *Self) !?std.json.ObjectMap {
+		const tree = try self.jsonValueTree() orelse return null;
+		switch (tree.root) {
+			.Object => |o| return o,
+			else => return null,
+		}
+	}
+
 	fn parseMethod(self: *Self, stream: Stream, buf: []u8) !ParseResult {
 		var buf_len: usize = 0;
 		while (buf_len < 4) {
@@ -879,6 +894,64 @@ test "body: json" {
 		defer testCleanup(r);
 		try t.expectString("keemun", (try r.json(Tea)).?.type);
 		try t.expectString("keemun", (try r.json(Tea)).?.type);
+	}
+}
+
+test "body: jsonValueTree" {
+	{
+		// too big
+		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{.max_body_size = 16});
+		defer testCleanup(r);
+		try t.expectError(Error.BodyTooBig, r.jsonValueTree());
+	}
+
+	{
+		// no body
+		const r = testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
+		defer testCleanup(r);
+		try t.expectEqual(@as(?std.json.ValueTree, null), try r.jsonValueTree());
+		try t.expectEqual(@as(?std.json.ValueTree, null), try r.jsonValueTree());
+	}
+
+	{
+		// parses json
+		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
+		defer testCleanup(r);
+		try t.expectString("keemun", (try r.jsonValueTree()).?.root.Object.get("type").?.String);
+		try t.expectString("keemun", (try r.jsonValueTree()).?.root.Object.get("type").?.String);
+	}
+}
+
+test "body: jsonObject" {
+	{
+		// too big
+		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{.max_body_size = 16});
+		defer testCleanup(r);
+		try t.expectError(Error.BodyTooBig, r.jsonObject());
+	}
+
+	{
+		// no body
+		const r = testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
+		defer testCleanup(r);
+		try t.expectEqual(@as(?std.json.ObjectMap, null), try r.jsonObject());
+		try t.expectEqual(@as(?std.json.ObjectMap, null), try r.jsonObject());
+	}
+
+	{
+		// not an object
+		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 7\r\n\r\n\"hello\"", .{});
+		defer testCleanup(r);
+		try t.expectEqual(@as(?std.json.ObjectMap, null), try r.jsonObject());
+		try t.expectEqual(@as(?std.json.ObjectMap, null), try r.jsonObject());
+	}
+
+	{
+		// parses json
+		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
+		defer testCleanup(r);
+		try t.expectString("keemun", (try r.jsonObject()).?.get("type").?.String);
+		try t.expectString("keemun", (try r.jsonObject()).?.get("type").?.String);
 	}
 }
 
