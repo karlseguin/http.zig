@@ -5,6 +5,9 @@ This library supports native Zig module (introduced in 0.11). Add a "httpz" depe
 
 # Usage
 
+## Simple Use Case
+The library supports both simple and complex use cases. A simple user case is shown below. It's initiated by the call to `httpz.Server()`:
+
 ```zig
 const httpz = @import("httpz");
 
@@ -54,6 +57,135 @@ fn errorHandler(req: *httpz.Request, res: *httpz.Response, err: anyerror) void {
     res.status = 500;
     res.body = "Internal Server Error";
     std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
+}
+```
+
+## Complex Use Case 1 - Shared Global Data
+The call to `httpz.Server()` is a wrapper around the more powerful `httpz.ServerCtx(G, R)`. `G` and `R` are types. `G` is the type of the global data `R` is the type of per-request data. For this use case where we only care about shared global data, we'll make G == R:
+
+```zig
+const Global = struct {
+    hits: usize = 0,
+    l: std.Thread.Mutex = .{},
+};
+
+fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    var global = Global{};
+    var server = try httpz.ServerCtx(*Global, *Global).init(allocator, .{}, &global);
+    var router = server.router();
+    router.get("/increment", increment, .{});
+    return server.listen();
+}
+
+fn increment(_: *httpz.Request, res: *httpz.Response, global: *Global) !void {
+    global.l.lock();
+    var hits = global.hits + 1;
+    global.hits = hits;
+    global.l.unlock();
+
+    res.content_type = httpz.ContentType.TEXT;
+    var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
+    res.body = out;
+}
+```
+
+There are a few important things to notice. First, the `init` function of `ServerCtx(G, R)` takes a 3rd parameter: the global data. Second, our actions now take a 3rd parameter: our global data of type G. Any custom not found handler (set via `server.notFound(...)`) or error handler(set via `server.errorHandler(errorHandler)`) must also accept this new parameter. Finally, it's up to the application to make sure that access to the global data is synchronized.
+
+## Complex Use Case 2 - Custom Dispatcher
+While httpz doesn't support traditional middleware, it does allow applications to provide their own custom dispatcher. This gives an application full control over how a request is processed. To start with, the built-in dispatcher looks something like:
+
+```zig
+fn dispatcher(action: httpz.Action(G), req: *httpz.Request, res: *httpz.Response, global: G) !void {
+    // this is how httpz maintains a simple interface when httpz.Server()
+    // is used instead of httpz.ServerCtx(G, R)
+    if (G == void) {
+        return action(req, res);
+    }
+    return action(req, res, global);
+}
+```
+
+A custom dispatch could time and log each request, apply filters to the request and response and do any middleware-like behavior before, after or around the action. Of note, the dispatcher doesn't have to call `action`.
+
+
+The dispatcher can be set globally and/or per route
+
+```zig
+var server = try httpz.Server().init(allocator, .{});
+
+// set a global dispatch for any routes defined from this point on
+server.dispatcher(mainDispatcher); 
+
+// set a dispatcher for this route
+server.router().delete("/v1/session", logout, .{.dispatcher = loggedIn}) 
+...
+
+fn mainDispatcher(action: httpz.Action(void), req: *httpz.Request, res: *httpz.Response) !void {
+    res.header("cors", "isslow");
+    return action(req, res);
+}
+
+fn loggedIn(action: httpz.Action(void), req: *httpz.Request, res: *httpz.Response) !void {
+    if (req.header("authorization")) |_auth| {
+        // TODO: make sure "auth" is valid!
+        return mainDispatcher(action, req, res);
+    }
+    res.status = 401;
+    res.body = "Not authorized";
+}
+
+fn logout(req: *httpz.Request, res: *httpz.Response) !void {
+    ...
+}
+```
+
+## Complex Use Case 3 - Per-Request Data
+We can combine what we've learned from the above two uses cases and use `ServerCtx(G, R)` where `G != R`. In this case, a dispatcher **must** be provided (failure to provide a dispatcher will result in 500 errors). This is because the dispatcher is needed to generate `R`.
+
+```zig
+const Global = struct {
+    hits: usize = 0,
+    l: std.Thread.Mutex = .{},
+};
+
+const Context = struct {
+    global: *Global,
+    user_id: ?[]const u8,
+}
+
+fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    var global = Global{};
+
+    var server = try httpz.ServerCtx(*Global, Context).init(allocator, .{});
+
+    // set a global dispatch for any routes defined from this point on
+    server.dispatcher(dispatcher); 
+
+    // again, it's possible to had per-route dispatchers
+    server.router().delete("/v1/session", logout, .{}) 
+...
+
+fn dispatcher(action: httpz.Action(Context), req: *httpz.Request, res: *httpz.Response, global: *Global) !void {
+    // If needed, req.arena is an std.mem.Allocator than can be used to allocate memory
+    // and it'll exist for the life of this request.
+
+    const context = Context{
+        .global = global,
+
+        // we shouldn't blindly trust this header!
+        .user_id = req.header("user"),
+    }
+    return action(req, res, context);
+}
+
+fn logout(req: *httpz.Request, res: *httpz.Response, context: Context) !void {
+    ...
 }
 ```
 
@@ -348,39 +480,6 @@ try httpz.listen(allocator, &router, .{
     }
 });
 ```
-
-## Server Context
-`httpz.Server()` is a thin wrapper around `httpz.ServerCtx(void)`. This context-aware server can be used in order to pass a 3rd, application-specific, variable to every action
-
-```zig
-const ContextDemo = struct {
-    hits: usize = 0,
-    l: std.Thread.Mutex = .{},
-};
-
-pub fn main() !void {
-    var ctx = ContextDemo{};
-    var server = try httpz.ServerCtx(*ContextDemo).init(allocator, .{}, &ctx);
-    var router = server.router();
-    router.post("/increment", increment, .{});
-    try server.listen();
-}
-
-fn increment(_: *httpz.Request, res: *httpz.Response, ctx: *ContextDemo) !void {
-    ctx.l.lock();
-    var hits = ctx.hits + 1;
-    ctx.hits = hits;
-    ctx.l.unlock();
-
-    res.content_type = httpz.ContentType.TEXT;
-    var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-    res.body = out;
-}
-```
-
-When `ServerCtx` is used, the `init` function as well as all actions, including the `notFound` and `errorHandler` take 1 additional parameter: your application specific context.
-
-If you plan on mutating your context within actions, you must do your own locking, as `increment` does above.
 
 # Testing
 The `httpz.testing` namespace exists to help application developers setup `*httpz.Requests` and assert `*httpz.Responses`.

@@ -53,36 +53,36 @@ pub const ContentType = enum {
 	XML,
 };
 
-pub fn Action(comptime C: type) type {
-	if (C == void) {
+pub fn Action(comptime G: type) type {
+	if (G == void) {
 		return *const fn(*Request, *Response) anyerror!void;
 	}
-	return *const fn(*Request, *Response, C) anyerror!void;
+	return *const fn(*Request, *Response, G) anyerror!void;
 }
 
-pub fn Dispatcher(comptime C: type, comptime R: type) type {
-	if (C == void and R == void) {
+pub fn Dispatcher(comptime G: type, comptime R: type) type {
+	if (G == void and R == void) {
 		return *const fn(Action(void), *Request, *Response) anyerror!void;
-	} else if (C == void) {
+	} else if (G == void) {
 		return *const fn(Action(R), *Request, *Response) anyerror!void;
 	} else if (R == void) {
-		return *const fn(Action(C), *Request, *Response, C) anyerror!void;
+		return *const fn(Action(G), *Request, *Response, G) anyerror!void;
 	}
-	return *const fn(Action(R), *Request, *Response, C) anyerror!void;
+	return *const fn(Action(R), *Request, *Response, G) anyerror!void;
 }
 
-pub fn DispatchableAction(comptime C: type, comptime R: type) type {
+pub fn DispatchableAction(comptime G: type, comptime R: type) type {
 	return struct {
 		action: Action(R),
-		dispatcher: Dispatcher(C, R),
+		dispatcher: Dispatcher(G, R),
 	};
 }
 
-fn ErrorHandlerAction(comptime C: type) type {
-	if (C == void) {
+fn ErrorHandlerAction(comptime G: type) type {
+	if (G == void) {
 		return *const fn(*Request, *Response, anyerror) void;
 	}
-	return *const fn(*Request, *Response, anyerror, C) void;
+	return *const fn(*Request, *Response, anyerror, G) void;
 }
 
 // Done this way so that Server and ServerCtx have a similar API
@@ -94,22 +94,22 @@ pub fn Server() type {
 	};
 }
 
-pub fn ServerCtx(comptime C: type, comptime R: type) type {
+pub fn ServerCtx(comptime G: type, comptime R: type) type {
 	return struct {
-		ctx: C,
+		ctx: G,
 		config: Config,
 		app_allocator: Allocator,
 		httpz_allocator: Allocator,
-		_router: Router(C, R),
-		_errorHandler: ErrorHandlerAction(C),
-		_notFoundHandler: Action(C),
+		_router: Router(G, R),
+		_errorHandler: ErrorHandlerAction(G),
+		_notFoundHandler: Action(G),
 
 		const Self = @This();
 
-		pub fn init(allocator: Allocator, config: Config, ctx: C) !Self {
-			const nfh = if (comptime C == void) defaultNotFound else defaultNotFoundWithContext;
-			const erh = if (comptime C == void) defaultErrorHandler else defaultErrorHandlerWithContext;
-			const dd = if (comptime C == void) defaultDispatcher else defaultDispatcherWithContext;
+		pub fn init(allocator: Allocator, config: Config, ctx: G) !Self {
+			const nfh = if (comptime G == void) defaultNotFound else defaultNotFoundWithContext;
+			const erh = if (comptime G == void) defaultErrorHandler else defaultErrorHandlerWithContext;
+			const dd = if (comptime G == void) defaultDispatcher else defaultDispatcherWithContext;
 
 			return .{
 				.ctx = ctx,
@@ -118,7 +118,7 @@ pub fn ServerCtx(comptime C: type, comptime R: type) type {
 				.httpz_allocator = allocator,
 				._errorHandler = erh,
 				._notFoundHandler = nfh,
-				._router = try Router(C, R).init(allocator, dd),
+				._router = try Router(G, R).init(allocator, dd),
 			};
 		}
 
@@ -127,30 +127,30 @@ pub fn ServerCtx(comptime C: type, comptime R: type) type {
 		}
 
 		pub fn listen(self: *Self) !void {
-			try listener.listen(*ServerCtx(C, R), self.httpz_allocator, self.app_allocator, self, self.config);
+			try listener.listen(*ServerCtx(G, R), self.httpz_allocator, self.app_allocator, self, self.config);
 		}
 
 		pub fn listenInNewThread(self: *Self) !std.Thread {
 			return try std.Thread.spawn(.{}, listen, .{self});
 		}
 
-		pub fn notFound(self: *Self, nfa: Action(C)) void {
+		pub fn notFound(self: *Self, nfa: Action(G)) void {
 			self._notFoundHandler = nfa;
 		}
 
-		pub fn errorHandler(self: *Self, eha: ErrorHandlerAction(C)) void {
+		pub fn errorHandler(self: *Self, eha: ErrorHandlerAction(G)) void {
 			self._errorHandler = eha;
 		}
 
-		pub fn dispatcher(self: *Self, d: Dispatcher(C, R)) void {
+		pub fn dispatcher(self: *Self, d: Dispatcher(G, R)) void {
 			(&self._router)._default_dispatcher = d;
 		}
 
-		pub fn router(self: *Self) *Router(C, R) {
+		pub fn router(self: *Self) *Router(G, R) {
 			return &self._router;
 		}
 
-		fn defaultNotFoundWithContext(req: *Request, res: *Response, _: C) !void{
+		fn defaultNotFoundWithContext(req: *Request, res: *Response, _: G) !void{
 			try defaultNotFound(req, res);
 		}
 
@@ -159,7 +159,7 @@ pub fn ServerCtx(comptime C: type, comptime R: type) type {
 			res.body = "Not Found";
 		}
 
-		fn defaultErrorHandlerWithContext(req: *Request, res: *Response, err: anyerror, _: C) void {
+		fn defaultErrorHandlerWithContext(req: *Request, res: *Response, err: anyerror, _: G) void {
 			defaultErrorHandler(req, res, err);
 		}
 
@@ -173,8 +173,8 @@ pub fn ServerCtx(comptime C: type, comptime R: type) type {
 			try action(req, res);
 		}
 
-		fn defaultDispatcherWithContext(action: Action(R), req: *Request, res: *Response, ctx: C) !void {
-			if (R == C) {
+		fn defaultDispatcherWithContext(action: Action(R), req: *Request, res: *Response, ctx: G) !void {
+			if (R == G) {
 				return action(req, res, ctx);
 			}
 			// app needs to provide a dispatcher in this case
@@ -190,7 +190,7 @@ pub fn ServerCtx(comptime C: type, comptime R: type) type {
 					res.write(stream) catch return false;
 				},
 				else => {
-					if (comptime C == void) {
+					if (comptime G == void) {
 						self._errorHandler(req, res, err);
 					} else {
 						self._errorHandler(req, res, err, self.ctx);
@@ -201,15 +201,15 @@ pub fn ServerCtx(comptime C: type, comptime R: type) type {
 			return req.canKeepAlive();
 		}
 
-		inline fn dispatch(self: Self, dispatchable_action: ?DispatchableAction(C, R), req: *Request, res: *Response) !void {
+		inline fn dispatch(self: Self, dispatchable_action: ?DispatchableAction(G, R), req: *Request, res: *Response) !void {
 			if (dispatchable_action) |da| {
-				if (C == void) {
+				if (G == void) {
 					return da.dispatcher(da.action, req, res);
 				}
 				return da.dispatcher(da.action, req, res, self.ctx);
 			}
 
-			if (C == void) {
+			if (G == void) {
 				return self._notFoundHandler(req, res);
 			}
 			return self._notFoundHandler(req, res, self.ctx);
@@ -371,7 +371,7 @@ test "httpz: custom dispatcher" {
 	try t.expectString("HTTP/1.1 200\r\nContent-Length: 17\r\n\r\ndispatcher-action", stream.received.items);
 }
 
-fn testRequest(comptime C: type, srv: *ServerCtx(C, C), stream: *t.Stream) void {
+fn testRequest(comptime G: type, srv: *ServerCtx(G, G), stream: *t.Stream) void {
 	var reqResPool = listener.initReqResPool(t.allocator, t.allocator, .{
 		.pool_size = 2,
 		.request = .{.buffer_size = 4096},
@@ -379,7 +379,7 @@ fn testRequest(comptime C: type, srv: *ServerCtx(C, C), stream: *t.Stream) void 
 	}) catch unreachable;
 	defer reqResPool.deinit();
 	defer srv.deinit();
-	listener.handleConnection(*ServerCtx(C, C), srv, stream, &reqResPool);
+	listener.handleConnection(*ServerCtx(G, G), srv, stream, &reqResPool);
 }
 
 fn testFail(_: *Request, _: *Response, _: u32) !void {

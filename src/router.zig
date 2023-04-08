@@ -9,17 +9,17 @@ const Response = @import("response.zig").Response;
 const Allocator = std.mem.Allocator;
 const StringHashMap = std.StringHashMap;
 
-pub fn Config(comptime C: type, comptime R: type) type {
-	const Dispatcher = httpz.Dispatcher(C, R);
+pub fn Config(comptime G: type, comptime R: type) type {
+	const Dispatcher = httpz.Dispatcher(G, R);
 	return struct {
 		dispatcher: ?Dispatcher = null,
 	};
 }
 
-pub fn Router(comptime C: type, comptime R: type) type {
+pub fn Router(comptime G: type, comptime R: type) type {
 	const Action = httpz.Action(R);
-	const Dispatcher = httpz.Dispatcher(C, R);
-	const DispatchableAction = httpz.DispatchableAction(C, R);
+	const Dispatcher = httpz.Dispatcher(G, R);
+	const DispatchableAction = httpz.DispatchableAction(G, R);
 
 	return struct {
 		_allocator: Allocator,
@@ -71,10 +71,10 @@ pub fn Router(comptime C: type, comptime R: type) type {
 			};
 		}
 
-		pub fn get(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
+		pub fn get(self: *Self, path: []const u8, action: Action, config: Config(G, R)) void {
 			self.tryGet(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryGet(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
+		pub fn tryGet(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
@@ -82,10 +82,10 @@ pub fn Router(comptime C: type, comptime R: type) type {
 			try addRoute(DispatchableAction, self._allocator, &self._get, path, da);
 		}
 
-		pub fn put(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
+		pub fn put(self: *Self, path: []const u8, action: Action, config: Config(G, R)) void {
 			self.tryPut(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryPut(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
+		pub fn tryPut(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
@@ -93,10 +93,10 @@ pub fn Router(comptime C: type, comptime R: type) type {
 			try addRoute(DispatchableAction, self._allocator, &self._put, path, da);
 		}
 
-		pub fn post(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
+		pub fn post(self: *Self, path: []const u8, action: Action, config: Config(G, R)) void {
 			self.tryPost(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryPost(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
+		pub fn tryPost(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
@@ -104,10 +104,10 @@ pub fn Router(comptime C: type, comptime R: type) type {
 			try addRoute(DispatchableAction, self._allocator, &self._post, path, da);
 		}
 
-		pub fn head(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
+		pub fn head(self: *Self, path: []const u8, action: Action, config: Config(G, R)) void {
 			self.tryHead(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryHead(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
+		pub fn tryHead(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
@@ -115,10 +115,10 @@ pub fn Router(comptime C: type, comptime R: type) type {
 			try addRoute(DispatchableAction, self._allocator, &self._head, path, da);
 		}
 
-		pub fn patch(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
+		pub fn patch(self: *Self, path: []const u8, action: Action, config: Config(G, R)) void {
 			self.tryPatch(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryPatch(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
+		pub fn tryPatch(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
@@ -126,10 +126,10 @@ pub fn Router(comptime C: type, comptime R: type) type {
 			try addRoute(DispatchableAction, self._allocator, &self._patch, path, da);
 		}
 
-		pub fn delete(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
+		pub fn delete(self: *Self, path: []const u8, action: Action, config: Config(G, R)) void {
 			self.tryDelete(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryDelete(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
+		pub fn tryDelete(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
@@ -137,10 +137,10 @@ pub fn Router(comptime C: type, comptime R: type) type {
 			try addRoute(DispatchableAction, self._allocator, &self._delete, path, da);
 		}
 
-		pub fn option(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
+		pub fn option(self: *Self, path: []const u8, action: Action, config: Config(G, R)) void {
 			self.tryOption(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryOption(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
+		pub fn tryOption(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
@@ -148,10 +148,10 @@ pub fn Router(comptime C: type, comptime R: type) type {
 			try addRoute(DispatchableAction, self._allocator, &self._options, path, da);
 		}
 
-		pub fn all(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
+		pub fn all(self: *Self, path: []const u8, action: Action, config: Config(G, R)) void {
 			self.tryAll(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryAll(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
+		pub fn tryAll(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			try self.tryGet(path, action, config);
 			try self.tryPut(path, action, config);
 			try self.tryPost(path, action, config);

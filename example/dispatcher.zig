@@ -10,7 +10,7 @@ const GlobalContext = struct {
 
 // our per-request data
 const RequestContext = struct {
-	user_id: ?u32,
+	user_id: ?const u8,
 	global: *GlobalContext,
 };
 
@@ -47,9 +47,11 @@ fn notAuthorized(res: *httpz.Response) void {
 
 fn dispatcher(action: httpz.Action(*RequestContext), req: *httpz.Request, res: *httpz.Response, global: *GlobalContext) !void {
 	// If we you need to allocate memory here, consider using req.arena
+
+	// this is obviously a dummy example where we just trust the "user" header
 	var ctx = RequestContext{
-		.user_id = 9001,
 		.global = global,
+		.user_id = req.header("user"),
 	};
 	return action(req, res, &ctx);
 }
