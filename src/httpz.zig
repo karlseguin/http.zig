@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const t = @import("t.zig");
 pub const testing = @import("testing.zig");
@@ -11,9 +12,9 @@ pub const response = @import("response.zig");
 pub const Router = routing.Router;
 pub const Request = request.Request;
 pub const Response = response.Response;
-pub const Handler = listener.Handler;
 pub const Url = @import("url.zig").Url;
 pub const Config = @import("config.zig").Config;
+const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
 
 const Allocator = std.mem.Allocator;
 
@@ -92,10 +93,12 @@ pub fn Server() type {
 
 pub fn ServerCtx(comptime C: type) type {
 	return struct {
+		ctx: C,
 		config: Config,
-		handler: Handler(C),
 		app_allocator: Allocator,
 		httpz_allocator: Allocator,
+		_router: Router(C),
+		_errorHandler: ErrorHandlerAction(C),
 
 		const Self = @This();
 
@@ -104,42 +107,38 @@ pub fn ServerCtx(comptime C: type) type {
 			const erh = if (comptime C == void) defaultErrorHandler else defaultErrorHandlerWithContext;
 			const dd = if (comptime C == void) defaultDispatcher else defaultDispatcherWithContext;
 
-			const handler = Handler(C){
-				.ctx = ctx,
-				.errorHandler = erh,
-				.router = try Router(C).init(allocator, dd, nfh),
-			};
-
 			return .{
+				.ctx = ctx,
 				.config = config,
-				.handler = handler,
 				.app_allocator = allocator,
 				.httpz_allocator = allocator,
+				._errorHandler = erh,
+				._router = try Router(C).init(allocator, dd, nfh),
 			};
 		}
 
 		pub fn deinit(self: *Self) void {
-			self.handler.deinit();
+			self._router.deinit();
 		}
 
 		pub fn listen(self: *Self) !void {
-			try listener.listen(*Handler(C), self.httpz_allocator, self.app_allocator, &self.handler, self.config);
+			try listener.listen(*ServerCtx(C), self.httpz_allocator, self.app_allocator, self, self.config);
 		}
 
 		pub fn listenInNewThread(self: *Self) !std.Thread {
 			return try std.Thread.spawn(.{}, listen, .{self});
 		}
 
-		pub fn router(self: *Self) *Router(C) {
-			return &self.handler.router;
-		}
-
 		pub fn notFound(self: *Self, nfa: Action(C)) void {
-			(&self.handler.router).notFound(nfa, .{});
+			self.router().notFound(nfa, .{});
 		}
 
 		pub fn errorHandler(self: *Self, eha: ErrorHandlerAction(C)) void {
-			(&self.handler).errorHandler = eha;
+			self._errorHandler = eha;
+		}
+
+		pub fn router(self: *Self) *Router(C) {
+			return &self._router;
 		}
 
 		fn defaultNotFoundWithContext(req: *Request, res: *Response, _: C) !void{
@@ -167,6 +166,33 @@ pub fn ServerCtx(comptime C: type) type {
 
 		fn defaultDispatcherWithContext(action: Action(C), req: *Request, res: *Response, ctx: C) !void {
 			try action(req, res, ctx);
+		}
+
+		pub fn handle(self: Self, stream: Stream, req: *Request, res: *Response) bool {
+			const da = self._router.route(req.method, req.url.path, &req.params);
+			self.dispatch(da, req, res) catch |err| switch (err) {
+				error.BodyTooBig => {
+					res.status = 431;
+					res.body = "Request body is too big";
+					res.write(stream) catch return false;
+				},
+				else => {
+					if (comptime C == void) {
+						self._errorHandler(req, res, err);
+					} else {
+						self._errorHandler(req, res, err, self.ctx);
+					}
+				}
+			};
+			res.write(stream) catch return false;
+			return req.canKeepAlive();
+		}
+
+		inline fn dispatch(self: Self, da: DispatchableAction(C), req: *Request, res: *Response) !void {
+			if (C == void) {
+				return da.dispatcher(da.action, req, res);
+			}
+			return da.dispatcher(da.action, req, res, self.ctx);
 		}
 	};
 }
@@ -333,7 +359,7 @@ fn testRequest(comptime C: type, srv: *ServerCtx(C), stream: *t.Stream) void {
 	}) catch unreachable;
 	defer reqResPool.deinit();
 	defer srv.deinit();
-	listener.handleConnection(Handler(C), srv.handler, stream, &reqResPool);
+	listener.handleConnection(*ServerCtx(C), srv, stream, &reqResPool);
 }
 
 fn testFail(_: *Request, _: *Response, _: u32) !void {

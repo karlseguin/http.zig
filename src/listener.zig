@@ -17,7 +17,7 @@ const net = std.net;
 
 const ReqResPool = Pool(*RequestResponsePair, RequestResponsePairConfig);
 
-pub fn listen(comptime H: type, httpz_allocator: Allocator, app_allocator: Allocator, handler: H, config: Config) !void {
+pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Allocator, server: S, config: Config) !void {
 	var reqResPool = try initReqResPool(httpz_allocator, app_allocator, config);
 	var socket = net.StreamServer.init(.{
 		.reuse_address = true,
@@ -39,7 +39,7 @@ pub fn listen(comptime H: type, httpz_allocator: Allocator, app_allocator: Alloc
 	while (true) {
 		if (socket.accept()) |conn| {
 			const c: Conn = if (comptime builtin.is_test) undefined else conn;
-			const args = .{H, handler, c, &reqResPool};
+			const args = .{S, server, c, &reqResPool};
 			if (comptime std.io.is_async) {
 				try Loop.instance.?.runDetached(httpz_allocator, handleConnection, args);
 			} else {
@@ -60,7 +60,7 @@ pub fn initReqResPool(httpz_allocator: Allocator, app_allocator: Allocator, conf
 	});
 }
 
-pub fn handleConnection(comptime H: type, handler: H, conn: Conn, reqResPool: *ReqResPool) void {
+pub fn handleConnection(comptime S: type, server: S, conn: Conn, reqResPool: *ReqResPool) void {
 	const stream = if (comptime builtin.is_test) conn else conn.stream;
 	defer stream.close();
 
@@ -86,76 +86,33 @@ pub fn handleConnection(comptime H: type, handler: H, conn: Conn, reqResPool: *R
 		// defer _ = arena.reset(.{.retain_with_limit = 8192});
 
 		if (req.parse()) {
-			if (!handler.handle(stream, req, res)) {
+			if (!server.handle(stream, req, res)) {
 				return;
 			}
 		} else |err| {
 			// hard to keep this request alive on a parseError since in a lot of
 			// failure cases, it's unclear where 1 request stops and another starts.
-			handler.requestParseError(stream, err, res);
+			requestParseError(stream, err, res);
 			return;
 		}
 		req.drain() catch { return; };
 	}
 }
 
-pub fn Handler(comptime C: type) type {
-	return struct {
-		ctx: C,
-		router: httpz.Router(C),
-		errorHandler: httpz.ErrorHandlerAction(C),
-
-		const Self = @This();
-
-		pub fn deinit(self: Self) void {
-			var r = self.router;
-			r.deinit();
-		}
-
-		pub fn handle(self: Self, stream: Stream, req: *httpz.Request, res: *httpz.Response) bool {
-			const router = self.router;
-			const da = router.route(req.method, req.url.path, &req.params);
-			self.dispatch(da, req, res) catch |err| switch (err) {
-				error.BodyTooBig => {
-					res.status = 431;
-					res.body = "Request body is too big";
-					res.write(stream) catch return false;
-				},
-				else => {
-					if (comptime C == void) {
-						self.errorHandler(req, res, err);
-					} else {
-						self.errorHandler(req, res, err, self.ctx);
-					}
-				}
-			};
-			res.write(stream) catch return false;
-			return req.canKeepAlive();
-		}
-
-		fn dispatch(self: Self, da: httpz.DispatchableAction(C), req: *httpz.Request, res: *httpz.Response) !void {
-			if (C == void) {
-				return da.dispatcher(da.action, req, res);
-			}
-			return da.dispatcher(da.action, req, res, self.ctx);
-		}
-
-		pub fn requestParseError(_: Self, stream: Stream, err: anyerror, res: *httpz.Response) void {
-			switch (err) {
-				error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
-					res.status = 400;
-					res.body = "Invalid Request";
-					res.write(stream) catch {};
-				},
-				error.HeaderTooBig => {
-					res.status = 431;
-					res.body = "Request header is too big";
-					res.write(stream) catch {};
-				},
-				else => {},
-			}
-		}
-	};
+fn requestParseError(stream: Stream, err: anyerror, res: *httpz.Response) void {
+	switch (err) {
+		error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
+			res.status = 400;
+			res.body = "Invalid Request";
+			res.write(stream) catch {};
+		},
+		error.HeaderTooBig => {
+			res.status = 431;
+			res.body = "Request header is too big";
+			res.write(stream) catch {};
+		},
+		else => {},
+	}
 }
 
 // We pair together requests and responses, not because they're tightly coupled,
