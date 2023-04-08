@@ -276,7 +276,7 @@ test "httpz: unhandled exception" {
 	_ = stream.add("GET /fail HTTP/1.1\r\n\r\n");
 
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 5) catch unreachable;
-	srv.router().get("/fail", testFail, .{});
+	srv.router().get("/fail", testFail);
 	testRequest(u32, &srv, stream);
 
 	try t.expectString("HTTP/1.1 500\r\nContent-Length: 21\r\n\r\nInternal Server Error", stream.received.items);
@@ -292,7 +292,7 @@ test "httpz: unhandled exception with custom error handler" {
 
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 4) catch unreachable;
 	srv.errorHandler(testErrorHandler);
-	srv.router().get("/fail", testFail, .{});
+	srv.router().get("/fail", testFail);
 	testRequest(u32, &srv, stream);
 
 	try t.expectString("HTTP/1.1 500\r\nCtx: 4\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", stream.received.items);
@@ -304,7 +304,7 @@ test "httpz: route params" {
 	_ = stream.add("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
 
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
-	srv.router().all("/api/:version/users/:UserId", testParams, .{});
+	srv.router().all("/api/:version/users/:UserId", testParams);
 	testRequest(u32, &srv, stream);
 
 	try t.expectString("HTTP/1.1 200\r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", stream.received.items);
@@ -316,7 +316,7 @@ test "httpz: request and response headers" {
 	_ = stream.add("GET /test/headers HTTP/1.1\r\nHeader-Name: Header-Value\r\n\r\n");
 
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 88) catch unreachable;
-	srv.router().get("/test/headers", testHeaders, .{});
+	srv.router().get("/test/headers", testHeaders);
 	testRequest(u32, &srv, stream);
 
 	try t.expectString("HTTP/1.1 200\r\nCtx: 88\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", stream.received.items);
@@ -328,7 +328,7 @@ test "httpz: content-length body" {
 	_ = stream.add("GET /test/body/cl HTTP/1.1\r\nHeader-Name: Header-Value\r\nContent-Length: 4\r\n\r\nabcz");
 
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
-	srv.router().get("/test/body/cl", testCLBody, .{});
+	srv.router().get("/test/body/cl", testCLBody);
 	testRequest(u32, &srv, stream);
 
 	try t.expectString("HTTP/1.1 200\r\nEcho-Body: abcz\r\nContent-Length: 0\r\n\r\n", stream.received.items);
@@ -340,7 +340,7 @@ test "httpz: json response" {
 	_ = stream.add("GET /test/json HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
 	var srv = Server().init(t.allocator, .{}) catch unreachable;
-	srv.router().get("/test/json", testJsonRes, .{});
+	srv.router().get("/test/json", testJsonRes);
 	testRequest(void, &srv, stream);
 
 	try t.expectString("HTTP/1.1 201\r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", stream.received.items);
@@ -352,7 +352,7 @@ test "httpz: query" {
 	_ = stream.add("GET /test/query?fav=keemun%20te%61%21 HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
 	var srv = Server().init(t.allocator, .{}) catch unreachable;
-	srv.router().get("/test/query", testReqQuery, .{});
+	srv.router().get("/test/query", testReqQuery);
 	testRequest(void, &srv, stream);
 
 	try t.expectString("HTTP/1.1 200\r\nContent-Length: 11\r\n\r\nkeemun tea!", stream.received.items);
@@ -364,7 +364,7 @@ test "httpz: custom dispatcher" {
 
 	var srv = Server().init(t.allocator, .{}) catch unreachable;
 	var router = srv.router();
-	router.all("/test/dispatcher", testDispatcherAction, .{.dispatcher = testDispatcher});
+	router.allC("/test/dispatcher", testDispatcherAction, .{.dispatcher = testDispatcher});
 
 	_ = stream.add("HEAD /test/dispatcher HTTP/1.1\r\n\r\n");
 	testRequest(void, &srv, stream);

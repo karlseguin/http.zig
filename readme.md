@@ -18,7 +18,7 @@ fn main() !void {
     var server = try httpz.Server().init(allocator, .{.port = 5882});
     
     // overwrite the default notFound handler
-    server.notFound(notFound, .{});
+    server.notFound(notFound);
 
     // overwrite the default error handler
     server.errorHandler(errorHandler); 
@@ -27,7 +27,7 @@ fn main() !void {
 
     // use get/post/put/head/patch/options/delete
     // you can also use "all" to attach to all methods
-    router.get("/api/user/:id", getUser, .{});
+    router.get("/api/user/:id", getUser);
 
     // start the server in the current thread, blocking.
     try server.listen(); 
@@ -61,7 +61,7 @@ fn errorHandler(req: *httpz.Request, res: *httpz.Response, err: anyerror) void {
 ```
 
 ## Complex Use Case 1 - Shared Global Data
-The call to `httpz.Server()` is a wrapper around the more powerful `httpz.ServerCtx(G, R)`. `G` and `R` are types. `G` is the type of the global data `R` is the type of per-request data. For this use case where we only care about shared global data, we'll make G == R:
+The call to `httpz.Server()` is a wrapper around the more powerful `httpz.ServerCtx(G, R)`. `G` and `R` are types. `G` is the type of the global data `R` is the type of per-request data. For this use case, where we only care about shared global data, we'll make G == R:
 
 ```zig
 const Global = struct {
@@ -76,7 +76,7 @@ fn main() !void {
     var global = Global{};
     var server = try httpz.ServerCtx(*Global, *Global).init(allocator, .{}, &global);
     var router = server.router();
-    router.get("/increment", increment, .{});
+    router.get("/increment", increment);
     return server.listen();
 }
 
@@ -92,13 +92,13 @@ fn increment(_: *httpz.Request, res: *httpz.Response, global: *Global) !void {
 }
 ```
 
-There are a few important things to notice. First, the `init` function of `ServerCtx(G, R)` takes a 3rd parameter: the global data. Second, our actions now take a 3rd parameter: our global data of type G. Any custom not found handler (set via `server.notFound(...)`) or error handler(set via `server.errorHandler(errorHandler)`) must also accept this new parameter. Finally, it's up to the application to make sure that access to the global data is synchronized.
+There are a few important things to notice. First, the `init` function of `ServerCtx(G, R)` takes a 3rd parameter: the global data. Second, our actions now take a 3rd parameter of type `G`. Any custom notFound handler (set via `server.notFound(...)`) or error handler(set via `server.errorHandler(errorHandler)`) must also accept this new parameter. Finally, it's up to the application to make sure that access to the global data is synchronized.
 
 ## Complex Use Case 2 - Custom Dispatcher
 While httpz doesn't support traditional middleware, it does allow applications to provide their own custom dispatcher. This gives an application full control over how a request is processed. To start with, the built-in dispatcher looks something like:
 
 ```zig
-fn dispatcher(action: httpz.Action(G), req: *httpz.Request, res: *httpz.Response, global: G) !void {
+fn dispatcher(action: httpz.Action(R), req: *httpz.Request, res: *httpz.Response, global: G) !void {
     // this is how httpz maintains a simple interface when httpz.Server()
     // is used instead of httpz.ServerCtx(G, R)
     if (G == void) {
@@ -120,7 +120,9 @@ var server = try httpz.Server().init(allocator, .{});
 server.dispatcher(mainDispatcher); 
 
 // set a dispatcher for this route
-server.router().delete("/v1/session", logout, .{.dispatcher = loggedIn}) 
+// note the use of "deleteC" the "C" is for Configuration and is used
+// since Zig doesn't have overloading or optional parameters.
+server.router().deleteC("/v1/session", logout, .{.dispatcher = loggedIn}) 
 ...
 
 fn mainDispatcher(action: httpz.Action(void), req: *httpz.Request, res: *httpz.Response) !void {
@@ -141,6 +143,7 @@ fn logout(req: *httpz.Request, res: *httpz.Response) !void {
     ...
 }
 ```
+
 
 ## Complex Use Case 3 - Per-Request Data
 We can combine what we've learned from the above two uses cases and use `ServerCtx(G, R)` where `G != R`. In this case, a dispatcher **must** be provided (failure to provide a dispatcher will result in 500 errors). This is because the dispatcher is needed to generate `R`.
@@ -168,7 +171,7 @@ fn main() !void {
     server.dispatcher(dispatcher); 
 
     // again, it's possible to had per-route dispatchers
-    server.router().delete("/v1/session", logout, .{}) 
+    server.router().delete("/v1/session", logout) 
 ...
 
 fn dispatcher(action: httpz.Action(Context), req: *httpz.Request, res: *httpz.Response, global: *Global) !void {
@@ -348,13 +351,14 @@ These functions can all `@panic` as they allocate memory. Each function has an e
 
 ```zig
 // this can panic if it fails to create the route
-router.get("/", index, .{});
+router.get("/", index);
 
 // this returns a !void (which you can try/catch)
-router.tryGet("/", index, .{});
+router.tryGet("/", index);
 ```
 
-The 3rd parameter is router configuration object. `.{}` is a Zig idiom that essentially means: use the defaults. See [Custom Dispatcher][#custom-dispatcher] for more information.
+There is also a `getC` and `tryGetC` (and `putC` and `tryPutC`, and ...) that takes a 3rd parameter: the route configuration. Most of the time, this isn't needed. So, to streamline usage and given Zig's lack of overloading or default parameters, these awkward `xyzC` functions were created. Currently, the only route configuration value is to set a custom dispatcher for the specific route.
+ See [Custom Dispatcher][#complex-use-case-2---custom-dispatcher] for more information.
 
 ### Casing
 You **must** use a lowercase route. You can use any casing with parameter names, as long as you use that same casing when getting the parameter.

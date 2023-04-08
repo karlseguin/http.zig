@@ -10,7 +10,7 @@ const GlobalContext = struct {
 
 // our per-request data
 const RequestContext = struct {
-	user_id: ?const u8,
+	user_id: ?[]const u8,
 	global: *GlobalContext,
 };
 
@@ -19,7 +19,7 @@ pub fn start(allocator: Allocator) !void{
 	var server = try httpz.ServerCtx(*GlobalContext, *RequestContext).init(allocator, .{.pool_size = 10, .port = 5884}, &ctx);
 	server.dispatcher(dispatcher);
 	var router = server.router();
-	router.get("/increment", increment, .{});
+	router.get("/increment", increment);
 	return server.listen();
 }
 

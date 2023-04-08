@@ -6,10 +6,13 @@ pub fn start(allocator: Allocator) !void{
 	var server = try httpz.Server().init(allocator, .{.pool_size = 10});
 	var router = server.router();
 
-	router.get("/", index, .{});
-	router.get("/hello", hello, .{});
-	router.get("/json/hello/:name", json, .{});
-	router.get("/writer/hello/:name", writer, .{});
+	server.notFound(notFound);
+
+
+	router.get("/", index);
+	router.get("/hello", hello);
+	router.get("/json/hello/:name", json);
+	router.get("/writer/hello/:name", writer);
 	try server.listen();
 }
 
@@ -49,4 +52,9 @@ fn writer(req: *httpz.Request, res: *httpz.Response) !void {
 	try ws.objectField("name");
 	try ws.emitString(name);
 	try ws.endObject();
+}
+
+fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
+	res.status = 404;
+	res.body = "Not found";
 }
