@@ -9,18 +9,17 @@ const Response = @import("response.zig").Response;
 const Allocator = std.mem.Allocator;
 const StringHashMap = std.StringHashMap;
 
-pub fn Config(comptime C: type) type {
-	const Dispatcher = httpz.Dispatcher(C);
-
+pub fn Config(comptime C: type, comptime R: type) type {
+	const Dispatcher = httpz.Dispatcher(C, R);
 	return struct {
 		dispatcher: ?Dispatcher = null,
 	};
 }
 
-pub fn Router(comptime C: type) type {
-	const Action = httpz.Action(C);
-	const Dispatcher = httpz.Dispatcher(C);
-	const DispatchableAction = httpz.DispatchableAction(C);
+pub fn Router(comptime C: type, comptime R: type) type {
+	const Action = httpz.Action(R);
+	const Dispatcher = httpz.Dispatcher(C, R);
+	const DispatchableAction = httpz.DispatchableAction(C, R);
 
 	return struct {
 		_allocator: Allocator,
@@ -31,16 +30,14 @@ pub fn Router(comptime C: type) type {
 		_patch: Part(DispatchableAction),
 		_delete: Part(DispatchableAction),
 		_options: Part(DispatchableAction),
-		_not_found: DispatchableAction,
 		_default_dispatcher: Dispatcher,
 
 		const Self = @This();
 
-		pub fn init(allocator: Allocator, default_dispatcher: Dispatcher, not_found: Action) !Self {
+		pub fn init(allocator: Allocator, default_dispatcher: Dispatcher) !Self {
 			return Self{
 				._allocator = allocator,
 				._default_dispatcher = default_dispatcher,
-				._not_found = DispatchableAction{.action = not_found, .dispatcher = default_dispatcher},
 				._get = try Part(DispatchableAction).init(allocator),
 				._head = try Part(DispatchableAction).init(allocator),
 				._post = try Part(DispatchableAction).init(allocator),
@@ -62,7 +59,7 @@ pub fn Router(comptime C: type) type {
 			self._options.deinit(allocator);
 		}
 
-		pub fn route(self: Self, method: httpz.Method, url: []const u8, params: *Params) DispatchableAction {
+		pub fn route(self: Self, method: httpz.Method, url: []const u8, params: *Params) ?DispatchableAction {
 			return switch (method) {
 				httpz.Method.GET => getRoute(DispatchableAction, self._get, url, params),
 				httpz.Method.POST => getRoute(DispatchableAction, self._post, url, params),
@@ -71,20 +68,13 @@ pub fn Router(comptime C: type) type {
 				httpz.Method.PATCH => getRoute(DispatchableAction, self._patch, url, params),
 				httpz.Method.HEAD => getRoute(DispatchableAction, self._head, url, params),
 				httpz.Method.OPTIONS => getRoute(DispatchableAction, self._options, url, params),
-			} orelse self._not_found;
-		}
-
-		pub fn notFound(self: *Self, action: Action, config: Config(C)) void {
-			self._not_found = DispatchableAction{
-				.action = action,
-				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
 		}
 
-		pub fn get(self: *Self, path: []const u8, action: Action, config: Config(C)) void {
+		pub fn get(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
 			self.tryGet(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryGet(self: *Self, path: []const u8, action: Action, config: Config(C)) !void {
+		pub fn tryGet(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
@@ -92,10 +82,10 @@ pub fn Router(comptime C: type) type {
 			try addRoute(DispatchableAction, self._allocator, &self._get, path, da);
 		}
 
-		pub fn put(self: *Self, path: []const u8, action: Action, config: Config(C)) void {
+		pub fn put(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
 			self.tryPut(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryPut(self: *Self, path: []const u8, action: Action, config: Config(C)) !void {
+		pub fn tryPut(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
@@ -103,10 +93,10 @@ pub fn Router(comptime C: type) type {
 			try addRoute(DispatchableAction, self._allocator, &self._put, path, da);
 		}
 
-		pub fn post(self: *Self, path: []const u8, action: Action, config: Config(C)) void {
+		pub fn post(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
 			self.tryPost(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryPost(self: *Self, path: []const u8, action: Action, config: Config(C)) !void {
+		pub fn tryPost(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
@@ -114,10 +104,10 @@ pub fn Router(comptime C: type) type {
 			try addRoute(DispatchableAction, self._allocator, &self._post, path, da);
 		}
 
-		pub fn head(self: *Self, path: []const u8, action: Action, config: Config(C)) void {
+		pub fn head(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
 			self.tryHead(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryHead(self: *Self, path: []const u8, action: Action, config: Config(C)) !void {
+		pub fn tryHead(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
@@ -125,10 +115,10 @@ pub fn Router(comptime C: type) type {
 			try addRoute(DispatchableAction, self._allocator, &self._head, path, da);
 		}
 
-		pub fn patch(self: *Self, path: []const u8, action: Action, config: Config(C)) void {
+		pub fn patch(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
 			self.tryPatch(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryPatch(self: *Self, path: []const u8, action: Action, config: Config(C)) !void {
+		pub fn tryPatch(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
@@ -136,10 +126,10 @@ pub fn Router(comptime C: type) type {
 			try addRoute(DispatchableAction, self._allocator, &self._patch, path, da);
 		}
 
-		pub fn delete(self: *Self, path: []const u8, action: Action, config: Config(C)) void {
+		pub fn delete(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
 			self.tryDelete(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryDelete(self: *Self, path: []const u8, action: Action, config: Config(C)) !void {
+		pub fn tryDelete(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
@@ -147,10 +137,10 @@ pub fn Router(comptime C: type) type {
 			try addRoute(DispatchableAction, self._allocator, &self._delete, path, da);
 		}
 
-		pub fn option(self: *Self, path: []const u8, action: Action, config: Config(C)) void {
+		pub fn option(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
 			self.tryOption(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryOption(self: *Self, path: []const u8, action: Action, config: Config(C)) !void {
+		pub fn tryOption(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
@@ -158,10 +148,10 @@ pub fn Router(comptime C: type) type {
 			try addRoute(DispatchableAction, self._allocator, &self._options, path, da);
 		}
 
-		pub fn all(self: *Self, path: []const u8, action: Action, config: Config(C)) void {
+		pub fn all(self: *Self, path: []const u8, action: Action, config: Config(C, R)) void {
 			self.tryAll(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryAll(self: *Self, path: []const u8, action: Action, config: Config(C)) !void {
+		pub fn tryAll(self: *Self, path: []const u8, action: Action, config: Config(C, R)) !void {
 			try self.tryGet(path, action, config);
 			try self.tryPut(path, action, config);
 			try self.tryPost(path, action, config);
@@ -363,7 +353,7 @@ test "route: root" {
 	var params = try Params.init(t.allocator, 5);
 	defer params.deinit(t.allocator);
 
-	var router = Router(void).init(t.allocator, testDispatcher1, testNotFound1) catch unreachable;
+	var router = Router(void, void).init(t.allocator, testDispatcher1) catch unreachable;
 	defer router.deinit();
 	router.get("/", testRoute1, .{});
 	router.put("/", testRoute2, .{});
@@ -371,42 +361,21 @@ test "route: root" {
 	router.all("/all", testRoute4, .{});
 
 	var urls = .{"/", "/other", "/all"};
-	try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, "", &params).action);
-	try t.expectEqual(&testRoute2, router.route(httpz.Method.PUT, "", &params).action);
-	try t.expectEqual(&testRoute3, router.route(httpz.Method.POST, "", &params).action);
+	try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, "", &params).?.action);
+	try t.expectEqual(&testRoute2, router.route(httpz.Method.PUT, "", &params).?.action);
+	try t.expectEqual(&testRoute3, router.route(httpz.Method.POST, "", &params).?.action);
 
-	try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, urls[0], &params).action);
-	try t.expectEqual(&testRoute2, router.route(httpz.Method.PUT, urls[0], &params).action);
-	try t.expectEqual(&testRoute3, router.route(httpz.Method.POST, urls[0], &params).action);
+	try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, urls[0], &params).?.action);
+	try t.expectEqual(&testRoute2, router.route(httpz.Method.PUT, urls[0], &params).?.action);
+	try t.expectEqual(&testRoute3, router.route(httpz.Method.POST, urls[0], &params).?.action);
 
-	try t.expectEqual(&testNotFound1, router.route(httpz.Method.GET, urls[1], &params).action);
-	try t.expectEqual(&testNotFound1, router.route(httpz.Method.DELETE, urls[0], &params).action);
+	try t.expectEqual(@as(?httpz.DispatchableAction(void, void), null), router.route(httpz.Method.GET, urls[1], &params));
+	try t.expectEqual(@as(?httpz.DispatchableAction(void, void), null), router.route(httpz.Method.DELETE, urls[0], &params));
 
 	// test "all" route
 	inline for (@typeInfo(httpz.Method).Enum.fields) |field| {
 		const m = @intToEnum(httpz.Method, field.value);
-		try t.expectEqual(&testRoute4, router.route(m, urls[2], &params).action);
-	}
-}
-
-test "route: not found" {
-	var params = try Params.init(t.allocator, 5);
-	defer params.deinit(t.allocator);
-
-	var router = Router(void).init(t.allocator, testDispatcher1, testNotFound1) catch unreachable;
-	defer router.deinit();
-	router.notFound(testNotFound2, .{});
-	router.get("/one", testRoute4, .{});
-
-	{
-		var url = "nope";
-		try t.expectEqual(&testNotFound2, router.route(httpz.Method.GET, url, &params).action);
-	}
-
-	{
-		var url = "/one";
-		try t.expectEqual(&testRoute4, router.route(httpz.Method.GET, url, &params).action);
-		try t.expectEqual(&testNotFound2, router.route(httpz.Method.DELETE, url, &params).action);
+		try t.expectEqual(&testRoute4, router.route(m, urls[2], &params).?.action);
 	}
 }
 
@@ -414,7 +383,7 @@ test "route: static" {
 	var params = try Params.init(t.allocator, 5);
 	defer params.deinit(t.allocator);
 
-	var router = Router(void).init(t.allocator, testDispatcher1, testNotFound1) catch unreachable;
+	var router = Router(void, void).init(t.allocator, testDispatcher1) catch unreachable;
 	defer router.deinit();
 	router.get("hello/world", testRoute1, .{});
 	router.get("/over/9000/", testRoute2, .{});
@@ -422,19 +391,19 @@ test "route: static" {
 	{
 		const urls = .{"hello/world", "/hello/world", "hello/world/", "/hello/world/"};
 		// all trailing/leading slash combinations
-		try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, urls[0], &params).action);
-		try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, urls[1], &params).action);
-		try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, urls[2], &params).action);
+		try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, urls[0], &params).?.action);
+		try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, urls[1], &params).?.action);
+		try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, urls[2], &params).?.action);
 	}
 
 	{
 		const urls = .{"over/9000", "/over/9000", "over/9000/", "/over/9000/"};
 		// all trailing/leading slash combinations
 		inline for (urls) |url| {
-			try t.expectEqual(&testRoute2, router.route(httpz.Method.GET, url, &params).action);
+			try t.expectEqual(&testRoute2, router.route(httpz.Method.GET, url, &params).?.action);
 
 			// different method
-			try t.expectEqual(&testNotFound1, router.route(httpz.Method.PUT, url, &params).action);
+			try t.expectEqual(@as(?httpz.DispatchableAction(void, void), null), router.route(httpz.Method.PUT, url, &params));
 		}
 	}
 
@@ -442,7 +411,7 @@ test "route: static" {
 		// random not found
 		const urls = .{"over/9000!", "over/ 9000"};
 		inline for (urls) |url| {
-			try t.expectEqual(&testNotFound1, router.route(httpz.Method.GET, url, &params).action);
+			try t.expectEqual(@as(?httpz.DispatchableAction(void, void), null), router.route(httpz.Method.GET, url, &params));
 		}
 	}
 }
@@ -451,7 +420,7 @@ test "route: params" {
 	var params = try Params.init(t.allocator, 5);
 	defer params.deinit(t.allocator);
 
-	var router = Router(void).init(t.allocator, testDispatcher1, testNotFound1) catch unreachable;
+	var router = Router(void, void).init(t.allocator, testDispatcher1) catch unreachable;
 	defer router.deinit();
 	router.get("/:p1", testRoute1, .{});
 	router.get("/users/:p2", testRoute2, .{});
@@ -462,7 +431,7 @@ test "route: params" {
 
 	{
 		// root param
-		try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, "info", &params).action);
+		try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, "info", &params).?.action);
 		try t.expectEqual(@as(usize, 1), params.len);
 		try t.expectString("info", params.get("p1").?);
 	}
@@ -470,7 +439,7 @@ test "route: params" {
 	{
 		// nested param
 		params.reset();
-		try t.expectEqual(&testRoute2, router.route(httpz.Method.GET, "/users/33", &params).action);
+		try t.expectEqual(&testRoute2, router.route(httpz.Method.GET, "/users/33", &params).?.action);
 		try t.expectEqual(@as(usize, 1), params.len);
 		try t.expectString("33", params.get("p2").?);
 	}
@@ -478,12 +447,12 @@ test "route: params" {
 	{
 		// nested param with statix suffix
 		params.reset();
-		try t.expectEqual(&testRoute3, router.route(httpz.Method.GET, "/users/9/fav", &params).action);
+		try t.expectEqual(&testRoute3, router.route(httpz.Method.GET, "/users/9/fav", &params).?.action);
 		try t.expectEqual(@as(usize, 1), params.len);
 		try t.expectString("9", params.get("p2").?);
 
 		params.reset();
-		try t.expectEqual(&testRoute4, router.route(httpz.Method.GET, "/users/9/like", &params).action);
+		try t.expectEqual(&testRoute4, router.route(httpz.Method.GET, "/users/9/like", &params).?.action);
 		try t.expectEqual(@as(usize, 1), params.len);
 		try t.expectString("9", params.get("p2").?);
 	}
@@ -491,13 +460,13 @@ test "route: params" {
 	{
 		// nested params
 		params.reset();
-		try t.expectEqual(&testRoute5, router.route(httpz.Method.GET, "/users/u1/fav/blue", &params).action);
+		try t.expectEqual(&testRoute5, router.route(httpz.Method.GET, "/users/u1/fav/blue", &params).?.action);
 		try t.expectEqual(@as(usize, 2), params.len);
 		try t.expectString("u1", params.get("p2").?);
 		try t.expectString("blue", params.get("p3").?);
 
 		params.reset();
-		try t.expectEqual(&testRoute6, router.route(httpz.Method.GET, "/users/u3/like/tea", &params).action);
+		try t.expectEqual(&testRoute6, router.route(httpz.Method.GET, "/users/u3/like/tea", &params).?.action);
 		try t.expectEqual(@as(usize, 2), params.len);
 		try t.expectString("u3", params.get("p2").?);
 		try t.expectString("tea", params.get("p3").?);
@@ -506,10 +475,10 @@ test "route: params" {
 	{
 		// not_found
 		params.reset();
-		try t.expectEqual(&testNotFound1, router.route(httpz.Method.GET, "/users/u1/other", &params).action);
+		try t.expectEqual(@as(?httpz.DispatchableAction(void, void), null), router.route(httpz.Method.GET, "/users/u1/other", &params));
 		try t.expectEqual(@as(usize, 0), params.len);
 
-		try t.expectEqual(&testNotFound1, router.route(httpz.Method.GET, "/users/u1/favss/blue", &params).action);
+		try t.expectEqual(@as(?httpz.DispatchableAction(void, void), null), router.route(httpz.Method.GET, "/users/u1/favss/blue", &params));
 		try t.expectEqual(@as(usize, 0), params.len);
 	}
 }
@@ -518,7 +487,7 @@ test "route: glob" {
 	var params = try Params.init(t.allocator, 5);
 	defer params.deinit(t.allocator);
 
-	var router = Router(void).init(t.allocator, testDispatcher1, testNotFound1) catch unreachable;
+	var router = Router(void, void).init(t.allocator, testDispatcher1) catch unreachable;
 	defer router.deinit();
 	router.get("/*", testRoute1, .{});
 	router.get("/users/*", testRoute2, .{});
@@ -529,7 +498,7 @@ test "route: glob" {
 		// root glob
 		const urls = .{"/anything", "/this/could/be/anything", "/"};
 		inline for (urls) |url| {
-			try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, url, &params).action);
+			try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, url, &params).?.action);
 			try t.expectEqual(@as(usize, 0), params.len);
 		}
 	}
@@ -538,7 +507,7 @@ test "route: glob" {
 		// nest glob
 		const urls = .{"/users/", "/users", "/users/hello", "/users/could/be/anything"};
 		inline for (urls) |url| {
-			try t.expectEqual(&testRoute2, router.route(httpz.Method.GET, url, &params).action);
+			try t.expectEqual(&testRoute2, router.route(httpz.Method.GET, url, &params).?.action);
 			try t.expectEqual(@as(usize, 0), params.len);
 		}
 	}
@@ -547,14 +516,14 @@ test "route: glob" {
 		// nest glob specific
 		const urls = .{"/users/hello/test", "/users/x/test"};
 		inline for (urls) |url| {
-			try t.expectEqual(&testRoute3, router.route(httpz.Method.GET, url, &params).action);
+			try t.expectEqual(&testRoute3, router.route(httpz.Method.GET, url, &params).?.action);
 			try t.expectEqual(@as(usize, 0), params.len);
 		}
 	}
 
 	{
 		// nest glob specific
-		try t.expectEqual(&testRoute4, router.route(httpz.Method.GET, "/users/other/test", &params).action);
+		try t.expectEqual(&testRoute4, router.route(httpz.Method.GET, "/users/other/test", &params).?.action);
 		try t.expectEqual(@as(usize, 0), params.len);
 	}
 }
@@ -591,8 +560,6 @@ test "route: glob" {
 // }
 
 fn testDispatcher1(_: httpz.Action(void), _: *Request, _: *Response) anyerror!void{}
-fn testNotFound1(_: *Request, _: *Response) anyerror!void {}
-fn testNotFound2(_: *Request, _: *Response) anyerror!void {}
 fn testRoute1(_: *Request, _: *Response) anyerror!void {}
 fn testRoute2(_: *Request, _: *Response) anyerror!void {}
 fn testRoute3(_: *Request, _: *Response) anyerror!void {}

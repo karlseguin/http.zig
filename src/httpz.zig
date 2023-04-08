@@ -33,7 +33,6 @@ pub const Method = enum {
 	OPTIONS,
 };
 
-
 pub const ContentType = enum {
 	BINARY,
 	CSS,
@@ -61,21 +60,25 @@ pub fn Action(comptime C: type) type {
 	return *const fn(*Request, *Response, C) anyerror!void;
 }
 
-pub fn Dispatcher(comptime C: type) type {
-	if (C == void) {
-		return *const fn(Action(C), *Request, *Response) anyerror!void;
+pub fn Dispatcher(comptime C: type, comptime R: type) type {
+	if (C == void and R == void) {
+		return *const fn(Action(void), *Request, *Response) anyerror!void;
+	} else if (C == void) {
+		return *const fn(Action(R), *Request, *Response) anyerror!void;
+	} else if (R == void) {
+		return *const fn(Action(C), *Request, *Response, C) anyerror!void;
 	}
-	return *const fn(Action(C), *Request, *Response, C) anyerror!void;
+	return *const fn(Action(R), *Request, *Response, C) anyerror!void;
 }
 
-pub fn DispatchableAction(comptime C: type) type {
+pub fn DispatchableAction(comptime C: type, comptime R: type) type {
 	return struct {
-		action: Action(C),
-		dispatcher: Dispatcher(C),
+		action: Action(R),
+		dispatcher: Dispatcher(C, R),
 	};
 }
 
-pub fn ErrorHandlerAction(comptime C: type) type {
+fn ErrorHandlerAction(comptime C: type) type {
 	if (C == void) {
 		return *const fn(*Request, *Response, anyerror) void;
 	}
@@ -85,20 +88,21 @@ pub fn ErrorHandlerAction(comptime C: type) type {
 // Done this way so that Server and ServerCtx have a similar API
 pub fn Server() type {
 	return struct {
-		pub fn init(allocator: Allocator, config: Config) !ServerCtx(void) {
-			return try ServerCtx(void).init(allocator, config, {});
+		pub fn init(allocator: Allocator, config: Config) !ServerCtx(void, void) {
+			return try ServerCtx(void, void).init(allocator, config, {});
 		}
 	};
 }
 
-pub fn ServerCtx(comptime C: type) type {
+pub fn ServerCtx(comptime C: type, comptime R: type) type {
 	return struct {
 		ctx: C,
 		config: Config,
 		app_allocator: Allocator,
 		httpz_allocator: Allocator,
-		_router: Router(C),
+		_router: Router(C, R),
 		_errorHandler: ErrorHandlerAction(C),
+		_notFoundHandler: Action(C),
 
 		const Self = @This();
 
@@ -113,7 +117,8 @@ pub fn ServerCtx(comptime C: type) type {
 				.app_allocator = allocator,
 				.httpz_allocator = allocator,
 				._errorHandler = erh,
-				._router = try Router(C).init(allocator, dd, nfh),
+				._notFoundHandler = nfh,
+				._router = try Router(C, R).init(allocator, dd),
 			};
 		}
 
@@ -122,7 +127,7 @@ pub fn ServerCtx(comptime C: type) type {
 		}
 
 		pub fn listen(self: *Self) !void {
-			try listener.listen(*ServerCtx(C), self.httpz_allocator, self.app_allocator, self, self.config);
+			try listener.listen(*ServerCtx(C, R), self.httpz_allocator, self.app_allocator, self, self.config);
 		}
 
 		pub fn listenInNewThread(self: *Self) !std.Thread {
@@ -130,14 +135,18 @@ pub fn ServerCtx(comptime C: type) type {
 		}
 
 		pub fn notFound(self: *Self, nfa: Action(C)) void {
-			self.router().notFound(nfa, .{});
+			self._notFoundHandler = nfa;
 		}
 
 		pub fn errorHandler(self: *Self, eha: ErrorHandlerAction(C)) void {
 			self._errorHandler = eha;
 		}
 
-		pub fn router(self: *Self) *Router(C) {
+		pub fn dispatcher(self: *Self, d: Dispatcher(C, R)) void {
+			(&self._router)._default_dispatcher = d;
+		}
+
+		pub fn router(self: *Self) *Router(C, R) {
 			return &self._router;
 		}
 
@@ -160,12 +169,16 @@ pub fn ServerCtx(comptime C: type) type {
 			std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
 		}
 
-		fn defaultDispatcher(action: Action(C), req: *Request, res: *Response) !void {
+		fn defaultDispatcher(action: Action(R), req: *Request, res: *Response) !void {
 			try action(req, res);
 		}
 
-		fn defaultDispatcherWithContext(action: Action(C), req: *Request, res: *Response, ctx: C) !void {
-			try action(req, res, ctx);
+		fn defaultDispatcherWithContext(action: Action(R), req: *Request, res: *Response, ctx: C) !void {
+			if (R == C) {
+				return action(req, res, ctx);
+			}
+			// app needs to provide a dispatcher in this case
+			return error.CannotDispatch;
 		}
 
 		pub fn handle(self: Self, stream: Stream, req: *Request, res: *Response) bool {
@@ -188,11 +201,18 @@ pub fn ServerCtx(comptime C: type) type {
 			return req.canKeepAlive();
 		}
 
-		inline fn dispatch(self: Self, da: DispatchableAction(C), req: *Request, res: *Response) !void {
-			if (C == void) {
-				return da.dispatcher(da.action, req, res);
+		inline fn dispatch(self: Self, dispatchable_action: ?DispatchableAction(C, R), req: *Request, res: *Response) !void {
+			if (dispatchable_action) |da| {
+				if (C == void) {
+					return da.dispatcher(da.action, req, res);
+				}
+				return da.dispatcher(da.action, req, res, self.ctx);
 			}
-			return da.dispatcher(da.action, req, res, self.ctx);
+
+			if (C == void) {
+				return self._notFoundHandler(req, res);
+			}
+			return self._notFoundHandler(req, res, self.ctx);
 		}
 	};
 }
@@ -206,7 +226,7 @@ test "httpz: invalid request (not enough data, assume closed)" {
 	defer stream.deinit();
 	_ = stream.add("GET / HTTP/1.1\r");
 
-	var srv = ServerCtx(u32).init(t.allocator, .{}, 1) catch unreachable;
+	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
 	testRequest(u32, &srv, stream);
 
 	try t.expectEqual(true, stream.closed);
@@ -218,7 +238,7 @@ test "httpz: invalid request" {
 	defer stream.deinit();
 	_ = stream.add("TEA / HTTP/1.1\r\n\r\n");
 
-	var srv = ServerCtx(u32).init(t.allocator, .{}, 1) catch unreachable;
+	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
 	testRequest(u32, &srv, stream);
 
 	try t.expectString("HTTP/1.1 400\r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received.items);
@@ -229,7 +249,7 @@ test "httpz: no route" {
 	defer stream.deinit();
 	_ = stream.add("GET / HTTP/1.1\r\n\r\n");
 
-	var srv = ServerCtx(u32).init(t.allocator, .{}, 1) catch unreachable;
+	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
 	testRequest(u32, &srv, stream);
 
 	try t.expectString("HTTP/1.1 404\r\nContent-Length: 9\r\n\r\nNot Found", stream.received.items);
@@ -240,7 +260,7 @@ test "httpz: no route with custom notFound handler" {
 	defer stream.deinit();
 	_ = stream.add("GET / HTTP/1.1\r\n\r\n");
 
-	var srv = ServerCtx(u32).init(t.allocator, .{}, 3) catch unreachable;
+	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 3) catch unreachable;
 	srv.notFound(testNotFound);
 	testRequest(u32, &srv, stream);
 
@@ -255,7 +275,7 @@ test "httpz: unhandled exception" {
 	defer stream.deinit();
 	_ = stream.add("GET /fail HTTP/1.1\r\n\r\n");
 
-	var srv = ServerCtx(u32).init(t.allocator, .{}, 5) catch unreachable;
+	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 5) catch unreachable;
 	srv.router().get("/fail", testFail, .{});
 	testRequest(u32, &srv, stream);
 
@@ -270,7 +290,7 @@ test "httpz: unhandled exception with custom error handler" {
 	defer stream.deinit();
 	_ = stream.add("GET /fail HTTP/1.1\r\n\r\n");
 
-	var srv = ServerCtx(u32).init(t.allocator, .{}, 4) catch unreachable;
+	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 4) catch unreachable;
 	srv.errorHandler(testErrorHandler);
 	srv.router().get("/fail", testFail, .{});
 	testRequest(u32, &srv, stream);
@@ -283,7 +303,7 @@ test "httpz: route params" {
 	defer stream.deinit();
 	_ = stream.add("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
 
-	var srv = ServerCtx(u32).init(t.allocator, .{}, 1) catch unreachable;
+	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
 	srv.router().all("/api/:version/users/:UserId", testParams, .{});
 	testRequest(u32, &srv, stream);
 
@@ -295,7 +315,7 @@ test "httpz: request and response headers" {
 	defer stream.deinit();
 	_ = stream.add("GET /test/headers HTTP/1.1\r\nHeader-Name: Header-Value\r\n\r\n");
 
-	var srv = ServerCtx(u32).init(t.allocator, .{}, 88) catch unreachable;
+	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 88) catch unreachable;
 	srv.router().get("/test/headers", testHeaders, .{});
 	testRequest(u32, &srv, stream);
 
@@ -307,7 +327,7 @@ test "httpz: content-length body" {
 	defer stream.deinit();
 	_ = stream.add("GET /test/body/cl HTTP/1.1\r\nHeader-Name: Header-Value\r\nContent-Length: 4\r\n\r\nabcz");
 
-	var srv = ServerCtx(u32).init(t.allocator, .{}, 1) catch unreachable;
+	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
 	srv.router().get("/test/body/cl", testCLBody, .{});
 	testRequest(u32, &srv, stream);
 
@@ -351,7 +371,7 @@ test "httpz: custom dispatcher" {
 	try t.expectString("HTTP/1.1 200\r\nContent-Length: 17\r\n\r\ndispatcher-action", stream.received.items);
 }
 
-fn testRequest(comptime C: type, srv: *ServerCtx(C), stream: *t.Stream) void {
+fn testRequest(comptime C: type, srv: *ServerCtx(C, C), stream: *t.Stream) void {
 	var reqResPool = listener.initReqResPool(t.allocator, t.allocator, .{
 		.pool_size = 2,
 		.request = .{.buffer_size = 4096},
@@ -359,7 +379,7 @@ fn testRequest(comptime C: type, srv: *ServerCtx(C), stream: *t.Stream) void {
 	}) catch unreachable;
 	defer reqResPool.deinit();
 	defer srv.deinit();
-	listener.handleConnection(*ServerCtx(C), srv, stream, &reqResPool);
+	listener.handleConnection(*ServerCtx(C, C), srv, stream, &reqResPool);
 }
 
 fn testFail(_: *Request, _: *Response, _: u32) !void {
