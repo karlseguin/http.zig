@@ -95,20 +95,22 @@ fn increment(_: *httpz.Request, res: *httpz.Response, global: *Global) !void {
 There are a few important things to notice. First, the `init` function of `ServerCtx(G, R)` takes a 3rd parameter: the global data. Second, our actions now take a 3rd parameter of type `G`. Any custom notFound handler (set via `server.notFound(...)`) or error handler(set via `server.errorHandler(errorHandler)`) must also accept this new parameter. Finally, it's up to the application to make sure that access to the global data is synchronized.
 
 ## Complex Use Case 2 - Custom Dispatcher
-While httpz doesn't support traditional middleware, it does allow applications to provide their own custom dispatcher. This gives an application full control over how a request is processed. To start with, the built-in dispatcher looks something like:
+While httpz doesn't support traditional middleware, it does allow applications to provide their own custom dispatcher. This gives an application full control over how a request is processed. 
+
+To understand what the dispatcher does and how to write a custom one, consider the default dispatcher which looks something like:
 
 ```zig
 fn dispatcher(action: httpz.Action(R), req: *httpz.Request, res: *httpz.Response, global: G) !void {
     // this is how httpz maintains a simple interface when httpz.Server()
     // is used instead of httpz.ServerCtx(G, R)
-    if (G == void) {
+    if (R == void) {
         return action(req, res);
     }
     return action(req, res, global);
 }
 ```
 
-A custom dispatch could time and log each request, apply filters to the request and response and do any middleware-like behavior before, after or around the action. Of note, the dispatcher doesn't have to call `action`.
+The default dispatcher merely calls the supplied `action`. A custom dispatch could time and log each request, apply filters to the request and response and do any middleware-like behavior before, after or around the action. Of note, the dispatcher doesn't have to call `action`.
 
 
 The dispatcher can be set globally and/or per route
@@ -144,7 +146,6 @@ fn logout(req: *httpz.Request, res: *httpz.Response) !void {
 }
 ```
 
-
 ## Complex Use Case 3 - Per-Request Data
 We can combine what we've learned from the above two uses cases and use `ServerCtx(G, R)` where `G != R`. In this case, a dispatcher **must** be provided (failure to provide a dispatcher will result in 500 errors). This is because the dispatcher is needed to generate `R`.
 
@@ -165,7 +166,7 @@ fn main() !void {
 
     var global = Global{};
 
-    var server = try httpz.ServerCtx(*Global, Context).init(allocator, .{});
+    var server = try httpz.ServerCtx(*Global, Context).init(allocator, .{}, &global);
 
     // set a global dispatch for any routes defined from this point on
     server.dispatcher(dispatcher); 
