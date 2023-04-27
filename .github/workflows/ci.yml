@@ -5,6 +5,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
+      - name: ARM runner
+        uses: pguyot/arm-runner-action@v2.5.2
       - name: Install dependencies
         run: |
             sudo snap install zig --classic --edge
