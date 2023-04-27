@@ -29,12 +29,9 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 	const listen_address = config.address;
 	try socket.listen(net.Address.parseIp(listen_address, listen_port) catch unreachable);
 
-	// TODO: I believe this should work, but it currently doesn't on 0.11-dev. Instead I have to
-	// hardcode 1 for the setsocopt NODELAY option
-	// if (@hasDecl(os.TCP, "NODELAY")) {
-	// 	try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, os.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
-	// }
-	try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
+	if (@hasDecl(os.TCP, "NODELAY")) {
+		try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, os.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
+	}
 
 	while (true) {
 		if (socket.accept()) |conn| {
