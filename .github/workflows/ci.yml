@@ -7,9 +7,10 @@ jobs:
       - uses: actions/checkout@v2
       - name: ARM runner
         uses: pguyot/arm-runner-action@v2.5.2
-      - name: Install dependencies
-        run: |
-            sudo snap install zig --classic --edge
-            zig version
-      - name: Module test
-        run: zig build test
+        with:
+          commands: |
+            curl -sLO https://ziglang.org/builds/zig-linux-aarch64-0.11.0-dev.2830+295b8ca46.tar.xz
+            tar -Jxf zig-linux-aarch64-0.11.0-dev.2830+295b8ca46.tar.xz
+            PATH+=":$(readlink -f ./zig-linux-aarch64-0.11.0-dev.2830+295b8ca46)"
+            zig env
+            zig build test
