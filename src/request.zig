@@ -259,6 +259,11 @@ pub const Request = struct {
 		}
 	}
 
+	pub fn jsonValue(self: *Self) !?std.json.Value {
+		const tree = try self.jsonValueTree() orelse return null;
+		return tree.root;
+	}
+
 	fn parseMethod(self: *Self, stream: Stream, buf: []u8) !ParseResult {
 		var buf_len: usize = 0;
 		while (buf_len < 4) {
