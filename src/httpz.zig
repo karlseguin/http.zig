@@ -143,7 +143,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 		}
 
 		pub fn dispatcher(self: *Self, d: Dispatcher(G, R)) void {
-			(&self._router)._default_dispatcher = d;
+			(&self._router).dispatcher(d);
 		}
 
 		pub fn router(self: *Self) *Router(G, R) {

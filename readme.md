@@ -146,6 +146,22 @@ fn logout(req: *httpz.Request, res: *httpz.Response) !void {
 }
 ```
 
+The dispatcher can also be set directly on the router and will be used for any subsequent route. This is convenient, but error prone, as the routes must be defined in the correct order:
+
+```zig
+var router = server.router();
+
+router.dispatcher(requiredUserDispatcher);
+router.delete("/v1/session", session.delete);
+router.post("/v1/password_reset", password_reset.create);
+
+router.dispatcher(internalDispatcher);
+router.get("/debug/ping", debug.ping);
+router.get("/debug/metrics", debug.metrics);
+```
+
+In the above, th `requiredUserDispatcher` is used for all subsequent routes until another dispatcher is set. In other words, `requiredUserDispatcher` will be used for `/v1/session` and `/v1/password_reset` while `internalDispatcher` will be used for `/debug/ping` and `/debug/metrics`.
+
 ## Complex Use Case 3 - Per-Request Data
 We can combine what we've learned from the above two uses cases and use `ServerCtx(G, R)` where `G != R`. In this case, a dispatcher **must** be provided (failure to provide a dispatcher will result in 500 errors). This is because the dispatcher is needed to generate `R`.
 
@@ -434,7 +450,7 @@ try httpz.listen(allocator, &router, .{
     .address = "127.0.0.1",
 
     // Minimum number of request & response objects to keep pooled
-    pool_size: usize = 100,
+    .pool_size: usize = 100,
 
     // various options for tweaking request processing
     .request = .{
@@ -451,37 +467,37 @@ try httpz.listen(allocator, &router, .{
         // try to load the body in here too. The minimum amount of memory that our request
         // pool will use is in the neighborhood of pool_size * buffer_size. It will never
         // be smaller than this (there are other static allocations, but this is the biggest chunk.)
-        buffer_size: usize = 65_536,
+        .buffer_size: usize = 65_536,
 
         // The maximum number of headers to accept. 
         // Additional headers will be silently ignored.
-        max_header_count: usize = 32,
+        .max_header_count: usize = 32,
 
         // the maximum number of URL parameters to accept.
         // Additional parameters will be silently ignored.
-        max_param_count: usize = 10,
+        .max_param_count: usize = 10,
 
         // the maximum number of query string parameters to accept.
         // Additional parameters will be silently ignored.
-        max_query_count: usize = 32,
+        .max_query_count: usize = 32,
     }
     // various options for tweaking response object
     .response = .{
         // Used to buffer the response header.
         // This MUST be at least as big as your largest individual header+value+4
         // (the +4 is for for the colon+space and the \r\n)
-        header_buffer_size: usize = 4096,
+        .header_buffer_size: usize = 4096,
 
         // Used to buffer dynamic responses. If the response body is larger than this
         // value, a dynamic buffer will be allocated. It's possible to set this to 0,
         // but this should only be done if the overwhelming majority of responses
         // are set directly using res.body = "VALUE"; and not a dynamic response
         // generator like res.json(..);
-        body_buffer_size: usize = 32_768,
+        .body_buffer_size: usize = 32_768,
 
         // The maximum number of headers to accept. 
         // Additional headers will be silently ignored.
-        max_header_count: usize = 16,
+        .max_header_count: usize = 16,
     }
 });
 ```

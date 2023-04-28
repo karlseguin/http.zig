@@ -59,6 +59,10 @@ pub fn Router(comptime G: type, comptime R: type) type {
 			self._options.deinit(allocator);
 		}
 
+		pub fn dispatcher(self: *Self, d: Dispatcher) void {
+			self._default_dispatcher = d;
+		}
+
 		pub fn route(self: Self, method: httpz.Method, url: []const u8, params: *Params) ?DispatchableAction {
 			return switch (method) {
 				httpz.Method.GET => getRoute(DispatchableAction, self._get, url, params),
