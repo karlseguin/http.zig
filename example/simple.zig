@@ -3,11 +3,10 @@ const httpz = @import("httpz");
 const Allocator = std.mem.Allocator;
 
 pub fn start(allocator: Allocator) !void{
-	var server = try httpz.Server().init(allocator, .{.pool_size = 10});
+	var server = try httpz.Server().init(allocator, .{.pool_size = 20});
 	var router = server.router();
 
 	server.notFound(notFound);
-
 
 	router.get("/", index);
 	router.get("/hello", hello);

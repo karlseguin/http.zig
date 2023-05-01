@@ -389,9 +389,8 @@ pub const Request = struct {
 
 	fn parseOneHeader(self: *Self, stream: Stream, buf: []u8, len: usize) !ParseResult {
 		var buf_len = len;
-
 		while (true) {
-			if (std.mem.indexOfScalar(u8, buf[0..buf_len], '\r')) |header_end| {
+			if (findCarriageReturnIndex(buf[0..buf_len])) |header_end| {
 
 				const next = header_end + 1;
 				if (next == buf_len) buf_len += try readForHeader(stream, buf[buf_len..]);
@@ -404,14 +403,18 @@ pub const Request = struct {
 					return .{.read = buf_len - len, .used = 2};
 				}
 
-				if (std.mem.indexOfScalar(u8, buf[0..header_end], ':')) |name_end| {
-					const name = buf[0..name_end];
-					lowerCase(name);
-					self.headers.add(name, trimLeadingSpace(buf[name_end+1..header_end]));
+				for (buf[0..header_end], 0..) |b, i| {
+					// find the colon and lowercase the header while we're iterating
+					if (b != ':') {
+						buf[i] = std.ascii.toLower(b);
+						continue;
+					}
+					const name = buf[0..i];
+					const value = trimLeadingSpace(buf[i+1..header_end]);
+					self.headers.add(name, value);
 					return .{.read = buf_len - len, .used = next + 1};
-				} else {
-					return error.InvalidHeaderLine;
 				}
+				return error.InvalidHeaderLine;
 			}
 			buf_len += try readForHeader(stream, buf[buf_len..]);
 		}
@@ -532,17 +535,14 @@ pub const Request = struct {
 	}
 };
 
-fn trimLeadingSpace(in: []const u8) []const u8 {
+inline 	fn trimLeadingSpace(in: []const u8) []const u8 {
+	// very common case where we have a single space after our colon
+	if (in.len >= 2 and in[0] == ' ' and in[1] != ' ') return in[1..];
+
 	for (in, 0..) |b, i| {
 		if (b != ' ') return in[i..];
 	}
 	return "";
-}
-
-fn lowerCase(value: []u8) void {
-	for (value, 0..) |c, i| {
-		value[i] = std.ascii.toLower(c);
-	}
 }
 
 fn readForHeader(stream: Stream, buffer: []u8) !usize {
@@ -572,6 +572,41 @@ fn atoi(str: []const u8) ?usize {
 	return n;
 }
 
+const CR = '\r';
+const VECTOR_LEN = if (std.simd.suggestVectorSize(u8) == null) 0 else 32;
+const VECTOR_CR = @splat(VECTOR_LEN, @as(u8, CR));
+const VECTOR_IOTA = std.simd.iota(u8, VECTOR_LEN);
+const VECTOR_NULLS = @splat(VECTOR_LEN, @as(u8, 255));
+
+fn findCarriageReturnIndex(buf: []u8) ?usize {
+	if (VECTOR_LEN == 0) {
+		return std.mem.indexOfScalar(u8, buf, CR);
+	}
+
+	var pos: usize = 0;
+	var left = buf.len;
+	while (left > 0) {
+		if (left < VECTOR_LEN) {
+			if (std.mem.indexOfScalar(u8, buf[pos..], CR)) |n| {
+				return pos + n;
+			}
+			return null;
+		}
+		const vec: @Vector(VECTOR_LEN, u8) = buf[pos..][0..VECTOR_LEN].*;
+		const matches = vec == VECTOR_CR;
+		const indices = @select(u8, matches, VECTOR_IOTA, VECTOR_NULLS);
+		const index = @reduce(.Min, indices);
+
+		if (index != 255) {
+			return pos + index;
+		}
+
+		pos += VECTOR_LEN;
+		left -= VECTOR_LEN;
+	}
+	return null;
+}
+
 test "atoi" {
 	var buf: [5]u8 = undefined;
 	for (0..99999) |i| {
@@ -583,6 +618,23 @@ test "atoi" {
 	try t.expectEqual(@as(?usize, null), atoi("392a"));
 	try t.expectEqual(@as(?usize, null), atoi("b392"));
 	try t.expectEqual(@as(?usize, null), atoi("3c92"));
+}
+
+test "request: findCarriageReturnIndex" {
+	var input = ("z" ** 128).*;
+	for (1..input.len) |i| {
+		var buf = input[0..i];
+		try t.expectEqual(@as(?usize, null), findCarriageReturnIndex(buf));
+
+		for (0..i) |j| {
+			buf[j] = CR;
+			if (j > 0) {
+				buf[j-1] = 'z';
+			}
+			try t.expectEqual(j, findCarriageReturnIndex(buf).?);
+		}
+		buf[i-1] = 'z';
+	}
 }
 
 const Error = error {

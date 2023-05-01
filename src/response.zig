@@ -236,7 +236,6 @@ pub const Response = struct {
 			header_buffer[header_pos+2] = '\r';
 			header_buffer[header_pos+3] = '\n';
 			try stream.writeAll(header_buffer[0..(header_pos+4)]);
-
 			try stream.writeAll(b);
 		} else {
 			const fin = "Content-Length: 0\r\n\r\n";
