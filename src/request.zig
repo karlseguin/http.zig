@@ -405,10 +405,14 @@ pub const Request = struct {
 
 				for (buf[0..header_end], 0..) |b, i| {
 					// find the colon and lowercase the header while we're iterating
-					if (b != ':') {
-						buf[i] = std.ascii.toLower(b);
+					if ('A' <= b and b <= 'Z') {
+						buf[i] = b + 32;
 						continue;
 					}
+					if (b != ':') {
+						continue;
+					}
+
 					const name = buf[0..i];
 					const value = trimLeadingSpace(buf[i+1..header_end]);
 					self.headers.add(name, value);
@@ -573,36 +577,73 @@ fn atoi(str: []const u8) ?usize {
 }
 
 const CR = '\r';
-const VECTOR_LEN = if (std.simd.suggestVectorSize(u8) == null) 0 else 32;
-const VECTOR_CR = @splat(VECTOR_LEN, @as(u8, CR));
-const VECTOR_IOTA = std.simd.iota(u8, VECTOR_LEN);
-const VECTOR_NULLS = @splat(VECTOR_LEN, @as(u8, 255));
+const VECTOR_8_LEN = if (std.simd.suggestVectorSize(u8) == null) 0 else 8;
+const VECTOR_8_CR = @splat(VECTOR_8_LEN, @as(u8, CR));
+const VECTOR_8_IOTA = std.simd.iota(u8, VECTOR_8_LEN);
+const VECTOR_8_NULLS = @splat(VECTOR_8_LEN, @as(u8, 255));
+
+const VECTOR_16_LEN = if (std.simd.suggestVectorSize(u8) == null) 0 else 16;
+const VECTOR_16_CR = @splat(VECTOR_16_LEN, @as(u8, CR));
+const VECTOR_16_IOTA = std.simd.iota(u8, VECTOR_16_LEN);
+const VECTOR_16_NULLS = @splat(VECTOR_16_LEN, @as(u8, 255));
+
+const VECTOR_32_LEN = if (std.simd.suggestVectorSize(u8) == null) 0 else 32;
+const VECTOR_32_CR = @splat(VECTOR_32_LEN, @as(u8, CR));
+const VECTOR_32_IOTA = std.simd.iota(u8, VECTOR_32_LEN);
+const VECTOR_32_NULLS = @splat(VECTOR_32_LEN, @as(u8, 255));
+
+const VECTOR_64_LEN = if (std.simd.suggestVectorSize(u8) == null) 0 else 64;
+const VECTOR_64_CR = @splat(VECTOR_64_LEN, @as(u8, CR));
+const VECTOR_64_IOTA = std.simd.iota(u8, VECTOR_64_LEN);
+const VECTOR_64_NULLS = @splat(VECTOR_64_LEN, @as(u8, 255));
 
 fn findCarriageReturnIndex(buf: []u8) ?usize {
-	if (VECTOR_LEN == 0) {
+	if (VECTOR_32_LEN == 0) {
 		return std.mem.indexOfScalar(u8, buf, CR);
 	}
 
 	var pos: usize = 0;
 	var left = buf.len;
 	while (left > 0) {
-		if (left < VECTOR_LEN) {
+		if (left < VECTOR_8_LEN) {
 			if (std.mem.indexOfScalar(u8, buf[pos..], CR)) |n| {
 				return pos + n;
 			}
 			return null;
 		}
-		const vec: @Vector(VECTOR_LEN, u8) = buf[pos..][0..VECTOR_LEN].*;
-		const matches = vec == VECTOR_CR;
-		const indices = @select(u8, matches, VECTOR_IOTA, VECTOR_NULLS);
-		const index = @reduce(.Min, indices);
+		var index: u8 = undefined;
+		var vector_len: usize = undefined;
+		if (left < VECTOR_16_LEN) {
+			vector_len = VECTOR_8_LEN;
+			const vec: @Vector(VECTOR_8_LEN, u8) = buf[pos..][0..VECTOR_8_LEN].*;
+			const matches = vec == VECTOR_8_CR;
+			const indices = @select(u8, matches, VECTOR_8_IOTA, VECTOR_8_NULLS);
+			index = @reduce(.Min, indices);
+		} else if (left < VECTOR_32_LEN) {
+			vector_len = VECTOR_16_LEN;
+			const vec: @Vector(VECTOR_16_LEN, u8) = buf[pos..][0..VECTOR_16_LEN].*;
+			const matches = vec == VECTOR_16_CR;
+			const indices = @select(u8, matches, VECTOR_16_IOTA, VECTOR_16_NULLS);
+			index = @reduce(.Min, indices);
+		} else if (left < VECTOR_64_LEN) {
+			vector_len = VECTOR_32_LEN;
+			const vec: @Vector(VECTOR_32_LEN, u8) = buf[pos..][0..VECTOR_32_LEN].*;
+			const matches = vec == VECTOR_32_CR;
+			const indices = @select(u8, matches, VECTOR_32_IOTA, VECTOR_32_NULLS);
+			index = @reduce(.Min, indices);
+		} else {
+			vector_len = VECTOR_64_LEN;
+			const vec: @Vector(VECTOR_64_LEN, u8) = buf[pos..][0..VECTOR_64_LEN].*;
+			const matches = vec == VECTOR_64_CR;
+			const indices = @select(u8, matches, VECTOR_64_IOTA, VECTOR_64_NULLS);
+			index = @reduce(.Min, indices);
+		}
 
 		if (index != 255) {
 			return pos + index;
 		}
-
-		pos += VECTOR_LEN;
-		left -= VECTOR_LEN;
+		pos += vector_len;
+		left -= vector_len;
 	}
 	return null;
 }
