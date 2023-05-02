@@ -405,7 +405,7 @@ fn testCLBody(req: *Request, res: *Response, _: u32) !void {
 
 fn testJsonRes(_: *Request, res: *Response) !void {
 	res.status = 201;
-	try res.json(.{.over = 9000, .teg = "soup" });
+	try res.json(.{.over = 9000, .teg = "soup"}, .{});
 }
 
 fn testReqQuery(req: *Request, res: *Response) !void {

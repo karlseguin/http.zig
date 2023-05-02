@@ -79,9 +79,8 @@ pub const Response = struct {
 		self.headers.reset();
 	}
 
-	pub fn json(self: *Self, value: anytype) !void {
-		const json_options = .{.string = .{.String = .{.escape_solidus = false}}};
-		try std.json.stringify(value, json_options, Writer.init(self));
+	pub fn json(self: *Self, value: anytype, options: std.json.StringifyOptions) !void {
+		try std.json.stringify(value, options, Writer.init(self));
 		self.content_type = httpz.ContentType.JSON;
 	}
 
@@ -482,7 +481,7 @@ test "response: json fuzz" {
 			defer testCleanup(res, s);
 
 			res.status = 200;
-			try res.json(body);
+			try res.json(body, .{});
 			try res.write(s);
 
 			const expected = try std.fmt.allocPrint(t.arena, "HTTP/1.1 200\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n\"{s}\"", .{expected_encoded_length, body});

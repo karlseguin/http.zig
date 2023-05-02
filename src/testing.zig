@@ -442,7 +442,7 @@ test "testing: expectJson" {
 	var ht = init(.{});
 	defer ht.deinit();
 	ht.res.status = 201;
-	try ht.res.json(.{.tea = "keemun", .price = .{.amount = 4990, .discount = 0.1}});
+	try ht.res.json(.{.tea = "keemun", .price = .{.amount = 4990, .discount = 0.1}}, .{});
 
 	try ht.expectStatus(201);
 	try ht.expectJson(.{ .price = .{.discount = 0.1, .amount = 4990}, .tea = "keemun"});
@@ -453,7 +453,7 @@ test "testing: getJson" {
 	defer ht.deinit();
 
 	ht.res.status = 201;
-	try ht.res.json(.{.tea = "silver needle"});
+	try ht.res.json(.{.tea = "silver needle"}, .{});
 
 	try ht.expectStatus(201);
 	const json = try ht.getJson();
@@ -464,7 +464,7 @@ test "testing: parseResponse" {
 	var ht = init(.{});
 	defer ht.deinit();
 	ht.res.status = 201;
-	try ht.res.json(.{.tea = 33});
+	try ht.res.json(.{.tea = 33}, .{});
 
 	try ht.expectStatus(201);
 	const res = try ht.parseResponse();

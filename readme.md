@@ -40,7 +40,7 @@ fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
     // Here we're passing an inferred anonymous structure, but you can pass anytype 
     // (so long as it can be serialized using std.json.stringify)
 
-    try res.json(.{.id = req.param("id").?, .name = "Teg"});
+    try res.json(.{.id = req.param("id").?, .name = "Teg"}, .{});
 }
 
 fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
@@ -323,7 +323,7 @@ The following fields are the most useful:
 * `arena` - an arena allocator that will be reset at the end of the request
 
 ## JSON
-The `json` function will set the content_type to `httpz.ContentType.JSON` and serialize the provided value using `std.json.stringify`.
+The `json` function will set the content_type to `httpz.ContentType.JSON` and serialize the provided value using `std.json.stringify`. The 2nd argument to the json function is the `std.json.StringifyOptions` to pass to the `stringify` function.
 
 Because the final size of the serialized object cannot be known ahead of a time, a custom writer is used. Initially, this writer will use a static buffer defined by the `config.response.body_buffer_size`. However, as the object is being serialized, if this static buffer runs out of space, a dynamic buffer will be allocated and the static buffer will be copied into it (at this point, the dynamic buffer essentially behaves like an `ArrayList(u8)`.
 
@@ -517,7 +517,7 @@ fn search(req: *httpz.Request, res: *httpz.Response) !void {
 
 fn missingParameter(res: *httpz.Response, parameter: []const u8) !void {
     res.status = 400;
-    return res.json(.{.@"error" = "missing parameter", .parameter = parameter});
+    return res.json(.{.@"error" = "missing parameter", .parameter = parameter}, .{});
 }
 ```
 

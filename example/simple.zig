@@ -39,7 +39,7 @@ fn hello(req: *httpz.Request, res: *httpz.Response) !void {
 
 fn json(req: *httpz.Request, res: *httpz.Response) !void {
 	const name = req.param("name").?;
-	try res.json(.{.hello = name});
+	try res.json(.{.hello = name}, .{});
 }
 
 fn writer(req: *httpz.Request, res: *httpz.Response) !void {
