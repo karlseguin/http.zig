@@ -181,13 +181,13 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 			return error.CannotDispatch;
 		}
 
-		pub fn handle(self: Self, stream: Stream, req: *Request, res: *Response) bool {
+		pub fn handle(self: Self, req: *Request, res: *Response) bool {
 			const da = self._router.route(req.method, req.url.path, &req.params);
 			self.dispatch(da, req, res) catch |err| switch (err) {
 				error.BodyTooBig => {
 					res.status = 431;
 					res.body = "Request body is too big";
-					res.write(stream) catch return false;
+					res.write() catch return false;
 				},
 				else => {
 					if (comptime G == void) {
@@ -197,7 +197,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 					}
 				}
 			};
-			res.write(stream) catch return false;
+			res.write() catch return false;
 			return req.canKeepAlive();
 		}
 

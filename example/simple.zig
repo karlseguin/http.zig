@@ -12,6 +12,7 @@ pub fn start(allocator: Allocator) !void{
 	router.get("/hello", hello);
 	router.get("/json/hello/:name", json);
 	router.get("/writer/hello/:name", writer);
+	router.get("/chunked_response", chunked);
 	try server.listen();
 }
 
@@ -21,6 +22,7 @@ fn index(_: *httpz.Request, res: *httpz.Response) !void {
 	\\ <li><a href="/hello?name=Teg">Querystring + text output</a>
 	\\ <li><a href="/writer/hello/Ghanima">Path parameter + serialize json object</a>
 	\\ <li><a href="/json/hello/Duncan">Path parameter + json writer</a>
+	\\ <li><a href="/chunked_response">Chunked response</a>
 	\\ <li><a href="http://localhost:5883/increment">Global shared state</a>
 	;
 }
@@ -51,6 +53,18 @@ fn writer(req: *httpz.Request, res: *httpz.Response) !void {
 	try ws.objectField("name");
 	try ws.emitString(name);
 	try ws.endObject();
+}
+
+fn chunked(_: *httpz.Request, res: *httpz.Response) !void {
+	// status and headers (including content type) must be set
+	// before the first call to chunk
+	res.status = 200;
+	res.header("A", "Header");
+	res.content_type = httpz.ContentType.TEXT;
+
+	try res.chunk("This is a chunk");
+	try res.chunk("\r\n");
+	try res.chunk("And another one");
 }
 
 fn notFound(_: *httpz.Request, res: *httpz.Response) !void {

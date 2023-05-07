@@ -339,6 +339,19 @@ var out = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
 res.body = out;
 ```
 
+## Chunked Response
+You can send a chunked response using `res.chunk(DATA)`. Chunked responses do not include a `Content-Length` so do need to be fully buffered in memory before sending. Multiple calls to `res.chunk` are, of course, supported. However, the response status along with any header, must be set before the first call to `chunk`:
+
+```zig
+res.status = 200;
+res.header("A", "Header");
+res.content_type = httpz.ContentType.TEXT;
+
+try res.chunk("This is a chunk");
+try res.chunk("\r\n");
+try res.chunk("And another one");
+```
+
 ## io.Writer
 `res.writer()` returns an `std.io.Writer`. Various types support writing to an io.Writer. For example, the built-in JSON stream writer can use this writer:
 

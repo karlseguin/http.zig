@@ -167,7 +167,8 @@ pub const Testing = struct {
 
 		var stream = t.Stream.init();
 		defer stream.deinit();
-		try self.res.write(stream);
+		self.res.stream = stream;
+		try self.res.write();
 
 		const data = stream.received.items;
 

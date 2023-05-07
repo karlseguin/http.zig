@@ -75,6 +75,7 @@ pub fn handleConnection(comptime S: type, server: S, conn: Conn, reqResPool: *Re
 	var arena = reqResPair.arena;
 
 	req.stream = stream;
+	res.stream = stream;
 	defer _ = arena.reset(.free_all);
 
 	while (true) {
@@ -86,30 +87,30 @@ pub fn handleConnection(comptime S: type, server: S, conn: Conn, reqResPool: *Re
 		// defer _ = arena.reset(.{.retain_with_limit = 8192});
 
 		if (req.parse()) {
-			if (!server.handle(stream, req, res)) {
+			if (!server.handle(req, res)) {
 				return;
 			}
 		} else |err| {
 			// hard to keep this request alive on a parseError since in a lot of
 			// failure cases, it's unclear where 1 request stops and another starts.
-			requestParseError(stream, err, res);
+			requestParseError(err, res);
 			return;
 		}
 		req.drain() catch { return; };
 	}
 }
 
-fn requestParseError(stream: Stream, err: anyerror, res: *httpz.Response) void {
+fn requestParseError(err: anyerror, res: *httpz.Response) void {
 	switch (err) {
 		error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
 			res.status = 400;
 			res.body = "Invalid Request";
-			res.write(stream) catch {};
+			res.write() catch {};
 		},
 		error.HeaderTooBig => {
 			res.status = 431;
 			res.body = "Request header is too big";
-			res.write(stream) catch {};
+			res.write() catch {};
 		},
 		else => {},
 	}
