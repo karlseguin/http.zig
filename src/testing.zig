@@ -8,24 +8,29 @@ const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 
 pub fn init(config: httpz.Config) Testing {
+	var arena = t.allocator.create(std.heap.ArenaAllocator) catch unreachable;
+	arena.* = std.heap.ArenaAllocator.init(t.allocator);
+
 	var req = t.allocator.create(httpz.Request) catch unreachable;
-	req.init(t.allocator, t.allocator, config.request) catch unreachable;
+	req.init(t.allocator, arena.allocator(), config.request) catch unreachable;
 	req.url = httpz.Url.parse("/");
 
 	var res = t.allocator.create(httpz.Response) catch unreachable;
-	res.init(t.allocator, t.allocator, config.response) catch unreachable;
+	res.init(t.allocator, arena.allocator(), config.response) catch unreachable;
 
 	return Testing{
 		.req = req,
 		.res = res,
-		.arena = std.heap.ArenaAllocator.init(t.allocator),
+		._arena = arena,
+		.arena = arena.allocator(),
 	};
 }
 
 pub const Testing = struct {
+	_arena: *std.heap.ArenaAllocator,
 	req: *httpz.Request,
 	res: *httpz.Response,
-	arena: std.heap.ArenaAllocator,
+	arena: std.mem.Allocator,
 	free_body: bool = false,
 	parsed_response: ?Response = null,
 
@@ -59,8 +64,8 @@ pub const Testing = struct {
 		self.res.deinit(t.allocator);
 		t.allocator.destroy(self.res);
 
-		self.arena.deinit();
-
+		self._arena.deinit();
+		t.allocator.destroy(self._arena);
 
 		if (self.parsed_response) |*pr| {
 			pr.headers.deinit();
@@ -127,8 +132,7 @@ pub const Testing = struct {
 
 		try self.expectHeader("Content-Type", "application/json");
 
-		var jc = JsonComparer.init(t.allocator);
-		defer jc.deinit();
+		var jc = JsonComparer.init(self.arena);
 		const diffs = try jc.compare(expected, pr.body);
 		if (diffs.items.len == 0) {
 			return;
@@ -214,7 +218,7 @@ pub const Testing = struct {
 };
 
 const JsonComparer = struct {
-	arena: std.heap.ArenaAllocator,
+	allocator: Allocator,
 
 	const Self = @This();
 
@@ -227,19 +231,15 @@ const JsonComparer = struct {
 
 	fn init(allocator: Allocator) Self {
 		return .{
-			.arena = std.heap.ArenaAllocator.init(allocator),
+			.allocator = allocator,
 		};
-	}
-
-	fn deinit(self: *JsonComparer) void {
-		self.arena.deinit();
 	}
 
 	// We compare by getting the string representation of a and b
 	// and then parsing it into a std.json.ValueTree, which we can compare
 	// Either a or b might already be serialized JSON string.
 	fn compare(self: *Self, a: anytype, b: anytype) !ArrayList(Diff) {
-		const allocator = self.arena.allocator();
+		const allocator = self.allocator;
 		var a_bytes: []const u8 = undefined;
 		if (@TypeOf(a) != []const u8) {
 			// a isn't a string, let's serialize it
@@ -269,7 +269,7 @@ const JsonComparer = struct {
 	}
 
 	fn compareValue(self: *Self, a: std.json.Value, b: std.json.Value, diffs: *ArrayList(Diff), path: *ArrayList([]const u8)) !void {
-		const allocator = self.arena.allocator();
+		const allocator = self.allocator;
 
 		if (!std.mem.eql(u8, @tagName(a), @tagName(b))) {
 			diffs.append(self.diff("types don't match", path, @tagName(a), @tagName(b))) catch unreachable;
@@ -333,7 +333,7 @@ const JsonComparer = struct {
 	}
 
 	fn diff(self: *Self, err: []const u8, path: *ArrayList([]const u8), a_rep: []const u8, b_rep: []const u8) Diff {
-		const full_path = std.mem.join(self.arena.allocator(), ".", path.items) catch unreachable;
+		const full_path = std.mem.join(self.allocator, ".", path.items) catch unreachable;
 		return .{
 			.a = a_rep,
 			.b = b_rep,
@@ -343,13 +343,13 @@ const JsonComparer = struct {
 	}
 
 	fn stringify(self: *Self, value: anytype) ![]const u8 {
-		var arr = ArrayList(u8).init(self.arena.allocator());
+		var arr = ArrayList(u8).init(self.allocator);
 		try std.json.stringify(value, .{}, arr.writer());
 		return arr.items;
 	}
 
 	fn format(self: *Self, value: anytype) []const u8 {
-		return std.fmt.allocPrint(self.arena.allocator(), "{}", .{value}) catch unreachable;
+		return std.fmt.allocPrint(self.allocator, "{}", .{value}) catch unreachable;
 	}
 };
 
