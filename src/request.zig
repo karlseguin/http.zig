@@ -749,7 +749,7 @@ test "request: parse request target" {
 	{
 		try expectParseError(Error.InvalidRequestTarget, "GET NOPE", .{});
 		try expectParseError(Error.InvalidRequestTarget, "GET nope ", .{});
-		try expectParseError(Error.InvalidRequestTarget, "GET http://www.goblgobl.com/test ", .{}); // this should be valid
+		try expectParseError(Error.InvalidRequestTarget, "GET http://www.pondzpondz.com/test ", .{}); // this should be valid
 		try expectParseError(Error.InvalidRequestTarget, "PUT hello ", .{});
 		try expectParseError(Error.InvalidRequestTarget, "POST  /hello ", .{});
 		try expectParseError(Error.InvalidRequestTarget, "POST *hello ", .{});
@@ -807,7 +807,7 @@ test "request: parse headers" {
 		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nH", .{});
 		try expectParseError(Error.InvalidHeaderLine, "GET / HTTP/1.1\r\nHost\r\n", .{});
 		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nHost:another\r\n\r", .{});
-		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nHost: goblgobl.com\r\n", .{});
+		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nHost: pondzpondz.com\r\n", .{});
 	}
 
 	{
@@ -817,19 +817,19 @@ test "request: parse headers" {
 	}
 
 	{
-		const r = testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\n\r\n", .{});
+		const r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\n\r\n", .{});
 		defer testCleanup(r);
 
 		try t.expectEqual(@as(usize, 1), r.headers.len);
-		try t.expectString("goblgobl.com", r.headers.get("host").?);
+		try t.expectString("pondzpondz.com", r.headers.get("host").?);
 	}
 
 	{
-		const r = testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nMisc:  Some-Value\r\nAuthorization:none\r\n\r\n", .{});
+		const r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nMisc:  Some-Value\r\nAuthorization:none\r\n\r\n", .{});
 		defer testCleanup(r);
 
 		try t.expectEqual(@as(usize, 3), r.headers.len);
-		try t.expectString("goblgobl.com", r.header("host").?);
+		try t.expectString("pondzpondz.com", r.header("host").?);
 		try t.expectString("Some-Value", r.header("misc").?);
 		try t.expectString("none", r.header("authorization").?);
 	}
@@ -915,7 +915,7 @@ test "request: body content-length" {
 
 	{
 		// no body
-		const r = testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
+		const r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
 		defer testCleanup(r);
 		try t.expectEqual(@as(?[]const u8, null), try r.body());
 		try t.expectEqual(@as(?[]const u8, null), try r.body());
@@ -980,7 +980,7 @@ test "body: json" {
 
 	{
 		// no body
-		const r = testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
+		const r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
 		defer testCleanup(r);
 		try t.expectEqual(@as(?Tea, null), try r.json(Tea));
 		try t.expectEqual(@as(?Tea, null), try r.json(Tea));
@@ -1005,7 +1005,7 @@ test "body: jsonValueTree" {
 
 	{
 		// no body
-		const r = testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
+		const r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
 		defer testCleanup(r);
 		try t.expectEqual(@as(?std.json.ValueTree, null), try r.jsonValueTree());
 		try t.expectEqual(@as(?std.json.ValueTree, null), try r.jsonValueTree());
@@ -1030,7 +1030,7 @@ test "body: jsonObject" {
 
 	{
 		// no body
-		const r = testParse("PUT / HTTP/1.0\r\nHost: goblgobl.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
+		const r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
 		defer testCleanup(r);
 		try t.expectEqual(@as(?std.json.ObjectMap, null), try r.jsonObject());
 		try t.expectEqual(@as(?std.json.ObjectMap, null), try r.jsonObject());

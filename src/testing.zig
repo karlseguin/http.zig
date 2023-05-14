@@ -107,6 +107,10 @@ pub const Testing = struct {
 	}
 
 	pub fn json(self: *Self, value: anytype) void {
+		if (self.free_body) {
+			t.allocator.free(self.req.bd.?);
+		}
+
 		var arr = ArrayList(u8).init(t.allocator);
 		defer arr.deinit();
 
