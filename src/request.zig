@@ -216,11 +216,11 @@ pub const Request = struct {
 			}
 
 			var buffer = self.static[pos..];
-			if (buffer.len >= length ) {
+			if (buffer.len >= length) {
 				self.pos = pos + length;
 			} else {
 				buffer = try self.arena.alloc(u8, length);
-				std.mem.copy(u8, buffer, self.static[pos..(pos+read)]);
+				@memcpy(buffer[0..read], self.static[pos..(pos+read)]);
 			}
 
 			while (read < length) {

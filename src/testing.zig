@@ -81,7 +81,7 @@ pub const Testing = struct {
 	}
 
 	pub fn param(self: *Self, name: []const u8, value: []const u8) void {
-		// This is a big ugly, but the Param structure is optimized for how the router
+		// This is ugly, but the Param structure is optimized for how the router
 		// works, so we don't have a clean API for setting 1 key=value pair. We'll
 		// just dig into the internals instead
 		var p = &self.req.params;
@@ -117,7 +117,7 @@ pub const Testing = struct {
 		std.json.stringify(value, .{}, arr.writer()) catch unreachable;
 
 		const bd = t.allocator.alloc(u8, arr.items.len) catch unreachable;
-		std.mem.copy(u8, bd, arr.items);
+		@memcpy(bd, arr.items);
 		self.free_body = true;
 		self.body(bd);
 	}
@@ -183,7 +183,7 @@ pub const Testing = struct {
 		// data won't outlive this function, we want our Response to take ownership
 		// of the full body, since it needs to reference parts of it.
 		const raw = t.allocator.alloc(u8, data.len) catch unreachable;
-		std.mem.copy(u8, raw, data);
+		@memcpy(raw, data);
 
 		var status: u16 = 0;
 		var header_length: usize = 0;
