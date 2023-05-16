@@ -17,6 +17,7 @@ pub fn init(config: httpz.Config) Testing {
 
 	var res = t.allocator.create(httpz.Response) catch unreachable;
 	res.init(t.allocator, arena.allocator(), config.response) catch unreachable;
+	res.stream = t.Stream.init();
 
 	return Testing{
 		.req = req,
@@ -60,6 +61,8 @@ pub const Testing = struct {
 
 		self.req.deinit(t.allocator);
 		t.allocator.destroy(self.req);
+
+		self.res.stream.deinit();
 
 		self.res.deinit(t.allocator);
 		t.allocator.destroy(self.res);
@@ -172,13 +175,9 @@ pub const Testing = struct {
 
 	pub fn parseResponse(self: *Self) !Response {
 		if (self.parsed_response) |r| return r;
-
-		var stream = t.Stream.init();
-		defer stream.deinit();
-		self.res.stream = stream;
 		try self.res.write();
 
-		const data = stream.received.items;
+		const data = self.res.stream.received.items;
 
 		// data won't outlive this function, we want our Response to take ownership
 		// of the full body, since it needs to reference parts of it.
@@ -208,18 +207,50 @@ pub const Testing = struct {
 			}
 		}
 
+		var body_length = raw.len - header_length;
+		if (headers.get("Transfer-Encoding")) |te| {
+			if (std.mem.eql(u8, te, "chunked")) {
+				body_length = decodeChunkedEncoding(raw[header_length..], data[header_length..]);
+			}
+		}
+
 		const pr = Response{
 			.raw = raw,
 			.status = status,
 			.headers = headers,
 			.json_value = null,
-			.body = raw[header_length..],
+			.body = raw[header_length..header_length + body_length],
 		};
 
 		self.parsed_response = pr;
 		return pr;
 	}
 };
+
+fn decodeChunkedEncoding(full_dest: []u8, full_src: []u8) usize {
+	var src = full_src;
+	var dest = full_dest;
+	var length: usize = 0;
+
+	while (true) {
+		var nl = std.mem.indexOfScalar(u8, src, '\r') orelse unreachable;
+		const chunk_length = std.fmt.parseInt(u32, src[0..nl], 16) catch unreachable;
+		if (chunk_length == 0) {
+			if (src[1] == '\r' and src[2] == '\n' and src[3] == '\r' and src[4] == '\n') {
+				break;
+			}
+			continue;
+		}
+
+		@memcpy(dest[0..chunk_length], src[nl+2..nl+2+chunk_length]);
+		length += chunk_length;
+
+		dest = dest[chunk_length..];
+		src = src[nl+4+chunk_length..];
+	}
+	return length;
+
+}
 
 const JsonComparer = struct {
 	allocator: Allocator,
