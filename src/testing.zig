@@ -166,7 +166,7 @@ pub const Testing = struct {
 		var pr = try self.parseResponse();
 		if (pr.json_value) |jv| return jv.root;
 
-		var parser = std.json.Parser.init(t.allocator, false);
+		var parser = std.json.Parser.init(t.allocator, .alloc_always);
 		defer parser.deinit();
 		pr.json_value = (try parser.parse(pr.body));
 		self.parsed_response = pr;
@@ -291,10 +291,10 @@ const JsonComparer = struct {
 			b_bytes = b;
 		}
 
-		var a_parser = std.json.Parser.init(allocator, false);
+		var a_parser = std.json.Parser.init(allocator, .alloc_always);
 		const a_tree = try a_parser.parse(a_bytes);
 
-		var b_parser = std.json.Parser.init(allocator, false);
+		var b_parser = std.json.Parser.init(allocator, .alloc_always);
 		const b_tree = try b_parser.parse(b_bytes);
 
 		var diffs = ArrayList(Diff).init(allocator);
@@ -312,51 +312,51 @@ const JsonComparer = struct {
 		}
 
 		switch (a) {
-			.Null => {},
-			.Bool => {
-				if (a.Bool != b.Bool) {
-					diffs.append(self.diff("not equal", path, self.format(a.Bool), self.format(b.Bool))) catch unreachable;
+			.null => {},
+			.bool => {
+				if (a.bool != b.bool) {
+					diffs.append(self.diff("not equal", path, self.format(a.bool), self.format(b.bool))) catch unreachable;
 				}
 			},
-			.Integer => {
-				if (a.Integer != b.Integer) {
-					diffs.append(self.diff("not equal", path, self.format(a.Integer), self.format(b.Integer))) catch unreachable;
+			.integer => {
+				if (a.integer != b.integer) {
+					diffs.append(self.diff("not equal", path, self.format(a.integer), self.format(b.integer))) catch unreachable;
 				}
 			},
-			.Float => {
-				if (a.Float != b.Float) {
-					diffs.append(self.diff("not equal", path, self.format(a.Float), self.format(b.Float))) catch unreachable;
+			.float => {
+				if (a.float != b.float) {
+					diffs.append(self.diff("not equal", path, self.format(a.float), self.format(b.float))) catch unreachable;
 				}
 			},
-			.NumberString => {
-				if (!std.mem.eql(u8, a.NumberString, b.NumberString)) {
-					diffs.append(self.diff("not equal", path, a.NumberString, b.NumberString)) catch unreachable;
+			.number_string => {
+				if (!std.mem.eql(u8, a.number_string, b.number_string)) {
+					diffs.append(self.diff("not equal", path, a.number_string, b.number_string)) catch unreachable;
 				}
 			},
-			.String => {
-				if (!std.mem.eql(u8, a.String, b.String)) {
-					diffs.append(self.diff("not equal", path, a.String, b.String)) catch unreachable;
+			.string => {
+				if (!std.mem.eql(u8, a.string, b.string)) {
+					diffs.append(self.diff("not equal", path, a.string, b.string)) catch unreachable;
 				}
 			},
-			.Array => {
-				const a_len = a.Array.items.len;
-				const b_len = b.Array.items.len;
+			.array => {
+				const a_len = a.array.items.len;
+				const b_len = b.array.items.len;
 				if (a_len != b_len) {
 					diffs.append(self.diff("array length", path, self.format(a_len), self.format(b_len))) catch unreachable;
 					return;
 				}
-				for (a.Array.items, b.Array.items, 0..) |a_item, b_item, i| {
+				for (a.array.items, b.array.items, 0..) |a_item, b_item, i| {
 					try path.append(try std.fmt.allocPrint(allocator, "{d}", .{i}));
 					try self.compareValue(a_item, b_item, diffs, path);
 					_ = path.pop();
 				}
 			},
-			.Object => {
-				var it = a.Object.iterator();
+			.object => {
+				var it = a.object.iterator();
 				while (it.next()) |entry| {
 					const key = entry.key_ptr.*;
 					try path.append(key);
-					if (b.Object.get(key)) |b_item| {
+					if (b.object.get(key)) |b_item| {
 						try self.compareValue(entry.value_ptr.*, b_item, diffs, path);
 					} else {
 						diffs.append(self.diff("field missing", path, key, "")) catch unreachable;
@@ -493,7 +493,7 @@ test "testing: getJson" {
 
 	try ht.expectStatus(201);
 	const json = try ht.getJson();
-	try t.expectString("silver needle", json.Object.get("tea").?.String);
+	try t.expectString("silver needle", json.object.get("tea").?.string);
 }
 
 test "testing: parseResponse" {

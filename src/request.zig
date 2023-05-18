@@ -240,13 +240,12 @@ pub const Request = struct {
 
 	pub fn json(self: *Self, comptime T: type) !?T {
 		const b = try self.body() orelse return null;
-		var stream = std.json.TokenStream.init(b);
-		return try std.json.parse(T, &stream, .{.allocator = self.arena});
+		return try std.json.parseFromSlice(T, self.arena, b, .{});
 	}
 
 	pub fn jsonValueTree(self: *Self) !?std.json.ValueTree {
 		const b = try self.body() orelse return null;
-		var parser = std.json.Parser.init(self.arena, false);
+		var parser = std.json.Parser.init(self.arena, .alloc_always);
 		defer parser.deinit();
 		return try parser.parse(b);
 	}
@@ -254,7 +253,7 @@ pub const Request = struct {
 	pub fn jsonObject(self: *Self) !?std.json.ObjectMap {
 		const tree = try self.jsonValueTree() orelse return null;
 		switch (tree.root) {
-			.Object => |o| return o,
+			.object => |o| return o,
 			else => return null,
 		}
 	}
@@ -444,6 +443,8 @@ pub const Request = struct {
 	// The only case where this makes it inefficient is where:
 	//    (there is a body AND the user doesn't want it) AND
 	//       (no keepalive OR (keepalive AND body > buffer)).
+	// If you're wondering why keepalive matters? It's because, with keepalive
+	// (which we generally expect to be set), the body needs to be read anyways.
 	fn parseQuery(self: *Self) !KeyValue {
 		const raw = self.url.query;
 		if (raw.len == 0) {
@@ -1015,8 +1016,8 @@ test "body: jsonValueTree" {
 		// parses json
 		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
 		defer testCleanup(r);
-		try t.expectString("keemun", (try r.jsonValueTree()).?.root.Object.get("type").?.String);
-		try t.expectString("keemun", (try r.jsonValueTree()).?.root.Object.get("type").?.String);
+		try t.expectString("keemun", (try r.jsonValueTree()).?.root.object.get("type").?.string);
+		try t.expectString("keemun", (try r.jsonValueTree()).?.root.object.get("type").?.string);
 	}
 }
 
@@ -1048,8 +1049,8 @@ test "body: jsonObject" {
 		// parses json
 		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
 		defer testCleanup(r);
-		try t.expectString("keemun", (try r.jsonObject()).?.get("type").?.String);
-		try t.expectString("keemun", (try r.jsonObject()).?.get("type").?.String);
+		try t.expectString("keemun", (try r.jsonObject()).?.get("type").?.string);
+		try t.expectString("keemun", (try r.jsonObject()).?.get("type").?.string);
 	}
 }
 
