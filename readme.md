@@ -79,20 +79,42 @@ fn main() !void {
     router.get("/increment", increment);
     return server.listen();
 }
+```
 
-fn increment(_: *httpz.Request, res: *httpz.Response, global: *Global) !void {
-    global.l.lock();
-    var hits = global.hits + 1;
-    global.hits = hits;
-    global.l.unlock();
+There are a few important things to notice. First, the `init` function of `ServerCtx(G, R)` takes a 3rd parameter: the global data. Second, our actions take a new parameter of type `G`. Any custom notFound handler (set via `server.notFound(...)`) or error handler(set via `server.errorHandler(errorHandler)`) must also accept this new parameter. 
 
-    res.content_type = httpz.ContentType.TEXT;
-    var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-    res.body = out;
+Because the new parameter is first, the above can also be written as:
+
+```zig
+const Global = struct {
+    hits: usize = 0,
+    l: std.Thread.Mutex = .{},
+
+    fn increment(global: *Global, _: *httpz.Request, res: *httpz.Response) !void {
+        global.l.lock();
+        var hits = global.hits + 1;
+        global.hits = hits;
+        global.l.unlock();
+
+        res.content_type = httpz.ContentType.TEXT;
+        var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
+        res.body = out;
+    }
+};
+
+fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    var global = &Global{};
+    var server = try httpz.ServerCtx(*Global, *Global).init(allocator, .{}, global);
+    var router = server.router();
+    router.get("/increment", global.increment);
+    return server.listen();
 }
 ```
 
-There are a few important things to notice. First, the `init` function of `ServerCtx(G, R)` takes a 3rd parameter: the global data. Second, our actions now take a 3rd parameter of type `G`. Any custom notFound handler (set via `server.notFound(...)`) or error handler(set via `server.errorHandler(errorHandler)`) must also accept this new parameter. Finally, it's up to the application to make sure that access to the global data is synchronized.
+It's up to the application to make sure that access to the global data is synchronized.
 
 ## Complex Use Case 2 - Custom Dispatcher
 While httpz doesn't support traditional middleware, it does allow applications to provide their own custom dispatcher. This gives an application full control over how a request is processed. 
@@ -100,13 +122,13 @@ While httpz doesn't support traditional middleware, it does allow applications t
 To understand what the dispatcher does and how to write a custom one, consider the default dispatcher which looks something like:
 
 ```zig
-fn dispatcher(action: httpz.Action(R), req: *httpz.Request, res: *httpz.Response, global: G) !void {
+fn dispatcher(global: G, action: httpz.Action(R), req: *httpz.Request, res: *httpz.Response) !void {
     // this is how httpz maintains a simple interface when httpz.Server()
     // is used instead of httpz.ServerCtx(G, R)
     if (R == void) {
         return action(req, res);
     }
-    return action(req, res, global);
+    return action(global, req, res);
 }
 ```
 
@@ -191,7 +213,7 @@ fn main() !void {
     server.router().delete("/v1/session", logout) 
 ...
 
-fn dispatcher(action: httpz.Action(Context), req: *httpz.Request, res: *httpz.Response, global: *Global) !void {
+fn dispatcher(global: *Global, action: httpz.Action(Context), req: *httpz.Request, res: *httpz.Response) !void {
     // If needed, req.arena is an std.mem.Allocator than can be used to allocate memory
     // and it'll exist for the life of this request.
 
@@ -201,13 +223,15 @@ fn dispatcher(action: httpz.Action(Context), req: *httpz.Request, res: *httpz.Re
         // we shouldn't blindly trust this header!
         .user_id = req.header("user"),
     }
-    return action(req, res, context);
+    return action(context, contextreq, res);
 }
 
-fn logout(req: *httpz.Request, res: *httpz.Response, context: Context) !void {
+fn logout(context: Context, req: *httpz.Request, res: *httpz.Response) !void {
     ...
 }
 ```
+
+The per-request data, `Context` in the above example, is the first parameter and thus actions can optionally be called as methods on the structure.
 
 ## httpz.Request
 The following fields are the most useful:
