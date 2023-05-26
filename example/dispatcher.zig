@@ -4,10 +4,16 @@ const Allocator = std.mem.Allocator;
 
 // Our global state (just like global.zig)
 const GlobalContext = struct {
-    const Self = @This();
-
     hits: usize = 0,
     l: std.Thread.Mutex = .{},
+};
+
+// our per-request data
+const RequestContext = struct {
+    const Self = @This();
+
+    user_id: ?[]const u8,
+    global: *GlobalContext,
 
     pub fn increment(self: *Self, _: *httpz.Request, res: *httpz.Response) !void {
         // we don't actually do anything with ctx.user_id
@@ -27,19 +33,12 @@ const GlobalContext = struct {
     }
 };
 
-// our per-request data
-const RequestContext = struct {
-    user_id: ?[]const u8,
-    global: *GlobalContext,
-};
-
 pub fn start(allocator: Allocator) !void {
     var ctx = GlobalContext{};
     var server = try httpz.ServerCtx(*GlobalContext, *RequestContext).init(allocator, .{ .pool_size = 10, .port = 5884 }, &ctx);
     server.dispatcher(dispatcher);
     var router = server.router();
-    _ = router;
-    // router.get("/increment", ctx.increment);
+    router.get("/increment", RequestContext.increment);
     return server.listen();
 }
 
