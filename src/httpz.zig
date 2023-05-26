@@ -57,7 +57,7 @@ pub fn Action(comptime G: type) type {
 	if (G == void) {
 		return *const fn(*Request, *Response) anyerror!void;
 	}
-	return *const fn(*Request, *Response, G) anyerror!void;
+	return *const fn(G, *Request, *Response) anyerror!void;
 }
 
 pub fn Dispatcher(comptime G: type, comptime R: type) type {
@@ -66,9 +66,9 @@ pub fn Dispatcher(comptime G: type, comptime R: type) type {
 	} else if (G == void) {
 		return *const fn(Action(R), *Request, *Response) anyerror!void;
 	} else if (R == void) {
-		return *const fn(Action(G), *Request, *Response, G) anyerror!void;
+		return *const fn(G, Action(G), *Request, *Response) anyerror!void;
 	}
-	return *const fn(Action(R), *Request, *Response, G) anyerror!void;
+	return *const fn(G, Action(R), *Request, *Response) anyerror!void;
 }
 
 pub fn DispatchableAction(comptime G: type, comptime R: type) type {
@@ -82,7 +82,7 @@ fn ErrorHandlerAction(comptime G: type) type {
 	if (G == void) {
 		return *const fn(*Request, *Response, anyerror) void;
 	}
-	return *const fn(*Request, *Response, anyerror, G) void;
+	return *const fn(G, *Request, *Response, anyerror) void;
 }
 
 // Done this way so that Server and ServerCtx have a similar API
@@ -150,7 +150,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 			return &self._router;
 		}
 
-		fn defaultNotFoundWithContext(req: *Request, res: *Response, _: G) !void{
+		fn defaultNotFoundWithContext(_:G, req: *Request, res: *Response) !void{
 			try defaultNotFound(req, res);
 		}
 
@@ -159,7 +159,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 			res.body = "Not Found";
 		}
 
-		fn defaultErrorHandlerWithContext(req: *Request, res: *Response, err: anyerror, _: G) void {
+		fn defaultErrorHandlerWithContext(_:G, req: *Request, res: *Response, err: anyerror) void {
 			defaultErrorHandler(req, res, err);
 		}
 
@@ -173,9 +173,9 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 			try action(req, res);
 		}
 
-		fn defaultDispatcherWithContext(action: Action(R), req: *Request, res: *Response, ctx: G) !void {
+		fn defaultDispatcherWithContext(ctx: G, action: Action(R), req: *Request, res: *Response) !void {
 			if (R == G) {
-				return action(req, res, ctx);
+				return action(ctx, req, res);
 			}
 			// app needs to provide a dispatcher in this case
 			return error.CannotDispatch;
@@ -193,7 +193,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 					if (comptime G == void) {
 						self._errorHandler(req, res, err);
 					} else {
-						self._errorHandler(req, res, err, self.ctx);
+						self._errorHandler(self.ctx, req, res, err);
 					}
 				}
 			};
@@ -206,13 +206,13 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 				if (G == void) {
 					return da.dispatcher(da.action, req, res);
 				}
-				return da.dispatcher(da.action, req, res, self.ctx);
+				return da.dispatcher(self.ctx, da.action,req, res);
 			}
 
 			if (G == void) {
 				return self._notFoundHandler(req, res);
 			}
-			return self._notFoundHandler(req, res, self.ctx);
+			return self._notFoundHandler(self.ctx, req, res);
 		}
 	};
 }
@@ -382,23 +382,23 @@ fn testRequest(comptime G: type, srv: *ServerCtx(G, G), stream: *t.Stream) void 
 	listener.handleConnection(*ServerCtx(G, G), srv, stream, &reqResPool);
 }
 
-fn testFail(_: *Request, _: *Response, _: u32) !void {
+fn testFail(_: u32, _: *Request, _: *Response) !void {
 	return error.TestUnhandledError;
 }
 
-fn testParams(req: *Request, res: *Response, _: u32) !void {
+fn testParams(_: u32, req: *Request, res: *Response) !void {
 	var args = .{req.param("version").?, req.param("UserId").?};
 	var out = try std.fmt.allocPrint(req.arena, "version={s},user={s}", args);
 	res.body = out;
 }
 
-fn testHeaders(req: *Request, res: *Response, ctx: u32) !void {
+fn testHeaders(ctx: u32, req: *Request, res: *Response) !void {
 	addContextHeader(res, ctx);
 	res.header("Echo", req.header("header-name").?);
 	res.header("other", "test-value");
 }
 
-fn testCLBody(req: *Request, res: *Response, _: u32) !void {
+fn testCLBody(_: u32, req: *Request, res: *Response) !void {
 	const body = try req.body();
 	res.header("Echo-Body", body.?);
 }
@@ -414,13 +414,13 @@ fn testReqQuery(req: *Request, res: *Response) !void {
 	res.body = query.get("fav").?;
 }
 
-fn testNotFound(_: *Request, res: *Response, ctx: u32) !void {
+fn testNotFound(ctx: u32, _: *Request, res: *Response) !void {
 	res.status = 404;
 	addContextHeader(res, ctx);
 	res.body = "where lah?";
 }
 
-fn testErrorHandler(_: *Request, res: *Response, _: anyerror, ctx: u32) void {
+fn testErrorHandler(ctx: u32, _: *Request, res: *Response, _: anyerror) void {
 	res.status = 500;
 	addContextHeader(res, ctx);
 	res.body = "#/why/arent/tags/hierarchical";
