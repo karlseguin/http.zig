@@ -59,6 +59,9 @@ pub const Response = struct {
 	// whether or not we're sending a chunked response
 	chunked: bool,
 
+	// whether or not we've already written the response
+	written: bool,
+
 	const Self = @This();
 
 	// Should not be called directly, but initialized through a pool
@@ -80,6 +83,7 @@ pub const Response = struct {
 		self.pos = 0;
 		self.body = null;
 		self.status = 200;
+		self.written = false;
 		self.chunked = false;
 		self.content_type = null;
 		self.writer_buffer = self.body_buffer;
@@ -96,6 +100,9 @@ pub const Response = struct {
 	}
 
 	pub fn write(self: *Self) !void {
+		if (self.written) return;
+		self.written = true;
+
 		const stream = self.stream;
 		if (self.chunked) {
 			// every chunk write includes the trailing \r\n for the
@@ -597,7 +604,7 @@ test "response: chunked" {
 		try t.expectString("HTTP/1.1 200\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n", s.received.items);
 	}
 
-{
+	{
 		// headers, multiple chunk
 		s.reset(); res.reset();
 		res.status = 1;
@@ -608,6 +615,23 @@ test "response: chunked" {
 		try res.write();
 		try t.expectString("HTTP/1.1 1\r\nContent-Type: application/xml\r\nTest: Chunked\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n1D\r\nanother slightly bigger chunk\r\n0\r\n\r\n", s.received.items);
 	}
+}
+
+test "response: written" {
+	var s = t.Stream.init();
+	var res = testResponse(s, .{});
+	defer testCleanup(res, s);
+
+	res.body = "abc";
+	try res.write();
+	try t.expectString("HTTP/1.1 200\r\nContent-Length: 3\r\n\r\nabc", s.received.items);
+
+	// write again, without a res.reset, nothing gets written
+	s.reset();
+	res.body = "yo!";
+	try res.write();
+	try t.expectString("", s.received.items);
+
 }
 
 fn testResponse(stream: Stream, config: Config) *Response {

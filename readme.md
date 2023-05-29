@@ -398,6 +398,16 @@ res.header("Location", "/");
 
 The header name and value are sent as provided.
 
+## Explicit Write
+Internally, when the dispatcher returns (whether it be an internal/default dispatcher or an application-specific dispatcher), `res.write()` is called to
+write the response to the socket. 
+
+It is safe to call `res.write()` directly from the application. This is absolutely not necessary in normal cases. One case where this could be needed is if the data for the response (say the body) only exists within the application's handler (and the `res.arena` cannot be used).
+
+`res.write()` is safe to call because of the `res.written` boolean flag. Once called, `res.written` is set to true and subsequent calls to `res.write()` are ignored. Thus, an even more advanced use case is for the application to set `res.written` directly.
+
+While explicit use of `res.write()` is uncommon, I can think of no reason to to call `res.write()` when `res.chunk([]const u8)` is used. This is not supported.
+
 ## Router
 You can use the `get`, `put`, `post`, `head`, `patch`, `delete` or `option` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
 
