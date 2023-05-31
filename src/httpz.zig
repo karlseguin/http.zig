@@ -73,6 +73,7 @@ pub fn Dispatcher(comptime G: type, comptime R: type) type {
 
 pub fn DispatchableAction(comptime G: type, comptime R: type) type {
 	return struct {
+		ctx: G,
 		action: Action(R),
 		dispatcher: Dispatcher(G, R),
 	};
@@ -118,7 +119,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 				.httpz_allocator = allocator,
 				._errorHandler = erh,
 				._notFoundHandler = nfh,
-				._router = try Router(G, R).init(allocator, dd),
+				._router = try Router(G, R).init(allocator, dd, ctx),
 			};
 		}
 
@@ -182,8 +183,8 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 		}
 
 		pub fn handle(self: Self, req: *Request, res: *Response) bool {
-			const da = self._router.route(req.method, req.url.path, &req.params);
-			self.dispatch(da, req, res) catch |err| switch (err) {
+			const dispatchable_action = self._router.route(req.method, req.url.path, &req.params);
+			self.dispatch(dispatchable_action, req, res) catch |err| switch (err) {
 				error.BodyTooBig => {
 					res.status = 431;
 					res.body = "Request body is too big";
@@ -193,7 +194,8 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 					if (comptime G == void) {
 						self._errorHandler(req, res, err);
 					} else {
-						self._errorHandler(self.ctx, req, res, err);
+						const ctx = if (dispatchable_action) |da| da.ctx else self.ctx;
+						self._errorHandler(ctx, req, res, err);
 					}
 				}
 			};
@@ -206,7 +208,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 				if (G == void) {
 					return da.dispatcher(da.action, req, res);
 				}
-				return da.dispatcher(self.ctx, da.action,req, res);
+				return da.dispatcher(da.ctx, da.action,req, res);
 			}
 
 			if (G == void) {

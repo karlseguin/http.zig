@@ -12,6 +12,7 @@ const StringHashMap = std.StringHashMap;
 pub fn Config(comptime G: type, comptime R: type) type {
 	const Dispatcher = httpz.Dispatcher(G, R);
 	return struct {
+		ctx: ?G = null,
 		dispatcher: ?Dispatcher = null,
 	};
 }
@@ -30,13 +31,15 @@ pub fn Router(comptime G: type, comptime R: type) type {
 		_patch: Part(DispatchableAction),
 		_delete: Part(DispatchableAction),
 		_options: Part(DispatchableAction),
+		_default_ctx: G,
 		_default_dispatcher: Dispatcher,
 
 		const Self = @This();
 
-		pub fn init(allocator: Allocator, default_dispatcher: Dispatcher) !Self {
+		pub fn init(allocator: Allocator, default_dispatcher: Dispatcher, default_ctx: G) !Self {
 			return Self{
 				._allocator = allocator,
+				._default_ctx = default_ctx,
 				._default_dispatcher = default_dispatcher,
 				._get = try Part(DispatchableAction).init(allocator),
 				._head = try Part(DispatchableAction).init(allocator),
@@ -63,6 +66,10 @@ pub fn Router(comptime G: type, comptime R: type) type {
 			self._default_dispatcher = d;
 		}
 
+		pub fn ctx(self: *Self, c: G) void {
+			self._default_ctx = c;
+		}
+
 		pub fn route(self: Self, method: httpz.Method, url: []const u8, params: *Params) ?DispatchableAction {
 			return switch (method) {
 				httpz.Method.GET => getRoute(DispatchableAction, self._get, url, params),
@@ -87,6 +94,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 		pub fn tryGetC(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
+				.ctx = config.ctx orelse self._default_ctx,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
 			try addRoute(DispatchableAction, self._allocator, &self._get, path, da);
@@ -104,6 +112,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 		pub fn tryPutC(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
+				.ctx = config.ctx orelse self._default_ctx,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
 			try addRoute(DispatchableAction, self._allocator, &self._put, path, da);
@@ -121,6 +130,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 		pub fn tryPostC(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
+				.ctx = config.ctx orelse self._default_ctx,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
 			try addRoute(DispatchableAction, self._allocator, &self._post, path, da);
@@ -138,6 +148,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 		pub fn tryHeadC(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
+				.ctx = config.ctx orelse self._default_ctx,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
 			try addRoute(DispatchableAction, self._allocator, &self._head, path, da);
@@ -155,6 +166,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 		pub fn tryPatchC(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
+				.ctx = config.ctx orelse self._default_ctx,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
 			try addRoute(DispatchableAction, self._allocator, &self._patch, path, da);
@@ -172,6 +184,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 		pub fn tryDeleteC(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
+				.ctx = config.ctx orelse self._default_ctx,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
 			try addRoute(DispatchableAction, self._allocator, &self._delete, path, da);
@@ -189,6 +202,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 		pub fn tryOptionC(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
+				.ctx = config.ctx orelse self._default_ctx,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
 			try addRoute(DispatchableAction, self._allocator, &self._options, path, da);
@@ -405,7 +419,7 @@ test "route: root" {
 	var params = try Params.init(t.allocator, 5);
 	defer params.deinit(t.allocator);
 
-	var router = Router(void, void).init(t.allocator, testDispatcher1) catch unreachable;
+	var router = Router(void, void).init(t.allocator, testDispatcher1, {}) catch unreachable;
 	defer router.deinit();
 	router.get("/", testRoute1);
 	router.put("/", testRoute2);
@@ -435,7 +449,7 @@ test "route: static" {
 	var params = try Params.init(t.allocator, 5);
 	defer params.deinit(t.allocator);
 
-	var router = Router(void, void).init(t.allocator, testDispatcher1) catch unreachable;
+	var router = Router(void, void).init(t.allocator, testDispatcher1, {}) catch unreachable;
 	defer router.deinit();
 	router.get("hello/world", testRoute1);
 	router.get("/over/9000/", testRoute2);
@@ -472,7 +486,7 @@ test "route: params" {
 	var params = try Params.init(t.allocator, 5);
 	defer params.deinit(t.allocator);
 
-	var router = Router(void, void).init(t.allocator, testDispatcher1) catch unreachable;
+	var router = Router(void, void).init(t.allocator, testDispatcher1, {}) catch unreachable;
 	defer router.deinit();
 	router.get("/:p1", testRoute1);
 	router.get("/users/:p2", testRoute2);
@@ -539,7 +553,7 @@ test "route: glob" {
 	var params = try Params.init(t.allocator, 5);
 	defer params.deinit(t.allocator);
 
-	var router = Router(void, void).init(t.allocator, testDispatcher1) catch unreachable;
+	var router = Router(void, void).init(t.allocator, testDispatcher1, {}) catch unreachable;
 	defer router.deinit();
 	router.get("/*", testRoute1);
 	router.get("/users/*", testRoute2);
