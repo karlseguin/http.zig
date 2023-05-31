@@ -184,7 +184,30 @@ router.get("/debug/metrics", debug.metrics);
 
 In the above, th `requiredUserDispatcher` is used for all subsequent routes until another dispatcher is set. In other words, `requiredUserDispatcher` will be used for `/v1/session` and `/v1/password_reset` while `internalDispatcher` will be used for `/debug/ping` and `/debug/metrics`.
 
-## Complex Use Case 3 - Per-Request Data
+## Complex Use Case 3 - Route-Based Global Data
+Much like the custom dispatcher explained above, global data can be specified per-route:
+
+```zig
+var server = try httpz.ServerCtx(*Global, *Global).init(allocator, .{}, &default_global);
+
+var router = server.router();
+server.router().deleteC("/v1/session", logout, .{.ctx = &Global{...}});
+```
+
+Also like the custom dispatcher, the custom global data can be set for all subsequent routes (and this is also somewhat ugly/dangerous as it's easy to add a new route without realizing how the router is currently configured):
+
+```zig
+var router = server.router();
+router.ctx(&Global{....})
+server.router().post("/v1/session", login);
+server.router().delete("/v1/session", logout);
+
+router.ctx(....)
+// more routes
+```
+
+
+## Complex Use Case 4 - Per-Request Data
 We can combine what we've learned from the above two uses cases and use `ServerCtx(G, R)` where `G != R`. In this case, a dispatcher **must** be provided (failure to provide a dispatcher will result in 500 errors). This is because the dispatcher is needed to generate `R`.
 
 ```zig
