@@ -79,6 +79,17 @@ fn main() !void {
     router.get("/increment", increment);
     return server.listen();
 }
+
+fn increment(_: *httpz.Request, res: *httpz.Response, global: *Global) !void {
+    global.l.lock();
+    var hits = global.hits + 1;
+    global.hits = hits;
+    global.l.unlock();
+
+    res.content_type = httpz.ContentType.TEXT;
+    var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
+    res.body = out;
+}
 ```
 
 There are a few important things to notice. First, the `init` function of `ServerCtx(G, R)` takes a 3rd parameter: the global data. Second, our actions take a new parameter of type `G`. Any custom notFound handler (set via `server.notFound(...)`) or error handler(set via `server.errorHandler(errorHandler)`) must also accept this new parameter. 
