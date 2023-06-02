@@ -179,21 +179,7 @@ fn logout(req: *httpz.Request, res: *httpz.Response) !void {
 }
 ```
 
-The dispatcher can also be set directly on the router and will be used for any subsequent route. This is convenient, but error prone, as the routes must be defined in the correct order:
-
-```zig
-var router = server.router();
-
-router.dispatcher(requiredUserDispatcher);
-router.delete("/v1/session", session.delete);
-router.post("/v1/password_reset", password_reset.create);
-
-router.dispatcher(internalDispatcher);
-router.get("/debug/ping", debug.ping);
-router.get("/debug/metrics", debug.metrics);
-```
-
-In the above, th `requiredUserDispatcher` is used for all subsequent routes until another dispatcher is set. In other words, `requiredUserDispatcher` will be used for `/v1/session` and `/v1/password_reset` while `internalDispatcher` will be used for `/debug/ping` and `/debug/metrics`.
+See [router groups](#groups) for a more convenient approach to defining a dispatcher for a group of routes.
 
 ## Complex Use Case 3 - Route-Based Global Data
 Much like the custom dispatcher explained above, global data can be specified per-route:
@@ -205,18 +191,7 @@ var router = server.router();
 server.router().deleteC("/v1/session", logout, .{.ctx = &Global{...}});
 ```
 
-Also like the custom dispatcher, the custom global data can be set for all subsequent routes (and this is also somewhat ugly/dangerous as it's easy to add a new route without realizing how the router is currently configured):
-
-```zig
-var router = server.router();
-router.ctx(&Global{....})
-server.router().post("/v1/session", login);
-server.router().delete("/v1/session", logout);
-
-router.ctx(....)
-// more routes
-```
-
+See [router groups](#groups) for a more convenient approach to defining global dta for a group of routes.
 
 ## Complex Use Case 4 - Per-Request Data
 We can combine what we've learned from the above two uses cases and use `ServerCtx(G, R)` where `G != R`. In this case, a dispatcher **must** be provided (failure to provide a dispatcher will result in 500 errors). This is because the dispatcher is needed to generate `R`.
@@ -456,7 +431,20 @@ router.tryGet("/", index);
 ```
 
 There is also a `getC` and `tryGetC` (and `putC` and `tryPutC`, and ...) that takes a 3rd parameter: the route configuration. Most of the time, this isn't needed. So, to streamline usage and given Zig's lack of overloading or default parameters, these awkward `xyzC` functions were created. Currently, the only route configuration value is to set a custom dispatcher for the specific route.
- See [Custom Dispatcher][#complex-use-case-2---custom-dispatcher] for more information.
+ See [Custom Dispatcher](#complex-use-case-2---custom-dispatcher) for more information.
+
+### Groups
+Defining a custom dispatcher or custom global data on each route can be tedious. Instead, consider using a router group:
+
+```zig
+var admin_routes = router.group("/admin", .{.dispatcher = custom_admin_dispatcher, .ctx = custom_admin_data});
+admin_routes.get("/users", listUsers);
+admin_routs.delete("/users/:id", deleteUsers);
+```
+
+The first parameter to `group` is a prefix to prepend to each route in the group. An empty prefix is acceptable.
+
+The second paremeter is the same configuration object given to the `getC`, `putC`, etc. routing variants. All configuration values are optional and, if omitted, the default configured value will be used.
 
 ### Casing
 You **must** use a lowercase route. You can use any casing with parameter names, as long as you use that same casing when getting the parameter.
@@ -499,25 +487,6 @@ Globs interact similarly poorly with parameters and static path segments.
 
 Resolving this issue requires keeping a stack (or visiting the routes recursively), in order to back-out of a dead-end and trying a different path.
 This seems like an unnecessarily expensive thing to do, on each request, when, in my opinion, such route hierarchies are quite uncommon. 
-
-### Custom Dispatcher
-While httpz doesn't support a traditional middleware stack, it does allow a custom dispatcher to be used on a per-route basis. A dispatcher is merely the function that calls the action. The default one is essentially:
-
-```zig
-fn dispatcher(action: httpz.Action(void), req: *httpz.Request, res: *httpz.Response) !void {
-    return action(req, res);
-}
-```
-
-A custom dispatcher does not need to invoke `action`. 
-
-The `action` type is `httpz.Action(void)` when `httpz.Server()` is used. However, if custom [Server Contexts](#server-context) are used, via `httpz.ServerCtx(T)`, then the action type will be: `httpz.Action(T)` and the dispatch will receive a 4th parameter of type T:
-
-```zig
-fn dispatcher(action: httpz.Action(*Context), req: *httpz.Request, res: *httpz.Response, ctx: *Context) !void {
-    return action(req, res, ctx);
-}
-```
 
 ## Configuration
 The third option given to `listen` is an `httpz.Config` instance. Possible values, along with their default, are:

@@ -23,7 +23,8 @@ pub fn Router(comptime G: type, comptime R: type) type {
 	const DispatchableAction = httpz.DispatchableAction(G, R);
 
 	return struct {
-		_allocator: Allocator,
+		_arena: *std.heap.ArenaAllocator,
+		_aa: Allocator,
 		_get: Part(DispatchableAction),
 		_put: Part(DispatchableAction),
 		_post: Part(DispatchableAction),
@@ -37,29 +38,32 @@ pub fn Router(comptime G: type, comptime R: type) type {
 		const Self = @This();
 
 		pub fn init(allocator: Allocator, default_dispatcher: Dispatcher, default_ctx: G) !Self {
+			const arena = try allocator.create(std.heap.ArenaAllocator);
+			arena.* = std.heap.ArenaAllocator.init(allocator);
+			var aa = arena.allocator();
+
 			return Self{
-				._allocator = allocator,
+				._arena = arena,
+				._aa = aa,
 				._default_ctx = default_ctx,
 				._default_dispatcher = default_dispatcher,
-				._get = try Part(DispatchableAction).init(allocator),
-				._head = try Part(DispatchableAction).init(allocator),
-				._post = try Part(DispatchableAction).init(allocator),
-				._put = try Part(DispatchableAction).init(allocator),
-				._patch = try Part(DispatchableAction).init(allocator),
-				._delete = try Part(DispatchableAction).init(allocator),
-				._options = try Part(DispatchableAction).init(allocator),
+				._get = try Part(DispatchableAction).init(aa),
+				._head = try Part(DispatchableAction).init(aa),
+				._post = try Part(DispatchableAction).init(aa),
+				._put = try Part(DispatchableAction).init(aa),
+				._patch = try Part(DispatchableAction).init(aa),
+				._delete = try Part(DispatchableAction).init(aa),
+				._options = try Part(DispatchableAction).init(aa),
 			};
 		}
 
-		pub fn deinit(self: *Self) void {
-			const allocator = self._allocator;
-			self._get.deinit(allocator);
-			self._post.deinit(allocator);
-			self._put.deinit(allocator);
-			self._delete.deinit(allocator);
-			self._patch.deinit(allocator);
-			self._head.deinit(allocator);
-			self._options.deinit(allocator);
+		pub fn deinit(self: *Self, allocator: Allocator) void {
+			self._arena.deinit();
+			allocator.destroy(self._arena);
+		}
+
+		pub fn group(self: *Self, prefix: []const u8, config: Config(G, R)) Group(G, R) {
+			return Group(G, R).init(self, prefix, config);
 		}
 
 		pub fn dispatcher(self: *Self, d: Dispatcher) void {
@@ -97,7 +101,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 				.ctx = config.ctx orelse self._default_ctx,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
-			try addRoute(DispatchableAction, self._allocator, &self._get, path, da);
+			try addRoute(DispatchableAction, self._aa, &self._get, path, da);
 		}
 
 		pub fn put(self: *Self, path: []const u8, action: Action) void {
@@ -115,7 +119,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 				.ctx = config.ctx orelse self._default_ctx,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
-			try addRoute(DispatchableAction, self._allocator, &self._put, path, da);
+			try addRoute(DispatchableAction, self._aa, &self._put, path, da);
 		}
 
 		pub fn post(self: *Self, path: []const u8, action: Action) void {
@@ -133,7 +137,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 				.ctx = config.ctx orelse self._default_ctx,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
-			try addRoute(DispatchableAction, self._allocator, &self._post, path, da);
+			try addRoute(DispatchableAction, self._aa, &self._post, path, da);
 		}
 
 		pub fn head(self: *Self, path: []const u8, action: Action) void {
@@ -151,7 +155,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 				.ctx = config.ctx orelse self._default_ctx,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
-			try addRoute(DispatchableAction, self._allocator, &self._head, path, da);
+			try addRoute(DispatchableAction, self._aa, &self._head, path, da);
 		}
 
 		pub fn patch(self: *Self, path: []const u8, action: Action) void {
@@ -169,7 +173,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 				.ctx = config.ctx orelse self._default_ctx,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
-			try addRoute(DispatchableAction, self._allocator, &self._patch, path, da);
+			try addRoute(DispatchableAction, self._aa, &self._patch, path, da);
 		}
 
 		pub fn delete(self: *Self, path: []const u8, action: Action) void {
@@ -187,7 +191,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 				.ctx = config.ctx orelse self._default_ctx,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
-			try addRoute(DispatchableAction, self._allocator, &self._delete, path, da);
+			try addRoute(DispatchableAction, self._aa, &self._delete, path, da);
 		}
 
 		pub fn option(self: *Self, path: []const u8, action: Action) void {
@@ -205,7 +209,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 				.ctx = config.ctx orelse self._default_ctx,
 				.dispatcher = config.dispatcher orelse self._default_dispatcher,
 			};
-			try addRoute(DispatchableAction, self._allocator, &self._options, path, da);
+			try addRoute(DispatchableAction, self._aa, &self._options, path, da);
 		}
 
 		pub fn all(self: *Self, path: []const u8, action: Action) void {
@@ -225,6 +229,99 @@ pub fn Router(comptime G: type, comptime R: type) type {
 			try self.tryPatchC(path, action, config);
 			try self.tryDeleteC(path, action, config);
 			try self.tryOptionC(path, action, config);
+		}
+	};
+}
+
+pub fn Group(comptime G: type, comptime R: type) type {
+	const Action = httpz.Action(R);
+
+	return struct {
+		_aa: Allocator,
+		_prefix: []const u8,
+		_router: *Router(G, R),
+		_config: Config(G, R),
+
+		const Self = @This();
+
+		fn init(router: *Router(G, R), prefix: []const u8, config: Config(G, R)) Self {
+			return .{
+				._prefix = prefix,
+				._router = router,
+				._config = config,
+				._aa = router._arena.allocator(),
+			};
+		}
+
+		pub fn get(self: *Self, path: []const u8, action: Action) void {
+			self._router.getC(self.createPath(path), action, self._config);
+		}
+		pub fn tryGet(self: *Self, path: []const u8, action: Action) !void {
+			self._router.tryGetC(self.tryCreatePath(path), action, self._config);
+		}
+
+		pub fn put(self: *Self, path: []const u8, action: Action) void {
+			self._router.putC(self.createPath(path), action, self._config);
+		}
+		pub fn tryPut(self: *Self, path: []const u8, action: Action) !void {
+			self._router.tryPutC(self.tryCreatePath(path), action, self._config);
+		}
+
+		pub fn post(self: *Self, path: []const u8, action: Action) void {
+			self._router.postC(self.createPath(path), action, self._config);
+		}
+		pub fn tryPost(self: *Self, path: []const u8, action: Action) !void {
+			self._router.tryPostC(self.tryCreatePath(path), action, self._config);
+		}
+
+		pub fn head(self: *Self, path: []const u8, action: Action) void {
+			self._router.headC(self.createPath(path), action, self._config);
+		}
+		pub fn tryHead(self: *Self, path: []const u8, action: Action) !void {
+			self._router.tryHeadC(self.tryCreatePath(path), action, self._config);
+		}
+
+		pub fn patch(self: *Self, path: []const u8, action: Action) void {
+			self._router.patchC(self.createPath(path), action, self._config);
+		}
+		pub fn tryPatch(self: *Self, path: []const u8, action: Action) !void {
+			self._router.tryPatchC(self.tryCreatePath(path), action, self._config);
+		}
+
+		pub fn delete(self: *Self, path: []const u8, action: Action) void {
+			self._router.deleteC(self.createPath(path), action, self._config);
+		}
+		pub fn tryDelete(self: *Self, path: []const u8, action: Action) !void {
+			self._router.tryDeleteC(self.tryCreatePath(path), action, self._config);
+		}
+
+		pub fn option(self: *Self, path: []const u8, action: Action) void {
+			self._router.optionC(self.createPath(path), action, self._config);
+		}
+		pub fn tryOption(self: *Self, path: []const u8, action: Action) !void {
+			self._router.tryOptionC(self.tryCreatePath(path), action, self._config);
+		}
+
+		pub fn all(self: *Self, path: []const u8, action: Action) void {
+			self._router.allC(self.createPath(path), action, self._config);
+		}
+		pub fn tryAll(self: *Self, path: []const u8, action: Action) !void {
+			self._router.tryAllC(self.tryCreatePath(path), action, self._config);
+		}
+
+		fn createPath(self: *Self, path: []const u8) []const u8 {
+			return self.tryCreatePath(path) catch unreachable;
+		}
+
+		fn tryCreatePath(self: *Self, path: []const u8) ![]const u8 {
+			const prefix = self._prefix;
+			if (prefix.len == 0) {
+				return path;
+			}
+			const joined = try self._aa.alloc(u8, prefix.len + path.len);
+			@memcpy(joined[0..prefix.len], prefix);
+			@memcpy(joined[prefix.len..], path);
+			return joined;
 		}
 	};
 }
@@ -258,28 +355,6 @@ pub fn Part(comptime A: type) type {
 			self.param_part = null;
 			self.param_names = null;
 			self.parts = StringHashMap(Part(A)).init(allocator);
-		}
-
-		pub fn deinit(self: *Self, allocator: Allocator) void {
-			var it = self.parts.valueIterator();
-			while (it.next()) |part| {
-				part.deinit(allocator);
-			}
-			self.parts.deinit();
-
-			if (self.param_part) |part| {
-				part.deinit(allocator);
-				allocator.destroy(part);
-			}
-
-			if (self.param_names) |names| {
-				allocator.free(names);
-			}
-
-			if (self.glob) |glob| {
-				glob.deinit(allocator);
-				allocator.destroy(glob);
-			}
 		}
 	};
 }
@@ -420,7 +495,7 @@ test "route: root" {
 	defer params.deinit(t.allocator);
 
 	var router = Router(void, void).init(t.allocator, testDispatcher1, {}) catch unreachable;
-	defer router.deinit();
+	defer router.deinit(t.allocator);
 	router.get("/", testRoute1);
 	router.put("/", testRoute2);
 	router.post("", testRoute3);
@@ -450,7 +525,7 @@ test "route: static" {
 	defer params.deinit(t.allocator);
 
 	var router = Router(void, void).init(t.allocator, testDispatcher1, {}) catch unreachable;
-	defer router.deinit();
+	defer router.deinit(t.allocator);
 	router.get("hello/world", testRoute1);
 	router.get("/over/9000/", testRoute2);
 
@@ -487,7 +562,7 @@ test "route: params" {
 	defer params.deinit(t.allocator);
 
 	var router = Router(void, void).init(t.allocator, testDispatcher1, {}) catch unreachable;
-	defer router.deinit();
+	defer router.deinit(t.allocator);
 	router.get("/:p1", testRoute1);
 	router.get("/users/:p2", testRoute2);
 	router.get("/users/:p2/fav", testRoute3);
@@ -554,7 +629,7 @@ test "route: glob" {
 	defer params.deinit(t.allocator);
 
 	var router = Router(void, void).init(t.allocator, testDispatcher1, {}) catch unreachable;
-	defer router.deinit();
+	defer router.deinit(t.allocator);
 	router.get("/*", testRoute1);
 	router.get("/users/*", testRoute2);
 	router.get("/users/*/test", testRoute3);
@@ -605,7 +680,7 @@ test "route: glob" {
 // 	defer params.deinit();
 
 // 	var router = Router(u32).init(t.allocator, 9999999) catch unreachable;
-// 	defer router.deinit();
+// 	defer router.deinit(t.allocator);
 // 	router.get("/:any/users", 1, .{});
 // 	router.get("/hello/users/test", 2, .{});
 

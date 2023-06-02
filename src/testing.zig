@@ -45,6 +45,35 @@ pub const Testing = struct {
 		// need to free the memory it allocated
 		json_value: ?std.json.ValueTree,
 		headers: std.StringHashMap([]const u8),
+
+		pub fn deinit(self: *Response) void {
+			self.headers.deinit();
+			t.allocator.free(self.raw);
+			if (self.json_value) |*jv| {
+				jv.deinit();
+			}
+		}
+
+		pub fn expectHeader(self: Response, name: []const u8, expected: []const u8) !void {
+			try t.expectString(expected, self.headers.get(name).?);
+		}
+
+		pub fn expectJson(self: Response, expected: anytype) !void {
+			try t.expectString("application/json", self.headers.get("Content-Type").?);
+
+			var jc = JsonComparer.init(t.allocator);
+			defer jc.deinit();
+			const diffs = try jc.compare(expected, self.body);
+			if (diffs.items.len == 0) {
+				return;
+			}
+
+			for (diffs.items, 0..) |diff, i| {
+				std.debug.print("\n==Difference #{d}==\n", .{i+1});
+				std.debug.print("  {s}: {s}\n  Left: {s}\n  Right: {s}\n", .{ diff.path, diff.err, diff.a, diff.b});
+			}
+			return error.JsonNotEqual;
+		}
 	};
 
 	pub fn deinit(self: *Self) void {
@@ -71,11 +100,7 @@ pub const Testing = struct {
 		t.allocator.destroy(self._arena);
 
 		if (self.parsed_response) |*pr| {
-			pr.headers.deinit();
-			t.allocator.free(pr.raw);
-			if (pr.json_value) |*jv| {
-				jv.deinit();
-			}
+			pr.deinit();
 		}
 	}
 
@@ -136,25 +161,12 @@ pub const Testing = struct {
 
 	pub fn expectJson(self: *Self, expected: anytype) !void {
 		const pr = try self.parseResponse();
-
-		try self.expectHeader("Content-Type", "application/json");
-
-		var jc = JsonComparer.init(self.arena);
-		const diffs = try jc.compare(expected, pr.body);
-		if (diffs.items.len == 0) {
-			return;
-		}
-
-		for (diffs.items, 0..) |diff, i| {
-			std.debug.print("\n==Difference #{d}==\n", .{i+1});
-			std.debug.print("  {s}: {s}\n  Left: {s}\n  Right: {s}\n", .{ diff.path, diff.err, diff.a, diff.b});
-		}
-		return error.JsonNotEqual;
+		try pr.expectJson(expected);
 	}
 
 	pub fn expectHeader(self: *Self, name: []const u8, expected: []const u8) !void {
 		const pr = try self.parseResponse();
-		try t.expectString(expected, pr.headers.get(name).?);
+		return pr.expectHeader(name, expected);
 	}
 
 	pub fn expectHeaderCount(self: *Self, expected: u32) !void {
@@ -177,55 +189,56 @@ pub const Testing = struct {
 		if (self.parsed_response) |r| return r;
 		try self.res.write();
 
-		const data = self.res.stream.received.items;
-
-		// data won't outlive this function, we want our Response to take ownership
-		// of the full body, since it needs to reference parts of it.
-		const raw = t.allocator.alloc(u8, data.len) catch unreachable;
-		@memcpy(raw, data);
-
-		var status: u16 = 0;
-		var header_length: usize = 0;
-		var headers = std.StringHashMap([]const u8).init(t.allocator);
-
-		var it = std.mem.split(u8, raw, "\r\n");
-		if (it.next()) |line| {
-			header_length = line.len + 2;
-			status = try std.fmt.parseInt(u16, line[9..], 10);
-		} else {
-			return error.InvalidResponseLine;
-		}
-
-		while (it.next()) |line| {
-			header_length += line.len + 2;
-			if (line.len == 0) break;
-			if (std.mem.indexOfScalar(u8, line, ':')) |index| {
-				// +2 to strip out the leading space
-				headers.put(line[0..index], line[index+2..]) catch unreachable;
-			} else {
-				return error.InvalidHeader;
-			}
-		}
-
-		var body_length = raw.len - header_length;
-		if (headers.get("Transfer-Encoding")) |te| {
-			if (std.mem.eql(u8, te, "chunked")) {
-				body_length = decodeChunkedEncoding(raw[header_length..], data[header_length..]);
-			}
-		}
-
-		const pr = Response{
-			.raw = raw,
-			.status = status,
-			.headers = headers,
-			.json_value = null,
-			.body = raw[header_length..header_length + body_length],
-		};
-
+		const pr = try parse(self.res.stream.received.items);
 		self.parsed_response = pr;
 		return pr;
 	}
 };
+
+pub fn parse(data: []u8) !Testing.Response {
+	// data won't outlive this function, we want our Response to take ownership
+	// of the full body, since it needs to reference parts of it.
+	const raw = t.allocator.alloc(u8, data.len) catch unreachable;
+	@memcpy(raw, data);
+
+	var status: u16 = 0;
+	var header_length: usize = 0;
+	var headers = std.StringHashMap([]const u8).init(t.allocator);
+
+	var it = std.mem.split(u8, raw, "\r\n");
+	if (it.next()) |line| {
+		header_length = line.len + 2;
+		status = try std.fmt.parseInt(u16, line[9..], 10);
+	} else {
+		return error.InvalidResponseLine;
+	}
+
+	while (it.next()) |line| {
+		header_length += line.len + 2;
+		if (line.len == 0) break;
+		if (std.mem.indexOfScalar(u8, line, ':')) |index| {
+			// +2 to strip out the leading space
+			headers.put(line[0..index], line[index+2..]) catch unreachable;
+		} else {
+			return error.InvalidHeader;
+		}
+	}
+
+	var body_length = raw.len - header_length;
+	if (headers.get("Transfer-Encoding")) |te| {
+		if (std.mem.eql(u8, te, "chunked")) {
+			body_length = decodeChunkedEncoding(raw[header_length..], data[header_length..]);
+		}
+	}
+
+	return .{
+		.raw = raw,
+		.status = status,
+		.headers = headers,
+		.json_value = null,
+		.body = raw[header_length..header_length + body_length],
+	};
+}
 
 fn decodeChunkedEncoding(full_dest: []u8, full_src: []u8) usize {
 	var src = full_src;
@@ -253,7 +266,7 @@ fn decodeChunkedEncoding(full_dest: []u8, full_src: []u8) usize {
 }
 
 const JsonComparer = struct {
-	allocator: Allocator,
+	_arena: std.heap.ArenaAllocator,
 
 	const Self = @This();
 
@@ -266,15 +279,19 @@ const JsonComparer = struct {
 
 	fn init(allocator: Allocator) Self {
 		return .{
-			.allocator = allocator,
+			._arena = std.heap.ArenaAllocator.init(allocator),
 		};
+	}
+
+	fn deinit(self: Self) void {
+		self._arena.deinit();
 	}
 
 	// We compare by getting the string representation of a and b
 	// and then parsing it into a std.json.ValueTree, which we can compare
 	// Either a or b might already be serialized JSON string.
 	fn compare(self: *Self, a: anytype, b: anytype) !ArrayList(Diff) {
-		const allocator = self.allocator;
+		const allocator = self._arena.allocator();
 		var a_bytes: []const u8 = undefined;
 		if (@TypeOf(a) != []const u8) {
 			// a isn't a string, let's serialize it
@@ -304,7 +321,7 @@ const JsonComparer = struct {
 	}
 
 	fn compareValue(self: *Self, a: std.json.Value, b: std.json.Value, diffs: *ArrayList(Diff), path: *ArrayList([]const u8)) !void {
-		const allocator = self.allocator;
+		const allocator = self._arena.allocator();
 
 		if (!std.mem.eql(u8, @tagName(a), @tagName(b))) {
 			diffs.append(self.diff("types don't match", path, @tagName(a), @tagName(b))) catch unreachable;
@@ -368,7 +385,7 @@ const JsonComparer = struct {
 	}
 
 	fn diff(self: *Self, err: []const u8, path: *ArrayList([]const u8), a_rep: []const u8, b_rep: []const u8) Diff {
-		const full_path = std.mem.join(self.allocator, ".", path.items) catch unreachable;
+		const full_path = std.mem.join(self._arena.allocator(), ".", path.items) catch unreachable;
 		return .{
 			.a = a_rep,
 			.b = b_rep,
@@ -378,13 +395,13 @@ const JsonComparer = struct {
 	}
 
 	fn stringify(self: *Self, value: anytype) ![]const u8 {
-		var arr = ArrayList(u8).init(self.allocator);
+		var arr = ArrayList(u8).init(self._arena.allocator());
 		try std.json.stringify(value, .{}, arr.writer());
 		return arr.items;
 	}
 
 	fn format(self: *Self, value: anytype) []const u8 {
-		return std.fmt.allocPrint(self.allocator, "{}", .{value}) catch unreachable;
+		return std.fmt.allocPrint(self._arena.allocator(), "{}", .{value}) catch unreachable;
 	}
 };
 

@@ -124,7 +124,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 		}
 
 		pub fn deinit(self: *Self) void {
-			self._router.deinit();
+			self._router.deinit(self.httpz_allocator);
 		}
 
 		pub fn listen(self: *Self) !void {
@@ -229,6 +229,7 @@ test "httpz: invalid request (not enough data, assume closed)" {
 	_ = stream.add("GET / HTTP/1.1\r");
 
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
+	defer srv.deinit();
 	testRequest(u32, &srv, stream);
 
 	try t.expectEqual(true, stream.closed);
@@ -241,6 +242,7 @@ test "httpz: invalid request" {
 	_ = stream.add("TEA / HTTP/1.1\r\n\r\n");
 
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
+	defer srv.deinit();
 	testRequest(u32, &srv, stream);
 
 	try t.expectString("HTTP/1.1 400\r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received.items);
@@ -252,6 +254,7 @@ test "httpz: no route" {
 	_ = stream.add("GET / HTTP/1.1\r\n\r\n");
 
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
+	defer srv.deinit();
 	testRequest(u32, &srv, stream);
 
 	try t.expectString("HTTP/1.1 404\r\nContent-Length: 9\r\n\r\nNot Found", stream.received.items);
@@ -263,6 +266,7 @@ test "httpz: no route with custom notFound handler" {
 	_ = stream.add("GET / HTTP/1.1\r\n\r\n");
 
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 3) catch unreachable;
+	defer srv.deinit();
 	srv.notFound(testNotFound);
 	testRequest(u32, &srv, stream);
 
@@ -278,6 +282,7 @@ test "httpz: unhandled exception" {
 	_ = stream.add("GET /fail HTTP/1.1\r\n\r\n");
 
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 5) catch unreachable;
+	defer srv.deinit();
 	srv.router().get("/fail", testFail);
 	testRequest(u32, &srv, stream);
 
@@ -293,6 +298,7 @@ test "httpz: unhandled exception with custom error handler" {
 	_ = stream.add("GET /fail HTTP/1.1\r\n\r\n");
 
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 4) catch unreachable;
+	defer srv.deinit();
 	srv.errorHandler(testErrorHandler);
 	srv.router().get("/fail", testFail);
 	testRequest(u32, &srv, stream);
@@ -306,6 +312,7 @@ test "httpz: route params" {
 	_ = stream.add("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
 
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
+	defer srv.deinit();
 	srv.router().all("/api/:version/users/:UserId", testParams);
 	testRequest(u32, &srv, stream);
 
@@ -318,6 +325,7 @@ test "httpz: request and response headers" {
 	_ = stream.add("GET /test/headers HTTP/1.1\r\nHeader-Name: Header-Value\r\n\r\n");
 
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 88) catch unreachable;
+	defer srv.deinit();
 	srv.router().get("/test/headers", testHeaders);
 	testRequest(u32, &srv, stream);
 
@@ -330,6 +338,7 @@ test "httpz: content-length body" {
 	_ = stream.add("GET /test/body/cl HTTP/1.1\r\nHeader-Name: Header-Value\r\nContent-Length: 4\r\n\r\nabcz");
 
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
+	defer srv.deinit();
 	srv.router().get("/test/body/cl", testCLBody);
 	testRequest(u32, &srv, stream);
 
@@ -342,6 +351,7 @@ test "httpz: json response" {
 	_ = stream.add("GET /test/json HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
 	var srv = Server().init(t.allocator, .{}) catch unreachable;
+	defer srv.deinit();
 	srv.router().get("/test/json", testJsonRes);
 	testRequest(void, &srv, stream);
 
@@ -354,6 +364,7 @@ test "httpz: query" {
 	_ = stream.add("GET /test/query?fav=keemun%20te%61%21 HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
 	var srv = Server().init(t.allocator, .{}) catch unreachable;
+	defer srv.deinit();
 	srv.router().get("/test/query", testReqQuery);
 	testRequest(void, &srv, stream);
 
@@ -365,12 +376,109 @@ test "httpz: custom dispatcher" {
 	defer stream.deinit();
 
 	var srv = Server().init(t.allocator, .{}) catch unreachable;
+	defer srv.deinit();
 	var router = srv.router();
-	router.allC("/test/dispatcher", testDispatcherAction, .{.dispatcher = testDispatcher});
+	router.allC("/test/dispatcher", testDispatcherAction, .{.dispatcher = testDispatcher1});
 
 	_ = stream.add("HEAD /test/dispatcher HTTP/1.1\r\n\r\n");
 	testRequest(void, &srv, stream);
-	try t.expectString("HTTP/1.1 200\r\nContent-Length: 17\r\n\r\ndispatcher-action", stream.received.items);
+	try t.expectString("HTTP/1.1 200\r\ndispatcher: test-dispatcher-1\r\nContent-Length: 6\r\n\r\naction", stream.received.items);
+}
+
+test "httpz: router groups" {
+	var srv = ServerCtx(i32, i32).init(t.allocator, .{}, 33) catch unreachable;
+	defer srv.deinit();
+
+	var router = srv.router();
+	router.get("/", ctxEchoAction);
+
+	var admin_routes = router.group("/admin", .{.dispatcher = ctxTestDispatcher2, .ctx = 99});
+	admin_routes.get("/users", ctxEchoAction);
+	admin_routes.put("/users/:id", ctxEchoAction);
+
+	var debug_routes = router.group("/debug", .{.dispatcher = ctxTestDispatcher3, .ctx = 20});
+	debug_routes.head("/ping", ctxEchoAction);
+	debug_routes.option("/stats", ctxEchoAction);
+
+	router.post("/login", ctxEchoAction);
+
+	{
+		var stream = t.Stream.init();
+		defer stream.deinit();
+		_ = stream.add("GET / HTTP/1.1\r\n\r\n");
+
+		testRequest(i32, &srv, stream);
+		var res = try testing.parse(stream.received.items);
+		defer res.deinit();
+
+		try res.expectJson(.{.ctx = 33, .method = "GET", .path = "/"});
+		try t.expectEqual(true, res.headers.get("dispatcher") == null);
+	}
+
+	{
+		var stream = t.Stream.init();
+		defer stream.deinit();
+		_ = stream.add("GET /admin/users HTTP/1.1\r\n\r\n");
+
+		testRequest(i32, &srv, stream);
+		var res = try testing.parse(stream.received.items);
+		defer res.deinit();
+
+		try res.expectJson(.{.ctx = 99, .method = "GET", .path = "/admin/users"});
+		try t.expectString("test-dispatcher-2", res.headers.get("dispatcher").?);
+	}
+
+	{
+		var stream = t.Stream.init();
+		defer stream.deinit();
+		_ = stream.add("PUT /admin/users/:id HTTP/1.1\r\n\r\n");
+
+		testRequest(i32, &srv, stream);
+		var res = try testing.parse(stream.received.items);
+		defer res.deinit();
+
+		try res.expectJson(.{.ctx = 99, .method = "PUT", .path = "/admin/users/:id"});
+		try t.expectString("test-dispatcher-2", res.headers.get("dispatcher").?);
+	}
+
+	{
+		var stream = t.Stream.init();
+		defer stream.deinit();
+		_ = stream.add("HEAD /debug/ping HTTP/1.1\r\n\r\n");
+
+		testRequest(i32, &srv, stream);
+		var res = try testing.parse(stream.received.items);
+		defer res.deinit();
+
+		try res.expectJson(.{.ctx = 20, .method = "HEAD", .path = "/debug/ping"});
+		try t.expectString("test-dispatcher-3", res.headers.get("dispatcher").?);
+	}
+
+	{
+		var stream = t.Stream.init();
+		defer stream.deinit();
+		_ = stream.add("OPTIONS /debug/stats HTTP/1.1\r\n\r\n");
+
+		testRequest(i32, &srv, stream);
+		var res = try testing.parse(stream.received.items);
+		defer res.deinit();
+
+		try res.expectJson(.{.ctx = 20, .method = "OPTIONS", .path = "/debug/stats"});
+		try t.expectString("test-dispatcher-3", res.headers.get("dispatcher").?);
+	}
+
+	{
+		var stream = t.Stream.init();
+		defer stream.deinit();
+		_ = stream.add("POST /login HTTP/1.1\r\n\r\n");
+
+		testRequest(i32, &srv, stream);
+		var res = try testing.parse(stream.received.items);
+		defer res.deinit();
+
+		try res.expectJson(.{.ctx = 33, .method = "POST", .path = "/login"});
+		try t.expectEqual(true, res.headers.get("dispatcher") == null);
+	}
 }
 
 fn testRequest(comptime G: type, srv: *ServerCtx(G, G), stream: *t.Stream) void {
@@ -380,7 +488,6 @@ fn testRequest(comptime G: type, srv: *ServerCtx(G, G), stream: *t.Stream) void 
 		.response = .{.body_buffer_size = 4096},
 	}) catch unreachable;
 	defer reqResPool.deinit();
-	defer srv.deinit();
 	listener.handleConnection(*ServerCtx(G, G), srv, stream, &reqResPool);
 }
 
@@ -437,7 +544,25 @@ fn testDispatcherAction(_: *Request, res: *Response) !void {
 	return res.directWriter().writeAll("action");
 }
 
-fn testDispatcher(action: Action(void), req: *Request, res: *Response) !void {
-	try res.directWriter().writeAll("dispatcher-");
+fn testDispatcher1(action: Action(void), req: *Request, res: *Response) !void {
+	res.header("dispatcher", "test-dispatcher-1");
 	return action(req, res);
+}
+
+fn ctxTestDispatcher2(ctx: i32, action: Action(i32), req: *Request, res: *Response) !void {
+	res.header("dispatcher", "test-dispatcher-2");
+	return action(ctx, req, res);
+}
+
+fn ctxTestDispatcher3(ctx: i32, action: Action(i32), req: *Request, res: *Response) !void {
+	res.header("dispatcher", "test-dispatcher-3");
+	return action(ctx, req, res);
+}
+
+fn ctxEchoAction(ctx: i32, req: *Request, res: *Response) !void {
+	return res.json(.{
+		.ctx = ctx,
+		.method = @tagName(req.method),
+		.path = req.url.path,
+	}, .{});
 }
