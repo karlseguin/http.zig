@@ -392,7 +392,7 @@ test "httpz: router groups" {
 	var router = srv.router();
 	router.get("/", ctxEchoAction);
 
-	var admin_routes = router.group("/admin", .{.dispatcher = ctxTestDispatcher2, .ctx = 99});
+	var admin_routes = router.group("/admin/", .{.dispatcher = ctxTestDispatcher2, .ctx = 99});
 	admin_routes.get("/users", ctxEchoAction);
 	admin_routes.put("/users/:id", ctxEchoAction);
 

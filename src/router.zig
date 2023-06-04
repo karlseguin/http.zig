@@ -314,10 +314,21 @@ pub fn Group(comptime G: type, comptime R: type) type {
 		}
 
 		fn tryCreatePath(self: *Self, path: []const u8) ![]const u8 {
-			const prefix = self._prefix;
+			var prefix = self._prefix;
 			if (prefix.len == 0) {
 				return path;
 			}
+			if (path.len == 0) {
+				return prefix;
+			}
+
+			// prefix = /admin/
+			// path = /users/
+			// result ==> /admin/users/  NOT   /admin//users/
+			if (prefix[prefix.len-1] == '/' and path[0] == '/') {
+				prefix = prefix[0..prefix.len - 1];
+			}
+
 			const joined = try self._aa.alloc(u8, prefix.len + path.len);
 			@memcpy(joined[0..prefix.len], prefix);
 			@memcpy(joined[prefix.len..], path);
