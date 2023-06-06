@@ -194,16 +194,16 @@ pub fn Router(comptime G: type, comptime R: type) type {
 			try addRoute(DispatchableAction, self._aa, &self._delete, path, da);
 		}
 
-		pub fn option(self: *Self, path: []const u8, action: Action) void {
+		pub fn options(self: *Self, path: []const u8, action: Action) void {
 			self.optionC(path, action, .{});
 		}
-		pub fn tryOption(self: *Self, path: []const u8, action: Action) !void {
-			return self.tryOptionC(path, action, .{});
+		pub fn tryOptions(self: *Self, path: []const u8, action: Action) !void {
+			return self.tryOptionsC(path, action, .{});
 		}
-		pub fn optionC(self: *Self, path: []const u8, action: Action, config: Config(G, R)) void {
-			self.tryOptionC(path, action, config) catch @panic("failed to create route");
+		pub fn optionsC(self: *Self, path: []const u8, action: Action, config: Config(G, R)) void {
+			self.tryOptionsC(path, action, config) catch @panic("failed to create route");
 		}
-		pub fn tryOptionC(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
+		pub fn tryOptionsC(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
 			const da = DispatchableAction{
 				.action = action,
 				.ctx = config.ctx orelse self._default_ctx,
@@ -228,7 +228,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 			try self.tryHeadC(path, action, config);
 			try self.tryPatchC(path, action, config);
 			try self.tryDeleteC(path, action, config);
-			try self.tryOptionC(path, action, config);
+			try self.tryOptionsC(path, action, config);
 		}
 	};
 }
@@ -295,11 +295,11 @@ pub fn Group(comptime G: type, comptime R: type) type {
 			self._router.tryDeleteC(self.tryCreatePath(path), action, self._config);
 		}
 
-		pub fn option(self: *Self, path: []const u8, action: Action) void {
-			self._router.optionC(self.createPath(path), action, self._config);
+		pub fn options(self: *Self, path: []const u8, action: Action) void {
+			self._router.optionsC(self.createPath(path), action, self._config);
 		}
-		pub fn tryOption(self: *Self, path: []const u8, action: Action) !void {
-			self._router.tryOptionC(self.tryCreatePath(path), action, self._config);
+		pub fn tryOptions(self: *Self, path: []const u8, action: Action) !void {
+			self._router.tryOptionsC(self.tryCreatePath(path), action, self._config);
 		}
 
 		pub fn all(self: *Self, path: []const u8, action: Action) void {

@@ -398,7 +398,7 @@ test "httpz: router groups" {
 
 	var debug_routes = router.group("/debug", .{.dispatcher = ctxTestDispatcher3, .ctx = 20});
 	debug_routes.head("/ping", ctxEchoAction);
-	debug_routes.option("/stats", ctxEchoAction);
+	debug_routes.options("/stats", ctxEchoAction);
 
 	router.post("/login", ctxEchoAction);
 
