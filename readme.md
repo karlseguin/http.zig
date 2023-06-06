@@ -488,6 +488,22 @@ Globs interact similarly poorly with parameters and static path segments.
 Resolving this issue requires keeping a stack (or visiting the routes recursively), in order to back-out of a dead-end and trying a different path.
 This seems like an unnecessarily expensive thing to do, on each request, when, in my opinion, such route hierarchies are quite uncommon. 
 
+## CORS
+CORS requests can be satisfied through normal use of routing and response headers. However, for common cases, httpz can satisfy CORS requests directly by passing a `cors` object in the configuration. By default, the `cors` field is null and httpz will handle CORS request like any other.
+
+When the `cors` object is set, the `origin` field must also be set. httpz will include an `Access-Control-Allow-Origin` header in every response. The configuration `headers`, `methods` and `max_age` can also be set in order to set the corresponding headers on a preflight request.
+
+```zig
+var srv = Server().init(allocator, .{.cors = .{
+    .origin = "httpz.local",
+    .headers = "content-type",
+    .methods = "GET,POST",
+    .max_age = "300"
+}}) catch unreachable;
+```
+
+Only the `origin` field is required. The values given to the configuration are passed as-is to the appropriate preflight header.
+
 ## Configuration
 The third option given to `listen` is an `httpz.Config` instance. Possible values, along with their default, are:
 
@@ -501,6 +517,14 @@ try httpz.listen(allocator, &router, .{
 
     // Minimum number of request & response objects to keep pooled
     .pool_size: usize = 100,
+
+    // defaults to null
+    .cors = {
+        .origin: []const u8,  // required if cors is passed
+        .headers: ?[]const u8,
+        .methods: ?[]const u8,
+        .max_age: ?[]const u8,
+    },
 
     // various options for tweaking request processing
     .request = .{

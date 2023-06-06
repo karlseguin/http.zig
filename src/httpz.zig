@@ -101,6 +101,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 		config: Config,
 		app_allocator: Allocator,
 		httpz_allocator: Allocator,
+		_cors_origin: ?[]const u8,
 		_router: Router(G, R),
 		_errorHandler: ErrorHandlerAction(G),
 		_notFoundHandler: Action(G),
@@ -120,6 +121,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 				._errorHandler = erh,
 				._notFoundHandler = nfh,
 				._router = try Router(G, R).init(allocator, dd, ctx),
+				._cors_origin = if (config.cors) |cors| cors.origin else null,
 			};
 		}
 
@@ -204,11 +206,34 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 		}
 
 		inline fn dispatch(self: Self, dispatchable_action: ?DispatchableAction(G, R), req: *Request, res: *Response) !void {
+			if (self._cors_origin) |origin| {
+				res.header("Access-Control-Allow-Origin", origin);
+			}
 			if (dispatchable_action) |da| {
 				if (G == void) {
 					return da.dispatcher(da.action, req, res);
 				}
 				return da.dispatcher(da.ctx, da.action,req, res);
+			}
+
+			if (req.method == .OPTIONS) {
+				if (self.config.cors) |config| {
+					if (req.header("sec-fetch-mode")) |mode| {
+						if (std.mem.eql(u8, mode, "cors")) {
+							if (config.headers) |headers| {
+								res.header("Access-Control-Allow-Headers", headers);
+							}
+							if (config.methods) |methods| {
+								res.header("Access-Control-Allow-Methods", methods);
+							}
+							if (config.max_age) |max_age| {
+								res.header("Access-Control-Max-Age", max_age);
+							}
+							res.status = 204;
+							return;
+						}
+					}
+				}
 			}
 
 			if (G == void) {
@@ -478,6 +503,62 @@ test "httpz: router groups" {
 
 		try res.expectJson(.{.ctx = 33, .method = "POST", .path = "/login"});
 		try t.expectEqual(true, res.headers.get("dispatcher") == null);
+	}
+}
+
+test "httpz: CORS" {
+	var srv = Server().init(t.allocator, .{.cors = .{
+		.origin = "httpz.local",
+		.headers = "content-type",
+		.methods = "GET,POST",
+		.max_age = "300"
+	}}) catch unreachable;
+	defer srv.deinit();
+
+	{
+		var stream = t.Stream.init();
+		defer stream.deinit();
+		_ = stream.add("GET /debug/stats HTTP/1.1\r\n\r\n");
+
+		testRequest(void, &srv, stream);
+		var res = try testing.parse(stream.received.items);
+		defer res.deinit();
+		try t.expectEqual(true, res.headers.get("Access-Control-Max-Age") == null);
+		try t.expectEqual(true, res.headers.get("Access-Control-Allow-Methods") == null);
+		try t.expectEqual(true, res.headers.get("Access-Control-Allow-Headers") == null);
+		try t.expectString("httpz.local", res.headers.get("Access-Control-Allow-Origin").?);
+	}
+
+	{
+		// non-cors options
+		var stream = t.Stream.init();
+		defer stream.deinit();
+		_ = stream.add("OPTIONS /debug/stats HTTP/1.1\r\nSec-Fetch-Mode: navigate\r\n\r\n");
+
+		testRequest(void, &srv, stream);
+		var res = try testing.parse(stream.received.items);
+		defer res.deinit();
+
+		try t.expectEqual(true, res.headers.get("Access-Control-Max-Age") == null);
+		try t.expectEqual(true, res.headers.get("Access-Control-Allow-Methods") == null);
+		try t.expectEqual(true, res.headers.get("Access-Control-Allow-Headers") == null);
+		try t.expectString("httpz.local", res.headers.get("Access-Control-Allow-Origin").?);
+	}
+
+	{
+		// cors request
+		var stream = t.Stream.init();
+		defer stream.deinit();
+		_ = stream.add("OPTIONS /debug/stats HTTP/1.1\r\nSec-Fetch-Mode: cors\r\n\r\n");
+
+		testRequest(void, &srv, stream);
+		var res = try testing.parse(stream.received.items);
+		defer res.deinit();
+
+		try t.expectString("httpz.local", res.headers.get("Access-Control-Allow-Origin").?);
+		try t.expectString("GET,POST", res.headers.get("Access-Control-Allow-Methods").?);
+		try t.expectString("content-type", res.headers.get("Access-Control-Allow-Headers").?);
+		try t.expectString("300", res.headers.get("Access-Control-Max-Age").?);
 	}
 }
 
