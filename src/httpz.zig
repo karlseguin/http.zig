@@ -113,9 +113,17 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 			const erh = if (comptime G == void) defaultErrorHandler else defaultErrorHandlerWithContext;
 			const dd = if (comptime G == void) defaultDispatcher else defaultDispatcherWithContext;
 
+			var var_config = config;
+			if (config.port == null) {
+				var_config.port = 5882;
+			}
+			if (config.address == null) {
+				var_config.address = "127.0.0.1";
+			}
+
 			return .{
 				.ctx = ctx,
-				.config = config,
+				.config = var_config,
 				.app_allocator = allocator,
 				.httpz_allocator = allocator,
 				._errorHandler = erh,

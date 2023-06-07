@@ -10,9 +10,9 @@ const Allocator = std.mem.Allocator;
 const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
 
 pub const Config = struct {
-	max_header_count: usize = 16,
-	body_buffer_size: usize = 32_768,
-	header_buffer_size: usize = 4096,
+	max_header_count: ?usize = null,
+	body_buffer_size: ?usize = null,
+	header_buffer_size: ?usize = null,
 };
 
 pub const Response = struct {
@@ -67,9 +67,9 @@ pub const Response = struct {
 	// Should not be called directly, but initialized through a pool
 	pub fn init(self: *Self, allocator: Allocator, arena: Allocator, config: Config) !void {
 		self.arena = arena;
-		self.headers = try KeyValue.init(allocator, config.max_header_count);
-		self.body_buffer = try allocator.alloc(u8, config.body_buffer_size);
-		self.header_buffer = try allocator.alloc(u8, config.header_buffer_size);
+		self.headers = try KeyValue.init(allocator, config.max_header_count orelse 16);
+		self.body_buffer = try allocator.alloc(u8, config.body_buffer_size orelse 32_768);
+		self.header_buffer = try allocator.alloc(u8, config.header_buffer_size orelse 4096);
 		self.reset();
 	}
 

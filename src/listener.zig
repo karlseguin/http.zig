@@ -25,8 +25,8 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 	});
 	defer socket.deinit();
 
-	const listen_port = config.port;
-	const listen_address = config.address;
+	const listen_port = config.port.?;
+	const listen_address = config.address.?;
 	try socket.listen(net.Address.parseIp(listen_address, listen_port) catch unreachable);
 
 	// TODO: I believe this should work, but it currently doesn't on 0.11-dev. Instead I have to
@@ -53,7 +53,7 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 }
 
 pub fn initReqResPool(httpz_allocator: Allocator, app_allocator: Allocator, config: Config) !ReqResPool {
-	return try ReqResPool.init(httpz_allocator, config.pool_size, initReqRes, .{
+	return try ReqResPool.init(httpz_allocator, config.pool_size orelse 100, initReqRes, .{
 		.config = config,
 		.app_allocator = app_allocator,
 		.httpz_allocator = httpz_allocator,

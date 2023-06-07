@@ -25,11 +25,11 @@ const V1P0 = @bitCast(u32, [4]u8{'/', '1', '.', '0'});
 const V1P1 = @bitCast(u32, [4]u8{'/', '1', '.', '1'});
 
 pub const Config = struct {
-	max_body_size: usize = 1_048_576,
-	buffer_size: usize = 65_8536,
-	max_header_count: usize = 32,
-	max_param_count: usize = 10,
-	max_query_count: usize = 32,
+	max_body_size: ?usize = null,
+	buffer_size: ?usize = null,
+	max_header_count: ?usize = null,
+	max_param_count: ?usize = null,
+	max_query_count: ?usize = null,
 };
 
 pub const Request = struct {
@@ -98,12 +98,12 @@ pub const Request = struct {
 		self.pos = 0;
 		self.arena = arena;
 		self.stream = undefined;
-		self.max_body_size = config.max_body_size;
-		self.qs = try KeyValue.init(allocator, config.max_query_count);
+		self.max_body_size = config.max_body_size orelse 1_048_576;
+		self.qs = try KeyValue.init(allocator, config.max_query_count orelse 32);
 
-		self.static = try allocator.alloc(u8, config.buffer_size);
-		self.headers = try KeyValue.init(allocator, config.max_header_count);
-		self.params = try Params.init(allocator, config.max_param_count);
+		self.static = try allocator.alloc(u8, config.buffer_size orelse 65_8536);
+		self.headers = try KeyValue.init(allocator, config.max_header_count orelse 32);
+		self.params = try Params.init(allocator, config.max_param_count orelse 10);
 		self.reset();
 	}
 
