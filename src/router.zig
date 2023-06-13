@@ -30,6 +30,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 		_post: Part(DispatchableAction),
 		_head: Part(DispatchableAction),
 		_patch: Part(DispatchableAction),
+		_trace: Part(DispatchableAction),
 		_delete: Part(DispatchableAction),
 		_options: Part(DispatchableAction),
 		_default_ctx: G,
@@ -52,6 +53,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 				._post = try Part(DispatchableAction).init(aa),
 				._put = try Part(DispatchableAction).init(aa),
 				._patch = try Part(DispatchableAction).init(aa),
+				._trace = try Part(DispatchableAction).init(aa),
 				._delete = try Part(DispatchableAction).init(aa),
 				._options = try Part(DispatchableAction).init(aa),
 			};
@@ -176,6 +178,24 @@ pub fn Router(comptime G: type, comptime R: type) type {
 			try addRoute(DispatchableAction, self._aa, &self._patch, path, da);
 		}
 
+		pub fn trace(self: *Self, path: []const u8, action: Action) void {
+			self.traceC(path, action, .{});
+		}
+		pub fn tryTrace(self: *Self, path: []const u8, action: Action) !void {
+			return self.tryTraceC(path, action, .{});
+		}
+		pub fn traceC(self: *Self, path: []const u8, action: Action, config: Config(G, R)) void {
+			self.tryTraceC(path, action, config) catch @panic("failed to create route");
+		}
+		pub fn tryTraceC(self: *Self, path: []const u8, action: Action, config: Config(G, R)) !void {
+			const da = DispatchableAction{
+				.action = action,
+				.ctx = config.ctx orelse self._default_ctx,
+				.dispatcher = config.dispatcher orelse self._default_dispatcher,
+			};
+			try addRoute(DispatchableAction, self._aa, &self._trace, path, da);
+		}
+
 		pub fn delete(self: *Self, path: []const u8, action: Action) void {
 			self.deleteC(path, action, .{});
 		}
@@ -227,6 +247,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 			try self.tryPostC(path, action, config);
 			try self.tryHeadC(path, action, config);
 			try self.tryPatchC(path, action, config);
+			try self.tryTraceC(path, action, config);
 			try self.tryDeleteC(path, action, config);
 			try self.tryOptionsC(path, action, config);
 		}
@@ -286,6 +307,13 @@ pub fn Group(comptime G: type, comptime R: type) type {
 		}
 		pub fn tryPatch(self: *Self, path: []const u8, action: Action) !void {
 			self._router.tryPatchC(self.tryCreatePath(path), action, self._config);
+		}
+
+		pub fn trace(self: *Self, path: []const u8, action: Action) void {
+			self._router.patchC(self.createPath(path), action, self._config);
+		}
+		pub fn tryTrace(self: *Self, path: []const u8, action: Action) !void {
+			self._router.tryTraceC(self.tryCreatePath(path), action, self._config);
 		}
 
 		pub fn delete(self: *Self, path: []const u8, action: Action) void {

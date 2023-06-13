@@ -418,7 +418,7 @@ It is safe to call `res.write()` directly from the application. This is absolute
 While explicit use of `res.write()` is uncommon, I can think of no reason to to call `res.write()` when `res.chunk([]const u8)` is used. This is not supported.
 
 ## Router
-You can use the `get`, `put`, `post`, `head`, `patch`, `delete` or `options` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
+You can use the `get`, `put`, `post`, `head`, `patch`, `trace`, `delete` or `options` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
 
 These functions can all `@panic` as they allocate memory. Each function has an equivalent `tryXYZ` variant which will return an error rather than panicking:
 
