@@ -37,6 +37,7 @@ pub const ContentType = enum {
 	BINARY,
 	CSS,
 	CSV,
+	EOT,
 	GIF,
 	GZ,
 	HTML,
@@ -44,13 +45,105 @@ pub const ContentType = enum {
 	JPG,
 	JS,
 	JSON,
+	OTF,
 	PDF,
 	PNG,
 	SVG,
 	TAR,
 	TEXT,
+	TTF,
 	WEBP,
+	WOFF,
+	WOFF2,
 	XML,
+	UNKNOWN,
+
+	const JS_BIT = @bitCast(u16, [2]u8{'j', 's'});
+	const GZ_BIT = @bitCast(u16, [2]u8{'g', 'z'});
+	const CSS_BIT = @bitCast(u24, [3]u8{'c', 's', 's'});
+	const CSV_BIT = @bitCast(u24, [3]u8{'c', 's', 'v'});
+	const EOT_BIT = @bitCast(u24, [3]u8{'e', 'o', 't'});
+	const GIF_BIT = @bitCast(u24, [3]u8{'g', 'i', 'f'});
+	const HTM_BIT = @bitCast(u24, [3]u8{'h', 't', 'm'});
+	const ICO_BIT = @bitCast(u24, [3]u8{'i', 'c', 'o'});
+	const JPG_BIT = @bitCast(u24, [3]u8{'j', 'p', 'g'});
+	const OTF_BIT = @bitCast(u24, [3]u8{'o', 't', 'f'});
+	const PDF_BIT = @bitCast(u24, [3]u8{'p', 'd', 'f'});
+	const PNG_BIT = @bitCast(u24, [3]u8{'p', 'n', 'g'});
+	const SVG_BIT = @bitCast(u24, [3]u8{'s', 'v', 'g'});
+	const TAR_BIT = @bitCast(u24, [3]u8{'t', 'a', 'r'});
+	const TTF_BIT = @bitCast(u24, [3]u8{'t', 't', 'f'});
+	const XML_BIT = @bitCast(u24, [3]u8{'x', 'm', 'l'});
+	const JPEG_BIT = @bitCast(u32, [4]u8{'j','p','e','g'});
+	const JSON_BIT = @bitCast(u32, [4]u8{'j','s','o','n'});
+	const HTML_BIT = @bitCast(u32, [4]u8{'h','t','m','l'});
+	const TEXT_BIT = @bitCast(u32, [4]u8{'t','e','x','t'});
+	const WOFF_BIT = @bitCast(u32, [4]u8{'w','o','f','f'});
+	const WEBP_BIT = @bitCast(u32, [4]u8{'w','e','b','p'});
+	const WOFF2_BIT = @bitCast(u40, [5]u8{'w','o','f','f', '2'});
+
+	pub fn forExtension(ext: []const u8) ContentType {
+		if (ext.len == 0) return .UNKNOWN;
+		const temp = if (ext[0] == '.') ext[1..] else ext;
+		if (temp.len > 5) return .UNKNOWN;
+
+		var normalized: [5]u8 = undefined;
+		for (temp, 0..) |c, i| {
+			normalized[i] = std.ascii.toLower(c);
+		}
+
+		switch (temp.len) {
+			2 => {
+				switch (@bitCast(u16, normalized[0..2].*)) {
+					JS_BIT => return .JS,
+					GZ_BIT => return .GZ,
+					else => return .UNKNOWN,
+				}
+			},
+			3 => {
+				switch (@bitCast(u24, normalized[0..3].*)){
+					CSS_BIT => return .CSS,
+					CSV_BIT => return .CSV,
+					EOT_BIT => return .EOT,
+					GIF_BIT => return .GIF,
+					HTM_BIT => return .HTML,
+					ICO_BIT => return .ICO,
+					JPG_BIT => return .JPG,
+					OTF_BIT => return .OTF,
+					PDF_BIT => return .PDF,
+					PNG_BIT => return .PNG,
+					SVG_BIT => return .SVG,
+					TAR_BIT => return .TAR,
+					TTF_BIT => return .TTF,
+					XML_BIT => return .XML,
+					else => return .UNKNOWN,
+				}
+			},
+			4 => {
+				switch (@bitCast(u32, normalized[0..4].*)){
+					JPEG_BIT => return .JPG,
+					JSON_BIT => return .JSON,
+					HTML_BIT => return .HTML,
+					TEXT_BIT => return .TEXT,
+					WOFF_BIT => return .WOFF,
+					WEBP_BIT => return .WEBP,
+					else => return .UNKNOWN,
+				}
+			},
+			5 => {
+				switch (@bitCast(u40, normalized[0..5].*)){
+					WOFF2_BIT => return .WOFF2,
+					else => return .UNKNOWN,
+				}
+			},
+			else => return .UNKNOWN,
+		}
+		return .UNKNOWN;
+	}
+
+	pub fn forFile(file_name: []const u8) ContentType {
+		return forExtension(std.fs.path.extension(file_name));
+	}
 };
 
 pub fn Action(comptime G: type) type {
@@ -568,6 +661,26 @@ test "httpz: CORS" {
 		try t.expectString("content-type", res.headers.get("Access-Control-Allow-Headers").?);
 		try t.expectString("300", res.headers.get("Access-Control-Max-Age").?);
 	}
+}
+
+test "ContentType: forX" {
+	inline for (@typeInfo(ContentType).Enum.fields) |field| {
+		if (comptime std.mem.eql(u8, "BINARY", field.name)) continue;
+		try t.expectEqual(@field(ContentType, field.name), ContentType.forExtension(field.name));
+		try t.expectEqual(@field(ContentType, field.name), ContentType.forExtension("." ++ field.name));
+		try t.expectEqual(@field(ContentType, field.name), ContentType.forFile("some_file." ++ field.name));
+	}
+	// variations
+	try t.expectEqual(ContentType.HTML, ContentType.forExtension(".htm"));
+	try t.expectEqual(ContentType.JPG, ContentType.forExtension(".jpeg"));
+
+	try t.expectEqual(ContentType.UNKNOWN, ContentType.forExtension(".spice"));
+	try t.expectEqual(ContentType.UNKNOWN, ContentType.forExtension(""));
+	try t.expectEqual(ContentType.UNKNOWN, ContentType.forExtension(".x"));
+	try t.expectEqual(ContentType.UNKNOWN, ContentType.forFile(""));
+	try t.expectEqual(ContentType.UNKNOWN, ContentType.forFile("css"));
+	try t.expectEqual(ContentType.UNKNOWN, ContentType.forFile("css"));
+	try t.expectEqual(ContentType.UNKNOWN, ContentType.forFile("must.spice"));
 }
 
 fn testRequest(comptime G: type, srv: *ServerCtx(G, G), stream: *t.Stream) void {

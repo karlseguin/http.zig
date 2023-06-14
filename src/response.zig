@@ -201,10 +201,11 @@ pub const Response = struct {
 		}
 
 		if (self.content_type) |ct| {
-			const content_type = switch (ct) {
+			const content_type: ?[]const u8 = switch (ct) {
 				.BINARY => "Content-Type: application/octet-stream\r\n",
 				.CSS => "Content-Type: text/css\r\n",
 				.CSV => "Content-Type: text/csv\r\n",
+				.EOT => "Content-Type: application/vnd.ms-fontobject;\r\n",
 				.GIF => "Content-Type: image/gif\r\n",
 				.GZ => "Content-Type: application/gzip\r\n",
 				.HTML => "Content-Type: text/html\r\n",
@@ -212,17 +213,24 @@ pub const Response = struct {
 				.JPG => "Content-Type: image/jpeg\r\n",
 				.JS => "Content-Type: application/javascript\r\n",
 				.JSON => "Content-Type: application/json\r\n",
+				.OTF => "Content-Type: font/otf\r\n",
 				.PDF => "Content-Type: application/pdf\r\n",
 				.PNG => "Content-Type: image/png\r\n",
 				.SVG => "Content-Type: image/svg+xml\r\n",
 				.TAR => "Content-Type: application/x-tar\r\n",
 				.TEXT => "Content-Type: text/plain\r\n",
+				.TTF => "Content-Type: font/ttf\r\n",
 				.WEBP => "Content-Type: image/webp\r\n",
+				.WOFF => "Content-Type: font/woff\r\n",
+				.WOFF2 => "Content-Type: font/woff2\r\n",
 				.XML => "Content-Type: application/xml\r\n",
+				.UNKNOWN => null,
 			};
-			const end_pos = header_pos + content_type.len;
-			@memcpy(header_buffer[header_pos..end_pos], content_type);
-			header_pos = end_pos;
+			if (content_type) |value| {
+				const end_pos = header_pos + value.len;
+				@memcpy(header_buffer[header_pos..end_pos], value);
+				header_pos = end_pos;
+			}
 		}
 
 		{
