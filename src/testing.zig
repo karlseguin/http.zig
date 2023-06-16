@@ -71,6 +71,7 @@ pub const Testing = struct {
 			for (diffs.items, 0..) |diff, i| {
 				std.debug.print("\n==Difference #{d}==\n", .{i+1});
 				std.debug.print("  {s}: {s}\n  Left: {s}\n  Right: {s}\n", .{ diff.path, diff.err, diff.a, diff.b});
+				std.debug.print("  Actual:\n    {s}\n", .{self.body});
 			}
 			return error.JsonNotEqual;
 		}
