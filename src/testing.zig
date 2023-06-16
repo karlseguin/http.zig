@@ -120,8 +120,20 @@ pub const Testing = struct {
 	}
 
 	pub fn query(self: *Self, name: []const u8, value: []const u8) void {
-		self.req.qs_read = true;
-		self.req.qs.add(name, value);
+		const req = self.req;
+		req.qs_read = true;
+		req.qs.add(name, value);
+
+		const encoded_name = std.Uri.escapeString(self.arena, name) catch unreachable;
+		const encoded_value = std.Uri.escapeString(self.arena, value) catch unreachable;
+		const kv = std.fmt.allocPrint(self.arena, "{s}={s}", .{encoded_name, encoded_value}) catch unreachable;
+
+		const q = req.url.query;
+		if (q.len == 0) {
+			req.url.query = kv;
+		} else {
+			req.url.query = std.fmt.allocPrint(self.arena, "{s}&{s}", .{q, kv}) catch unreachable;
+		}
 	}
 
 	pub fn header(self: *Self, name: []const u8, value: []const u8) void {
@@ -419,12 +431,13 @@ test "testing: query" {
 	var ht = init(.{});
 	defer ht.deinit();
 
-	ht.query("search", "tea");
+	ht.query("search", "t:ea");
 	ht.query("category", "447");
 
 	const query = try ht.req.query();
-	try t.expectString("tea", query.get("search").?);
+	try t.expectString("t:ea", query.get("search").?);
 	try t.expectString("447", query.get("category").?);
+	try t.expectString("search=t%3Aea&category=447", ht.req.url.query);
 	try t.expectEqual(@as(?[]const u8, null), query.get("other"));
 }
 
