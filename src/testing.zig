@@ -54,8 +54,12 @@ pub const Testing = struct {
 			}
 		}
 
-		pub fn expectHeader(self: Response, name: []const u8, expected: []const u8) !void {
-			try t.expectString(expected, self.headers.get(name).?);
+		pub fn expectHeader(self: Response, name: []const u8, expected: ?[]const u8) !void {
+			if (expected) |e| {
+				try t.expectString(e, self.headers.get(name).?);
+			} else {
+				try t.expectEqual(@as(?[]const u8, null), self.headers.get(name));
+			}
 		}
 
 		pub fn expectJson(self: Response, expected: anytype) !void {
@@ -177,7 +181,7 @@ pub const Testing = struct {
 		try pr.expectJson(expected);
 	}
 
-	pub fn expectHeader(self: *Self, name: []const u8, expected: []const u8) !void {
+	pub fn expectHeader(self: *Self, name: []const u8, expected: ?[]const u8) !void {
 		const pr = try self.parseResponse();
 		return pr.expectHeader(name, expected);
 	}
