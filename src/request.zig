@@ -240,27 +240,20 @@ pub const Request = struct {
 
 	pub fn json(self: *Self, comptime T: type) !?T {
 		const b = try self.body() orelse return null;
-		return try std.json.parseFromSlice(T, self.arena, b, .{});
-	}
-
-	pub fn jsonValueTree(self: *Self) !?std.json.ValueTree {
-		const b = try self.body() orelse return null;
-		var parser = std.json.Parser.init(self.arena, .alloc_always);
-		defer parser.deinit();
-		return try parser.parse(b);
-	}
-
-	pub fn jsonObject(self: *Self) !?std.json.ObjectMap {
-		const tree = try self.jsonValueTree() orelse return null;
-		switch (tree.root) {
-			.object => |o| return o,
-			else => return null,
-		}
+		return try std.json.parseFromSliceLeaky(T, self.arena, b, .{});
 	}
 
 	pub fn jsonValue(self: *Self) !?std.json.Value {
-		const tree = try self.jsonValueTree() orelse return null;
-		return tree.root;
+		const b = try self.body() orelse return null;
+		return try std.json.parseFromSliceLeaky(std.json.Value, self.arena, b, .{});
+	}
+
+	pub fn jsonObject(self: *Self) !?std.json.ObjectMap {
+		const value = try self.jsonValue() orelse return null;
+		switch (value) {
+			.object => |o| return o,
+			else => return null,
+		}
 	}
 
 	fn parseMethod(self: *Self, stream: Stream, buf: []u8) !ParseResult {
@@ -996,28 +989,28 @@ test "body: json" {
 	}
 }
 
-test "body: jsonValueTree" {
+test "body: jsonValue" {
 	{
 		// too big
 		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{.max_body_size = 16});
 		defer testCleanup(r);
-		try t.expectError(Error.BodyTooBig, r.jsonValueTree());
+		try t.expectError(Error.BodyTooBig, r.jsonValue());
 	}
 
 	{
 		// no body
 		const r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
 		defer testCleanup(r);
-		try t.expectEqual(@as(?std.json.ValueTree, null), try r.jsonValueTree());
-		try t.expectEqual(@as(?std.json.ValueTree, null), try r.jsonValueTree());
+		try t.expectEqual(@as(?std.json.Value, null), try r.jsonValue());
+		try t.expectEqual(@as(?std.json.Value, null), try r.jsonValue());
 	}
 
 	{
 		// parses json
 		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
 		defer testCleanup(r);
-		try t.expectString("keemun", (try r.jsonValueTree()).?.root.object.get("type").?.string);
-		try t.expectString("keemun", (try r.jsonValueTree()).?.root.object.get("type").?.string);
+		try t.expectString("keemun", (try r.jsonValue()).?.object.get("type").?.string);
+		try t.expectString("keemun", (try r.jsonValue()).?.object.get("type").?.string);
 	}
 }
 

@@ -11,19 +11,20 @@ pub fn init(config: httpz.Config) Testing {
 	var arena = t.allocator.create(std.heap.ArenaAllocator) catch unreachable;
 	arena.* = std.heap.ArenaAllocator.init(t.allocator);
 
-	var req = t.allocator.create(httpz.Request) catch unreachable;
-	req.init(t.allocator, arena.allocator(), config.request) catch unreachable;
+	var aa = arena.allocator();
+	var req = aa.create(httpz.Request) catch unreachable;
+	req.init(aa, aa, config.request) catch unreachable;
 	req.url = httpz.Url.parse("/");
 
-	var res = t.allocator.create(httpz.Response) catch unreachable;
-	res.init(t.allocator, arena.allocator(), config.response) catch unreachable;
-	res.stream = t.Stream.init();
+	var res = aa.create(httpz.Response) catch unreachable;
+	res.init(aa, aa, config.response) catch unreachable;
+	res.stream = t.Stream.initWithAllocator(aa);
 
 	return Testing{
 		.req = req,
 		.res = res,
 		._arena = arena,
-		.arena = arena.allocator(),
+		.arena = aa,
 	};
 }
 
@@ -32,7 +33,6 @@ pub const Testing = struct {
 	req: *httpz.Request,
 	res: *httpz.Response,
 	arena: std.mem.Allocator,
-	free_body: bool = false,
 	parsed_response: ?Response = null,
 
 	const Self = @This();
@@ -41,18 +41,8 @@ pub const Testing = struct {
 		status: u16,
 		raw: []const u8,
 		body: []const u8,
-		// Only populated if getJson() is called. Need to keep it around as we
-		// need to free the memory it allocated
-		json_value: ?std.json.ValueTree,
+		allocator: std.mem.Allocator,
 		headers: std.StringHashMap([]const u8),
-
-		pub fn deinit(self: *Response) void {
-			self.headers.deinit();
-			t.allocator.free(self.raw);
-			if (self.json_value) |*jv| {
-				jv.deinit();
-			}
-		}
 
 		pub fn expectHeader(self: Response, name: []const u8, expected: ?[]const u8) !void {
 			if (expected) |e| {
@@ -79,34 +69,16 @@ pub const Testing = struct {
 			}
 			return error.JsonNotEqual;
 		}
+
+		pub fn deinit(self: *Response) void {
+			self.headers.deinit();
+			self.allocator.free(self.raw);
+		}
 	};
 
 	pub fn deinit(self: *Self) void {
-		// the header function lowercased the provided header name (to be
-		// consistent with the real request parsing, so we need to free that memory)
-		const headers = self.req.headers;
-		for (0..headers.len) |i| {
-			t.allocator.free(headers.keys[i]);
-		}
-
-		if (self.free_body) {
-			t.allocator.free(self.req.bd.?);
-		}
-
-		self.req.deinit(t.allocator);
-		t.allocator.destroy(self.req);
-
-		self.res.stream.deinit();
-
-		self.res.deinit(t.allocator);
-		t.allocator.destroy(self.res);
-
 		self._arena.deinit();
 		t.allocator.destroy(self._arena);
-
-		if (self.parsed_response) |*pr| {
-			pr.deinit();
-		}
 	}
 
 	pub fn url(self: *Self, u: []const u8) void {
@@ -141,7 +113,7 @@ pub const Testing = struct {
 	}
 
 	pub fn header(self: *Self, name: []const u8, value: []const u8) void {
-		const lower = t.allocator.alloc(u8, name.len) catch unreachable;
+		const lower = self.arena.alloc(u8, name.len) catch unreachable;
 		_ = std.ascii.lowerString(lower, name);
 		self.req.headers.add(lower, value);
 	}
@@ -152,18 +124,13 @@ pub const Testing = struct {
 	}
 
 	pub fn json(self: *Self, value: anytype) void {
-		if (self.free_body) {
-			t.allocator.free(self.req.bd.?);
-		}
-
-		var arr = ArrayList(u8).init(t.allocator);
+		var arr = ArrayList(u8).init(self.arena);
 		defer arr.deinit();
 
 		std.json.stringify(value, .{}, arr.writer()) catch unreachable;
 
-		const bd = t.allocator.alloc(u8, arr.items.len) catch unreachable;
+		const bd = self.arena.alloc(u8, arr.items.len) catch unreachable;
 		@memcpy(bd, arr.items);
-		self.free_body = true;
 		self.body(bd);
 	}
 
@@ -193,34 +160,32 @@ pub const Testing = struct {
 
 	pub fn getJson(self: *Self) !std.json.Value {
 		var pr = try self.parseResponse();
-		if (pr.json_value) |jv| return jv.root;
-
-		var parser = std.json.Parser.init(t.allocator, .alloc_always);
-		defer parser.deinit();
-		pr.json_value = (try parser.parse(pr.body));
-		self.parsed_response = pr;
-		return pr.json_value.?.root;
+		return try std.json.parseFromSliceLeaky(std.json.Value, self.arena, pr.body, .{});
 	}
 
 	pub fn parseResponse(self: *Self) !Response {
 		if (self.parsed_response) |r| return r;
 		try self.res.write();
 
-		const pr = try parse(self.res.stream.received.items);
+		const pr = try parseWithAllocator(self.arena, self.res.stream.received.items);
 		self.parsed_response = pr;
 		return pr;
 	}
 };
 
 pub fn parse(data: []u8) !Testing.Response {
+	return parseWithAllocator(t.allocator, data);
+}
+
+pub fn parseWithAllocator(allocator: Allocator, data: []u8) !Testing.Response {
 	// data won't outlive this function, we want our Response to take ownership
 	// of the full body, since it needs to reference parts of it.
-	const raw = t.allocator.alloc(u8, data.len) catch unreachable;
+	const raw = allocator.alloc(u8, data.len) catch unreachable;
 	@memcpy(raw, data);
 
 	var status: u16 = 0;
 	var header_length: usize = 0;
-	var headers = std.StringHashMap([]const u8).init(t.allocator);
+	var headers = std.StringHashMap([]const u8).init(allocator);
 
 	var it = std.mem.split(u8, raw, "\r\n");
 	if (it.next()) |line| {
@@ -252,7 +217,7 @@ pub fn parse(data: []u8) !Testing.Response {
 		.raw = raw,
 		.status = status,
 		.headers = headers,
-		.json_value = null,
+		.allocator = allocator,
 		.body = raw[header_length..header_length + body_length],
 	};
 }
@@ -325,15 +290,12 @@ const JsonComparer = struct {
 			b_bytes = b;
 		}
 
-		var a_parser = std.json.Parser.init(allocator, .alloc_always);
-		const a_tree = try a_parser.parse(a_bytes);
-
-		var b_parser = std.json.Parser.init(allocator, .alloc_always);
-		const b_tree = try b_parser.parse(b_bytes);
+		var a_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, a_bytes, .{});
+		var b_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, b_bytes, .{});
 
 		var diffs = ArrayList(Diff).init(allocator);
 		var path = ArrayList([]const u8).init(allocator);
-		try self.compareValue(a_tree.root, b_tree.root, &diffs, &path);
+		try self.compareValue(a_value, b_value, &diffs, &path);
 		return diffs;
 	}
 

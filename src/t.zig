@@ -37,12 +37,16 @@ pub const Stream = struct {
 	const Self = @This();
 
 	pub fn init() *Stream {
-		var s = allocator.create(Stream) catch unreachable;
+		return initWithAllocator(allocator);
+	}
+
+	pub fn initWithAllocator(a: std.mem.Allocator) *Stream {
+		var s = a.create(Stream) catch unreachable;
 		s.closed = false;
 		s.read_index = 0;
 		s.random = getRandom();
-		s.to_read = ArrayList(u8).init(allocator);
-		s.received = ArrayList(u8).init(allocator);
+		s.to_read = ArrayList(u8).init(a);
+		s.received = ArrayList(u8).init(a);
 		return s;
 	}
 
