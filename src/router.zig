@@ -554,7 +554,7 @@ test "route: root" {
 
 	// test "all" route
 	inline for (@typeInfo(httpz.Method).Enum.fields) |field| {
-		const m = @intToEnum(httpz.Method, field.value);
+		const m = @enumFromInt(httpz.Method, field.value);
 		try t.expectEqual(&testRoute4, router.route(m, urls[2], &params).?.action);
 	}
 }
