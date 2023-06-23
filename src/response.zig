@@ -99,6 +99,16 @@ pub const Response = struct {
 		self.headers.add(name, value);
 	}
 
+	pub fn startEventStream(self: *Self) !Stream {
+		self.content_type = .EVENTS;
+		self.headers.add("Cache-Control", "no-cache");
+		self.headers.add("Connection", "keep-alive");
+		const stream = self.stream;
+		try self.writeHeaders(stream);
+		self.written = true;
+		return stream;
+	}
+
 	pub fn write(self: *Self) !void {
 		if (self.written) return;
 		self.written = true;
@@ -205,7 +215,8 @@ pub const Response = struct {
 				.BINARY => "Content-Type: application/octet-stream\r\n",
 				.CSS => "Content-Type: text/css\r\n",
 				.CSV => "Content-Type: text/csv\r\n",
-				.EOT => "Content-Type: application/vnd.ms-fontobject;\r\n",
+				.EOT => "Content-Type: application/vnd.ms-fontobject\r\n",
+				.EVENTS => "Content-Type: text/event-stream\r\n",
 				.GIF => "Content-Type: image/gif\r\n",
 				.GZ => "Content-Type: application/gzip\r\n",
 				.HTML => "Content-Type: text/html\r\n",
@@ -264,6 +275,7 @@ pub const Response = struct {
 
 		if (self.body) |body| {
 			std.debug.assert(self.chunked == false);
+			std.debug.assert(self.content_type != .EVENTS);
 			if (header_buffer.len < header_pos + 32) {
 				try stream.writeAll(header_buffer[0..header_pos]);
 				header_pos = 0;
@@ -280,9 +292,13 @@ pub const Response = struct {
 			header_buffer[header_pos+3] = '\n';
 			try stream.writeAll(header_buffer[0..(header_pos+4)]);
 		} else {
-			// for chunked encoding, we only terminate with a single \r\n
-			// since the chunking prepends \r\n to each chunk
-			const fin = if (self.chunked) "Transfer-Encoding: chunked\r\n" else "Content-Length: 0\r\n\r\n";
+			const fin = blk: {
+				// for chunked encoding, we only terminate with a single \r\n
+				// since the chunking prepends \r\n to each chunk
+				if (self.chunked) break :blk "Transfer-Encoding: chunked\r\n";
+				if (self.content_type == .EVENTS) break :blk "\r\n";
+				break :blk "Content-Length: 0\r\n\r\n";
+			};
 			const final_pos = header_pos + fin.len;
 			if (header_pos == 0) {
 				try stream.writeAll(fin);

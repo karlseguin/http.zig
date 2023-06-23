@@ -14,7 +14,7 @@ pub const Request = request.Request;
 pub const Response = response.Response;
 pub const Url = @import("url.zig").Url;
 pub const Config = @import("config.zig").Config;
-const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
+pub const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
 
 const Allocator = std.mem.Allocator;
 
@@ -38,6 +38,7 @@ pub const ContentType = enum {
 	CSS,
 	CSV,
 	EOT,
+	EVENTS,
 	GIF,
 	GZ,
 	HTML,
@@ -666,6 +667,7 @@ test "httpz: CORS" {
 test "ContentType: forX" {
 	inline for (@typeInfo(ContentType).Enum.fields) |field| {
 		if (comptime std.mem.eql(u8, "BINARY", field.name)) continue;
+		if (comptime std.mem.eql(u8, "EVENTS", field.name)) continue;
 		try t.expectEqual(@field(ContentType, field.name), ContentType.forExtension(field.name));
 		try t.expectEqual(@field(ContentType, field.name), ContentType.forExtension("." ++ field.name));
 		try t.expectEqual(@field(ContentType, field.name), ContentType.forFile("some_file." ++ field.name));
@@ -681,6 +683,27 @@ test "ContentType: forX" {
 	try t.expectEqual(ContentType.UNKNOWN, ContentType.forFile("css"));
 	try t.expectEqual(ContentType.UNKNOWN, ContentType.forFile("css"));
 	try t.expectEqual(ContentType.UNKNOWN, ContentType.forFile("must.spice"));
+}
+
+test "httpz: event stream" {
+var stream = t.Stream.init();
+	defer stream.deinit();
+	_ = stream.add("GET /test/stream HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+	var srv = Server().init(t.allocator, .{}) catch unreachable;
+	defer srv.deinit();
+	srv.router().get("/test/stream", testEventStream);
+	testRequest(void, &srv, stream);
+
+	var res = try testing.parse(stream.received.items);
+	defer res.deinit();
+
+	try t.expectEqual(@as(u16, 818), res.status);
+	try t.expectEqual(true, res.headers.get("Content-Length") == null);
+	try t.expectString("text/event-stream", res.headers.get("Content-Type").?);
+	try t.expectString("no-cache", res.headers.get("Cache-Control").?);
+	try t.expectString("keep-alive", res.headers.get("Connection").?);
+	try t.expectString("a message", res.body);
 }
 
 fn testRequest(comptime G: type, srv: *ServerCtx(G, G), stream: *t.Stream) void {
@@ -717,6 +740,12 @@ fn testCLBody(_: u32, req: *Request, res: *Response) !void {
 fn testJsonRes(_: *Request, res: *Response) !void {
 	res.status = 201;
 	try res.json(.{.over = 9000, .teg = "soup"}, .{});
+}
+
+fn testEventStream(_: *Request, res: *Response) !void {
+	res.status = 818;
+	const stream = try res.startEventStream();
+	try stream.writeAll("a message");
 }
 
 fn testReqQuery(req: *Request, res: *Response) !void {

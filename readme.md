@@ -675,5 +675,21 @@ try std.testing.expectEqual(@as(u16, 200), res.status);
 # HTTP Compliance
 This implementation may never be fully HTTP/1.1 compliant, as it is built with the assumption that it will sit behind a reverse proxy that is tolerant of non-compliant upstreams (e.g. nginx). 
 
+
+# Server Side Events
+Service Side Events can be enabled by calling `res.startEventStream()`. On success, this will return an `httpz.Stream` (which is a `std.net.Stream` or a mock object during testing). The stream will remain valid for the duration of the action, but `req` and `res` should no longer be used. `res.body` must not be set (directly or indirectly) prior to calling `startEventStream`.
+
+```zig
+// Can set headers
+res.header("Custom-Header", "Custom-Value");
+
+const stream = res.startEventStream();
+// do not use res or req from this point on
+while (true) {
+    // some event loop
+    try stream.writeAll("event: ....");
+}
+```
+
 # websocket.zig
 I'm also working on a websocket server implementation for zig: [https://github.com/karlseguin/websocket.zig](https://github.com/karlseguin/websocket.zig).
