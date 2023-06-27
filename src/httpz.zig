@@ -59,29 +59,29 @@ pub const ContentType = enum {
 	XML,
 	UNKNOWN,
 
-	const JS_BIT = @bitCast(u16, [2]u8{'j', 's'});
-	const GZ_BIT = @bitCast(u16, [2]u8{'g', 'z'});
-	const CSS_BIT = @bitCast(u24, [3]u8{'c', 's', 's'});
-	const CSV_BIT = @bitCast(u24, [3]u8{'c', 's', 'v'});
-	const EOT_BIT = @bitCast(u24, [3]u8{'e', 'o', 't'});
-	const GIF_BIT = @bitCast(u24, [3]u8{'g', 'i', 'f'});
-	const HTM_BIT = @bitCast(u24, [3]u8{'h', 't', 'm'});
-	const ICO_BIT = @bitCast(u24, [3]u8{'i', 'c', 'o'});
-	const JPG_BIT = @bitCast(u24, [3]u8{'j', 'p', 'g'});
-	const OTF_BIT = @bitCast(u24, [3]u8{'o', 't', 'f'});
-	const PDF_BIT = @bitCast(u24, [3]u8{'p', 'd', 'f'});
-	const PNG_BIT = @bitCast(u24, [3]u8{'p', 'n', 'g'});
-	const SVG_BIT = @bitCast(u24, [3]u8{'s', 'v', 'g'});
-	const TAR_BIT = @bitCast(u24, [3]u8{'t', 'a', 'r'});
-	const TTF_BIT = @bitCast(u24, [3]u8{'t', 't', 'f'});
-	const XML_BIT = @bitCast(u24, [3]u8{'x', 'm', 'l'});
-	const JPEG_BIT = @bitCast(u32, [4]u8{'j','p','e','g'});
-	const JSON_BIT = @bitCast(u32, [4]u8{'j','s','o','n'});
-	const HTML_BIT = @bitCast(u32, [4]u8{'h','t','m','l'});
-	const TEXT_BIT = @bitCast(u32, [4]u8{'t','e','x','t'});
-	const WOFF_BIT = @bitCast(u32, [4]u8{'w','o','f','f'});
-	const WEBP_BIT = @bitCast(u32, [4]u8{'w','e','b','p'});
-	const WOFF2_BIT = @bitCast(u40, [5]u8{'w','o','f','f', '2'});
+	const JS_BIT = @as(u16, @bitCast([2]u8{'j', 's'}));
+	const GZ_BIT = @as(u16, @bitCast([2]u8{'g', 'z'}));
+	const CSS_BIT = @as(u24, @bitCast([3]u8{'c', 's', 's'}));
+	const CSV_BIT = @as(u24, @bitCast([3]u8{'c', 's', 'v'}));
+	const EOT_BIT = @as(u24, @bitCast([3]u8{'e', 'o', 't'}));
+	const GIF_BIT = @as(u24, @bitCast([3]u8{'g', 'i', 'f'}));
+	const HTM_BIT = @as(u24, @bitCast([3]u8{'h', 't', 'm'}));
+	const ICO_BIT = @as(u24, @bitCast([3]u8{'i', 'c', 'o'}));
+	const JPG_BIT = @as(u24, @bitCast([3]u8{'j', 'p', 'g'}));
+	const OTF_BIT = @as(u24, @bitCast([3]u8{'o', 't', 'f'}));
+	const PDF_BIT = @as(u24, @bitCast([3]u8{'p', 'd', 'f'}));
+	const PNG_BIT = @as(u24, @bitCast([3]u8{'p', 'n', 'g'}));
+	const SVG_BIT = @as(u24, @bitCast([3]u8{'s', 'v', 'g'}));
+	const TAR_BIT = @as(u24, @bitCast([3]u8{'t', 'a', 'r'}));
+	const TTF_BIT = @as(u24, @bitCast([3]u8{'t', 't', 'f'}));
+	const XML_BIT = @as(u24, @bitCast([3]u8{'x', 'm', 'l'}));
+	const JPEG_BIT = @as(u32, @bitCast([4]u8{'j','p','e','g'}));
+	const JSON_BIT = @as(u32, @bitCast([4]u8{'j','s','o','n'}));
+	const HTML_BIT = @as(u32, @bitCast([4]u8{'h','t','m','l'}));
+	const TEXT_BIT = @as(u32, @bitCast([4]u8{'t','e','x','t'}));
+	const WOFF_BIT = @as(u32, @bitCast([4]u8{'w','o','f','f'}));
+	const WEBP_BIT = @as(u32, @bitCast([4]u8{'w','e','b','p'}));
+	const WOFF2_BIT = @as(u40, @bitCast([5]u8{'w','o','f','f', '2'}));
 
 	pub fn forExtension(ext: []const u8) ContentType {
 		if (ext.len == 0) return .UNKNOWN;
@@ -95,14 +95,14 @@ pub const ContentType = enum {
 
 		switch (temp.len) {
 			2 => {
-				switch (@bitCast(u16, normalized[0..2].*)) {
+				switch (@as(u16, @bitCast(normalized[0..2].*))) {
 					JS_BIT => return .JS,
 					GZ_BIT => return .GZ,
 					else => return .UNKNOWN,
 				}
 			},
 			3 => {
-				switch (@bitCast(u24, normalized[0..3].*)){
+				switch (@as(u24, @bitCast(normalized[0..3].*))) {
 					CSS_BIT => return .CSS,
 					CSV_BIT => return .CSV,
 					EOT_BIT => return .EOT,
@@ -121,7 +121,7 @@ pub const ContentType = enum {
 				}
 			},
 			4 => {
-				switch (@bitCast(u32, normalized[0..4].*)){
+				switch (@as(u32, @bitCast(normalized[0..4].*))) {
 					JPEG_BIT => return .JPG,
 					JSON_BIT => return .JSON,
 					HTML_BIT => return .HTML,
@@ -132,7 +132,7 @@ pub const ContentType = enum {
 				}
 			},
 			5 => {
-				switch (@bitCast(u40, normalized[0..5].*)){
+				switch (@as(u40, @bitCast(normalized[0..5].*))) {
 					WOFF2_BIT => return .WOFF2,
 					else => return .UNKNOWN,
 				}

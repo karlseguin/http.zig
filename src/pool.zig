@@ -127,7 +127,6 @@ test "pool: acquires & release" {
 }
 
 test "pool: threadsafety" {
-	id = 0;
 	var p = try Pool(*TestEntry, i32).init(t.allocator, 4, TestEntry.init, 1);
 	defer p.deinit();
 

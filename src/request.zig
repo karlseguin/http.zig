@@ -13,16 +13,16 @@ const Allocator = std.mem.Allocator;
 const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
 
 // this approach to matching method name comes from zhp
-const GET_ = @bitCast(u32, [4]u8{'G', 'E', 'T', ' '});
-const PUT_ = @bitCast(u32, [4]u8{'P', 'U', 'T', ' '});
-const POST = @bitCast(u32, [4]u8{'P', 'O', 'S', 'T'});
-const HEAD = @bitCast(u32, [4]u8{'H', 'E', 'A', 'D'});
-const PATC = @bitCast(u32, [4]u8{'P', 'A', 'T', 'C'});
-const DELE = @bitCast(u32, [4]u8{'D', 'E', 'L', 'E'});
-const OPTI = @bitCast(u32, [4]u8{'O', 'P', 'T', 'I'});
-const HTTP = @bitCast(u32, [4]u8{'H', 'T', 'T', 'P'});
-const V1P0 = @bitCast(u32, [4]u8{'/', '1', '.', '0'});
-const V1P1 = @bitCast(u32, [4]u8{'/', '1', '.', '1'});
+const GET_ = @as(u32, @bitCast([4]u8{'G', 'E', 'T', ' '}));
+const PUT_ = @as(u32, @bitCast([4]u8{'P', 'U', 'T', ' '}));
+const POST = @as(u32, @bitCast([4]u8{'P', 'O', 'S', 'T'}));
+const HEAD = @as(u32, @bitCast([4]u8{'H', 'E', 'A', 'D'}));
+const PATC = @as(u32, @bitCast([4]u8{'P', 'A', 'T', 'C'}));
+const DELE = @as(u32, @bitCast([4]u8{'D', 'E', 'L', 'E'}));
+const OPTI = @as(u32, @bitCast([4]u8{'O', 'P', 'T', 'I'}));
+const HTTP = @as(u32, @bitCast([4]u8{'H', 'T', 'T', 'P'}));
+const V1P0 = @as(u32, @bitCast([4]u8{'/', '1', '.', '0'}));
+const V1P1 = @as(u32, @bitCast([4]u8{'/', '1', '.', '1'}));
 
 pub const Config = struct {
 	max_body_size: ?usize = null,
@@ -220,7 +220,7 @@ pub const Request = struct {
 				self.pos = pos + length;
 			} else {
 				buffer = try self.arena.alloc(u8, length);
-				@memcpy(buffer[0..read], self.static[pos..(pos+read)]);
+				std.mem.copyForwards(u8, buffer[0..read], self.static[pos..(pos+read)]);
 			}
 
 			while (read < length) {
@@ -263,7 +263,7 @@ pub const Request = struct {
 		}
 
 		while (true) {
-			const used = switch (@bitCast(u32, buf[0..4].*)) {
+			const used = switch (@as(u32, @bitCast(buf[0..4].*))) {
 				GET_ => {
 					self.method = .GET;
 					return .{.read = buf_len, .used = 4};
@@ -363,10 +363,10 @@ pub const Request = struct {
 		while (buf_len < 10) {
 			buf_len += try readForHeader(stream, buf[buf_len..]);
 		}
-		if (@bitCast(u32, buf[0..4].*) != HTTP) {
+		if (@as(u32, @bitCast(buf[0..4].*)) != HTTP) {
 			return error.UnknownProtocol;
 		}
-		switch (@bitCast(u32, buf[4..8].*)) {
+		switch (@as(u32, @bitCast(buf[4..8].*))) {
 			V1P1 => self.protocol = http.Protocol.HTTP11,
 			V1P0 => self.protocol = http.Protocol.HTTP10,
 			else => return error.UnsupportedProtocol,
@@ -565,7 +565,7 @@ fn atoi(str: []const u8) ?usize {
 		if (d > 9) {
 			return null;
 		}
-		n = n * 10 + @intCast(usize, d);
+		n = n * 10 + @as(usize, @intCast(d));
 	}
 	return n;
 }
@@ -646,7 +646,7 @@ test "atoi" {
 	var buf: [5]u8 = undefined;
 	for (0..99999) |i| {
 		const n = std.fmt.formatIntBuf(&buf, i, 10, .lower, .{});
-		try t.expectEqual(@intCast(usize, i), atoi(buf[0..n]).?);
+		try t.expectEqual(i, atoi(buf[0..n]).?);
 	}
 
 	try t.expectEqual(@as(?usize, null), atoi(""));
