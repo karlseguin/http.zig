@@ -43,34 +43,35 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 		}
 
 		pub fn acquire(self: *Self) !E {
-			const items = self.items;
 			self.mutex.lock();
+			defer self.mutex.unlock();
+
+			const items = self.items;
+
 			const available = self.available;
 			if (available == 0) {
-				self.mutex.unlock();
 				return try self.initFn(self.initState);
 			}
-			defer self.mutex.unlock();
+
 			const new_available = available - 1;
 			self.available = new_available;
 			return items[new_available];
 		}
 
 		pub fn release(self: *Self, e: E) void {
-			const items = self.items;
-
 			self.mutex.lock();
+			defer self.mutex.unlock();
+
+			const items = self.items;
 			const available = self.available;
 
 			if (available == items.len) {
-				self.mutex.unlock();
 				const allocator = self.allocator;
 				e.deinit(allocator);
 				allocator.destroy(e);
 				return;
 			}
 
-			defer self.mutex.unlock();
 			items[available] = e;
 			self.available = available + 1;
 		}
