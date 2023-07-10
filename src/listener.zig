@@ -61,7 +61,7 @@ pub fn initReqResPool(httpz_allocator: Allocator, app_allocator: Allocator, conf
 }
 
 pub fn handleConnection(comptime S: type, server: S, conn: Conn, reqResPool: *ReqResPool) void {
-    std.os.maybeIgnoreSigpipe();
+	std.os.maybeIgnoreSigpipe();
 
 	const stream = if (comptime builtin.is_test) conn else conn.stream;
 	defer stream.close();
