@@ -572,24 +572,24 @@ fn atoi(str: []const u8) ?usize {
 
 const CR = '\r';
 const VECTOR_8_LEN = if (std.simd.suggestVectorSize(u8) == null) 0 else 8;
-const VECTOR_8_CR = @splat(VECTOR_8_LEN, @as(u8, CR));
+const VECTOR_8_CR: @Vector(8, u8) = @splat(@as(u8, CR));
 const VECTOR_8_IOTA = std.simd.iota(u8, VECTOR_8_LEN);
-const VECTOR_8_NULLS = @splat(VECTOR_8_LEN, @as(u8, 255));
+const VECTOR_8_NULLS: @Vector(8, u8) = @splat(@as(u8, 255));
 
 const VECTOR_16_LEN = if (std.simd.suggestVectorSize(u8) == null) 0 else 16;
-const VECTOR_16_CR = @splat(VECTOR_16_LEN, @as(u8, CR));
+const VECTOR_16_CR: @Vector(16, u8) = @splat(@as(u8, CR));
 const VECTOR_16_IOTA = std.simd.iota(u8, VECTOR_16_LEN);
-const VECTOR_16_NULLS = @splat(VECTOR_16_LEN, @as(u8, 255));
+const VECTOR_16_NULLS: @Vector(16, u8) = @splat(@as(u8, 255));
 
 const VECTOR_32_LEN = if (std.simd.suggestVectorSize(u8) == null) 0 else 32;
-const VECTOR_32_CR = @splat(VECTOR_32_LEN, @as(u8, CR));
+const VECTOR_32_CR: @Vector(32, u8) = @splat(@as(u8, CR));
 const VECTOR_32_IOTA = std.simd.iota(u8, VECTOR_32_LEN);
-const VECTOR_32_NULLS = @splat(VECTOR_32_LEN, @as(u8, 255));
+const VECTOR_32_NULLS: @Vector(32, u8) = @splat(@as(u8, 255));
 
 const VECTOR_64_LEN = if (std.simd.suggestVectorSize(u8) == null) 0 else 64;
-const VECTOR_64_CR = @splat(VECTOR_64_LEN, @as(u8, CR));
+const VECTOR_64_CR: @Vector(64, u8) = @splat(@as(u8, CR));
 const VECTOR_64_IOTA = std.simd.iota(u8, VECTOR_64_LEN);
-const VECTOR_64_NULLS = @splat(VECTOR_64_LEN, @as(u8, 255));
+const VECTOR_64_NULLS: @Vector(64, u8) = @splat(@as(u8, 255));
 
 fn findCarriageReturnIndex(buf: []u8) ?usize {
 	if (VECTOR_32_LEN == 0) {
