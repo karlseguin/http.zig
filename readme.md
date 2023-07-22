@@ -1,5 +1,8 @@
 An HTTP/1.1 server for Zig.
 
+## Demo
+http.zig powers the <https://www.aolium.com> [api server](https://github.com/karlseguin/aolium-api).
+
 # Installation
 This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`.
 
