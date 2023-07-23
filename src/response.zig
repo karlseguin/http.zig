@@ -392,6 +392,10 @@ pub const Response = struct {
 			return data.len;
 		}
 
+		pub fn print(self: Writer, comptime format: []const u8, args: anytype) Allocator.Error!void {
+			return std.fmt.format(self, format, args);
+		}
+
 		fn ensureSpace(self: Writer, n: usize) !void {
 			const res = self.res;
 
