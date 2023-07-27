@@ -4,6 +4,8 @@ const Allocator = std.mem.Allocator;
 
 var index_file_contents: []u8 = undefined;
 
+// Started in main.zig which starts 3 servers, on 3 different ports, to showcase
+// small variations in using httpz.
 pub fn start(allocator: Allocator) !void {
 	var server = try httpz.Server().init(allocator, .{ .pool_size = 20 });
 	var router = server.router();
@@ -60,10 +62,10 @@ fn writer(req: *httpz.Request, res: *httpz.Response) !void {
 	res.content_type = httpz.ContentType.JSON;
 
 	const name = req.param("name").?;
-	var ws = std.json.writeStream(res.writer(), 4);
+	var ws = std.json.writeStream(res.writer(), .{.whitespace = .indent_4});
 	try ws.beginObject();
 	try ws.objectField("name");
-	try ws.emitString(name);
+	try ws.write(name);
 	try ws.endObject();
 }
 
