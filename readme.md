@@ -14,7 +14,7 @@ The library supports both simple and complex use cases. A simple user case is sh
 ```zig
 const httpz = @import("httpz");
 
-fn main() !void {
+pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
@@ -72,7 +72,7 @@ const Global = struct {
     l: std.Thread.Mutex = .{},
 };
 
-fn main() !void {
+pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
@@ -116,7 +116,7 @@ const Global = struct {
     }
 };
 
-fn main() !void {
+pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
@@ -210,7 +210,7 @@ const Context = struct {
     user_id: ?[]const u8,
 }
 
-fn main() !void {
+pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
