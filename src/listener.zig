@@ -78,15 +78,11 @@ pub fn handleConnection(comptime S: type, server: S, conn: Conn, reqResPool: *Re
 
 	req.stream = stream;
 	res.stream = stream;
-	defer _ = arena.reset(.free_all);
 
 	while (true) {
 		req.reset();
 		res.reset();
-		// TODO: this does not work, if you keep trying to use the arena allocator
-		// after this, you'll get a segfault. It can take multiple hits before it
-		// happens, but it will happen.
-		// defer _ = arena.reset(.{.retain_with_limit = 8192});
+		defer _ = arena.reset(.free_all);
 
 		if (req.parse()) {
 			if (!server.handle(req, res)) {
