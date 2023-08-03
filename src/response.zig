@@ -70,7 +70,7 @@ pub const Response = struct {
 		self.headers = try KeyValue.init(allocator, config.max_header_count orelse 16);
 		self.body_buffer = try allocator.alloc(u8, config.body_buffer_size orelse 32_768);
 		self.header_buffer = try allocator.alloc(u8, config.header_buffer_size orelse 4096);
-		self.reset();
+		// reset() will be called before the response is used
 	}
 
 	pub fn deinit(self: *Self, allocator: Allocator) void {

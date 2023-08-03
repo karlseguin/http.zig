@@ -36,6 +36,7 @@ const RequestContext = struct {
 pub fn start(allocator: Allocator) !void {
 	var ctx = GlobalContext{};
 	var server = try httpz.ServerCtx(*GlobalContext, *RequestContext).init(allocator, .{ .pool_size = 10, .port = 5884 }, &ctx);
+	defer server.deinit();
 	server.dispatcher(dispatcher);
 	var router = server.router();
 	router.get("/increment", RequestContext.increment);

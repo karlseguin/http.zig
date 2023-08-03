@@ -104,7 +104,7 @@ pub const Request = struct {
 		self.static = try allocator.alloc(u8, config.buffer_size orelse 65_8536);
 		self.headers = try KeyValue.init(allocator, config.max_header_count orelse 32);
 		self.params = try Params.init(allocator, config.max_param_count orelse 10);
-		self.reset();
+		// reset() will be called before the request is used
 	}
 
 	// Each parsing step (method, target, protocol, headers, body)

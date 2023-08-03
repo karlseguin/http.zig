@@ -37,7 +37,6 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 			const allocator = self.allocator;
 			for (self.items) |e| {
 				e.deinit(allocator);
-				allocator.destroy(e);
 			}
 			allocator.free(self.items);
 		}
@@ -66,7 +65,6 @@ pub fn Pool(comptime E: type, comptime S: type) type {
 				self.mutex.unlock();
 				const allocator = self.allocator;
 				e.deinit(allocator);
-				allocator.destroy(e);
 				return;
 			}
 

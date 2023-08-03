@@ -19,6 +19,8 @@ const ReqResPool = Pool(*RequestResponsePair, RequestResponsePairConfig);
 
 pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Allocator, server: S, config: Config) !void {
 	var reqResPool = try initReqResPool(httpz_allocator, app_allocator, config);
+	defer reqResPool.deinit();
+
 	var socket = net.StreamServer.init(.{
 		.reuse_address = true,
 		.kernel_backlog = 1024,
@@ -134,6 +136,7 @@ const RequestResponsePair = struct{
 		httpz_allocator.destroy(self.response);
 		self.arena.deinit();
 		httpz_allocator.destroy(self.arena);
+		httpz_allocator.destroy(self);
 	}
 };
 
