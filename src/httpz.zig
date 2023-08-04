@@ -295,6 +295,10 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 					res.write() catch return false;
 				},
                 error.BrokenPipe => {
+                    // TODO - IF this is correct, then there is probably a range of IO related errors that should
+                    // be trieated the same way. ie - the network connection is no longer valid, so dont 
+                    // try to write a response to it
+                    // MAYBE - allow the user to set a different errorHandler for these sort of conditions
                     return false;
                 },
 				else => {
