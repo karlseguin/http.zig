@@ -294,6 +294,9 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 					res.body = "Request body is too big";
 					res.write() catch return false;
 				},
+                error.BrokenPipe => {
+                    return false;
+                },
 				else => {
 					if (comptime G == void) {
 						self._errorHandler(req, res, err);
