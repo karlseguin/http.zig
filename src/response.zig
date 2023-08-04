@@ -454,7 +454,6 @@ fn writeInt(into: []u8, n: u32) usize {
 	return i;
 }
 
-
 test "writeInt" {
 	var buf: [10]u8 = undefined;
 	var tst: [10]u8 = undefined;
@@ -659,7 +658,6 @@ test "response: written" {
 	res.body = "yo!";
 	try res.write();
 	try t.expectString("", s.received.items);
-
 }
 
 fn testResponse(stream: Stream, config: Config) *Response {
@@ -667,6 +665,7 @@ fn testResponse(stream: Stream, config: Config) *Response {
 	res.init(t.allocator, t.allocator, config) catch unreachable;
 	res.arena = t.arena;
 	res.stream = stream;
+	res.reset();
 	return res;
 }
 

@@ -89,8 +89,9 @@ const TestEntry = struct {
 		return entry;
 	}
 
-	pub fn deinit(self: *TestEntry, _: Allocator) void {
+	pub fn deinit(self: *TestEntry, allocator: Allocator) void {
 		self.deinited = true;
+		allocator.destroy(self);
 	}
 };
 

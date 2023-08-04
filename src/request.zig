@@ -642,6 +642,18 @@ fn findCarriageReturnIndex(buf: []u8) ?usize {
 	return null;
 }
 
+const Error = error {
+	BodyTooBig,
+	HeaderTooBig,
+	ConnectionClosed,
+	UnknownMethod,
+	InvalidRequestTarget,
+	UnknownProtocol,
+	UnsupportedProtocol,
+	InvalidHeaderLine,
+	InvalidContentLength,
+};
+
 test "atoi" {
 	var buf: [5]u8 = undefined;
 	for (0..99999) |i| {
@@ -671,18 +683,6 @@ test "request: findCarriageReturnIndex" {
 		buf[i-1] = 'z';
 	}
 }
-
-const Error = error {
-	BodyTooBig,
-	HeaderTooBig,
-	ConnectionClosed,
-	UnknownMethod,
-	InvalidRequestTarget,
-	UnknownProtocol,
-	UnsupportedProtocol,
-	InvalidHeaderLine,
-	InvalidContentLength,
-};
 
 test "request: header too big" {
 	try expectParseError(Error.HeaderTooBig, "GET / HTTP/1.1\r\n\r\n", .{.buffer_size = 17});
