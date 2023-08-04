@@ -137,71 +137,71 @@ pub const Response = struct {
 		var header_buffer = self.header_buffer;
 
 		switch (self.status) {
-			100 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 100\r\n"),
-			101 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 101\r\n"),
-			102 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 102\r\n"),
-			103 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 103\r\n"),
-			200 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 200\r\n"),
-			201 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 201\r\n"),
-			202 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 202\r\n"),
-			203 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 203\r\n"),
-			204 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 204\r\n"),
-			205 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 205\r\n"),
-			206 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 206\r\n"),
-			207 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 207\r\n"),
-			208 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 208\r\n"),
-			226 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 226\r\n"),
-			300 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 300\r\n"),
-			301 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 301\r\n"),
-			302 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 302\r\n"),
-			303 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 303\r\n"),
-			304 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 304\r\n"),
-			305 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 305\r\n"),
-			306 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 306\r\n"),
-			307 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 307\r\n"),
-			308 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 308\r\n"),
-			400 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 400\r\n"),
-			401 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 401\r\n"),
-			402 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 402\r\n"),
-			403 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 403\r\n"),
-			404 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 404\r\n"),
-			405 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 405\r\n"),
-			406 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 406\r\n"),
-			407 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 407\r\n"),
-			408 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 408\r\n"),
-			409 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 409\r\n"),
-			410 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 410\r\n"),
-			411 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 411\r\n"),
-			412 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 412\r\n"),
-			413 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 413\r\n"),
-			414 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 414\r\n"),
-			415 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 415\r\n"),
-			416 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 416\r\n"),
-			417 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 417\r\n"),
-			418 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 418\r\n"),
-			421 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 421\r\n"),
-			422 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 422\r\n"),
-			423 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 423\r\n"),
-			424 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 424\r\n"),
-			425 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 425\r\n"),
-			426 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 426\r\n"),
-			428 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 428\r\n"),
-			429 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 429\r\n"),
-			431 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 431\r\n"),
-			451 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 451\r\n"),
-			500 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 500\r\n"),
-			501 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 501\r\n"),
-			502 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 502\r\n"),
-			503 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 503\r\n"),
-			504 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 504\r\n"),
-			505 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 505\r\n"),
-			506 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 506\r\n"),
-			507 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 507\r\n"),
-			508 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 508\r\n"),
-			510 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 510\r\n"),
-			511 => std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 511\r\n"),
+			100 => @memcpy(header_buffer[0..14], "HTTP/1.1 100\r\n"),
+			101 => @memcpy(header_buffer[0..14], "HTTP/1.1 101\r\n"),
+			102 => @memcpy(header_buffer[0..14], "HTTP/1.1 102\r\n"),
+			103 => @memcpy(header_buffer[0..14], "HTTP/1.1 103\r\n"),
+			200 => @memcpy(header_buffer[0..14], "HTTP/1.1 200\r\n"),
+			201 => @memcpy(header_buffer[0..14], "HTTP/1.1 201\r\n"),
+			202 => @memcpy(header_buffer[0..14], "HTTP/1.1 202\r\n"),
+			203 => @memcpy(header_buffer[0..14], "HTTP/1.1 203\r\n"),
+			204 => @memcpy(header_buffer[0..14], "HTTP/1.1 204\r\n"),
+			205 => @memcpy(header_buffer[0..14], "HTTP/1.1 205\r\n"),
+			206 => @memcpy(header_buffer[0..14], "HTTP/1.1 206\r\n"),
+			207 => @memcpy(header_buffer[0..14], "HTTP/1.1 207\r\n"),
+			208 => @memcpy(header_buffer[0..14], "HTTP/1.1 208\r\n"),
+			226 => @memcpy(header_buffer[0..14], "HTTP/1.1 226\r\n"),
+			300 => @memcpy(header_buffer[0..14], "HTTP/1.1 300\r\n"),
+			301 => @memcpy(header_buffer[0..14], "HTTP/1.1 301\r\n"),
+			302 => @memcpy(header_buffer[0..14], "HTTP/1.1 302\r\n"),
+			303 => @memcpy(header_buffer[0..14], "HTTP/1.1 303\r\n"),
+			304 => @memcpy(header_buffer[0..14], "HTTP/1.1 304\r\n"),
+			305 => @memcpy(header_buffer[0..14], "HTTP/1.1 305\r\n"),
+			306 => @memcpy(header_buffer[0..14], "HTTP/1.1 306\r\n"),
+			307 => @memcpy(header_buffer[0..14], "HTTP/1.1 307\r\n"),
+			308 => @memcpy(header_buffer[0..14], "HTTP/1.1 308\r\n"),
+			400 => @memcpy(header_buffer[0..14], "HTTP/1.1 400\r\n"),
+			401 => @memcpy(header_buffer[0..14], "HTTP/1.1 401\r\n"),
+			402 => @memcpy(header_buffer[0..14], "HTTP/1.1 402\r\n"),
+			403 => @memcpy(header_buffer[0..14], "HTTP/1.1 403\r\n"),
+			404 => @memcpy(header_buffer[0..14], "HTTP/1.1 404\r\n"),
+			405 => @memcpy(header_buffer[0..14], "HTTP/1.1 405\r\n"),
+			406 => @memcpy(header_buffer[0..14], "HTTP/1.1 406\r\n"),
+			407 => @memcpy(header_buffer[0..14], "HTTP/1.1 407\r\n"),
+			408 => @memcpy(header_buffer[0..14], "HTTP/1.1 408\r\n"),
+			409 => @memcpy(header_buffer[0..14], "HTTP/1.1 409\r\n"),
+			410 => @memcpy(header_buffer[0..14], "HTTP/1.1 410\r\n"),
+			411 => @memcpy(header_buffer[0..14], "HTTP/1.1 411\r\n"),
+			412 => @memcpy(header_buffer[0..14], "HTTP/1.1 412\r\n"),
+			413 => @memcpy(header_buffer[0..14], "HTTP/1.1 413\r\n"),
+			414 => @memcpy(header_buffer[0..14], "HTTP/1.1 414\r\n"),
+			415 => @memcpy(header_buffer[0..14], "HTTP/1.1 415\r\n"),
+			416 => @memcpy(header_buffer[0..14], "HTTP/1.1 416\r\n"),
+			417 => @memcpy(header_buffer[0..14], "HTTP/1.1 417\r\n"),
+			418 => @memcpy(header_buffer[0..14], "HTTP/1.1 418\r\n"),
+			421 => @memcpy(header_buffer[0..14], "HTTP/1.1 421\r\n"),
+			422 => @memcpy(header_buffer[0..14], "HTTP/1.1 422\r\n"),
+			423 => @memcpy(header_buffer[0..14], "HTTP/1.1 423\r\n"),
+			424 => @memcpy(header_buffer[0..14], "HTTP/1.1 424\r\n"),
+			425 => @memcpy(header_buffer[0..14], "HTTP/1.1 425\r\n"),
+			426 => @memcpy(header_buffer[0..14], "HTTP/1.1 426\r\n"),
+			428 => @memcpy(header_buffer[0..14], "HTTP/1.1 428\r\n"),
+			429 => @memcpy(header_buffer[0..14], "HTTP/1.1 429\r\n"),
+			431 => @memcpy(header_buffer[0..14], "HTTP/1.1 431\r\n"),
+			451 => @memcpy(header_buffer[0..14], "HTTP/1.1 451\r\n"),
+			500 => @memcpy(header_buffer[0..14], "HTTP/1.1 500\r\n"),
+			501 => @memcpy(header_buffer[0..14], "HTTP/1.1 501\r\n"),
+			502 => @memcpy(header_buffer[0..14], "HTTP/1.1 502\r\n"),
+			503 => @memcpy(header_buffer[0..14], "HTTP/1.1 503\r\n"),
+			504 => @memcpy(header_buffer[0..14], "HTTP/1.1 504\r\n"),
+			505 => @memcpy(header_buffer[0..14], "HTTP/1.1 505\r\n"),
+			506 => @memcpy(header_buffer[0..14], "HTTP/1.1 506\r\n"),
+			507 => @memcpy(header_buffer[0..14], "HTTP/1.1 507\r\n"),
+			508 => @memcpy(header_buffer[0..14], "HTTP/1.1 508\r\n"),
+			510 => @memcpy(header_buffer[0..14], "HTTP/1.1 510\r\n"),
+			511 => @memcpy(header_buffer[0..14], "HTTP/1.1 511\r\n"),
 			else => |s| {
-				std.mem.copyForwards(u8, header_buffer, "HTTP/1.1 ");
+				@memcpy(header_buffer[0..9], "HTTP/1.1 ");
 				// "HTTP/1.1 ".len == 9
 				header_pos = 9 + writeInt(header_buffer[9..], @as(u32, s));
 				header_buffer[header_pos] = '\r';
@@ -239,7 +239,7 @@ pub const Response = struct {
 			};
 			if (content_type) |value| {
 				const end_pos = header_pos + value.len;
-				std.mem.copyForwards(u8, header_buffer[header_pos..end_pos], value);
+				@memcpy(header_buffer[header_pos..end_pos], value);
 				header_pos = end_pos;
 			}
 		}
@@ -258,14 +258,14 @@ pub const Response = struct {
 					header_pos = 0;
 				}
 				var end_pos = header_pos + name.len;
-				std.mem.copyForwards(u8, header_buffer[header_pos..end_pos], name);
+				@memcpy(header_buffer[header_pos..end_pos], name);
 				header_pos = end_pos;
 				header_buffer[header_pos] = ':';
 				header_buffer[header_pos+1] = ' ';
 				header_pos += 2;
 
 				end_pos = header_pos + value.len;
-				std.mem.copyForwards(u8, header_buffer[header_pos..end_pos], value);
+				@memcpy(header_buffer[header_pos..end_pos], value);
 				header_pos = end_pos;
 				header_buffer[header_pos] = '\r';
 				header_buffer[header_pos+1] = '\n';
@@ -281,7 +281,7 @@ pub const Response = struct {
 				header_pos = 0;
 			}
 			const end_pos = header_pos + 16;
-			std.mem.copyForwards(u8, header_buffer[header_pos..end_pos], "Content-Length: ");
+			@memcpy(header_buffer[header_pos..end_pos], "Content-Length: ");
 			header_pos = end_pos;
 			const pos = self.pos;
 			const len = if (pos > 0) pos else body.len;
@@ -306,7 +306,7 @@ pub const Response = struct {
 				try stream.writeAll(header_buffer[0..header_pos]);
 				try stream.writeAll(fin);
 			} else {
-				std.mem.copyForwards(u8, header_buffer[header_pos..(header_pos+fin.len)], fin);
+				@memcpy(header_buffer[header_pos..(header_pos+fin.len)], fin);
 				try stream.writeAll(header_buffer[0..final_pos]);
 			}
 		}
@@ -383,7 +383,7 @@ pub const Response = struct {
 			try self.ensureSpace(data.len);
 			const pos = self.res.pos;
 			const end_pos = pos + data.len;
-			std.mem.copyForwards(u8, self.res.writer_buffer[pos..end_pos], data);
+			@memcpy(self.res.writer_buffer[pos..end_pos], data);
 			self.res.pos = end_pos;
 		}
 
@@ -424,7 +424,7 @@ pub const Response = struct {
 			// when the arena is freed
 			if (buffer.ptr == res.body_buffer.ptr or !arena.resize(buffer, new_capacity)) {
 				const new_buffer = try arena.alloc(u8, new_capacity);
-				std.mem.copyForwards(u8, new_buffer[0..buffer.len], buffer);
+				@memcpy(new_buffer[0..buffer.len], buffer);
 				res.body = new_buffer;
 				res.writer_buffer = new_buffer;
 			} else {

@@ -220,7 +220,7 @@ pub const Request = struct {
 				self.pos = pos + length;
 			} else {
 				buffer = try self.arena.alloc(u8, length);
-				std.mem.copyForwards(u8, buffer[0..read], self.static[pos..(pos+read)]);
+				@memcpy(buffer[0..read], self.static[pos..(pos+read)]);
 			}
 
 			while (read < length) {
