@@ -9,7 +9,7 @@ This library supports native Zig module (introduced in 0.11). Add a "httpz" depe
 # Usage
 
 ## Simple Use Case
-The library supports both simple and complex use cases. A simple user case is shown below. It's initiated by the call to `httpz.Server()`:
+The library supports both simple and complex use cases. A simple use case is shown below. It's initiated by the call to `httpz.Server()`:
 
 ```zig
 const httpz = @import("httpz");
@@ -598,7 +598,7 @@ fn missingParameter(res: *httpz.Response, parameter: []const u8) !void {
 }
 ```
 
-We have can test the above error case like so:
+We can test the above error case like so:
 
 ```zig
 const ht = @import("httpz").testing;
