@@ -598,7 +598,7 @@ fn missingParameter(res: *httpz.Response, parameter: []const u8) !void {
 }
 ```
 
-We have can test the above error case like so:
+We can test the above error case like so:
 
 ```zig
 const ht = @import("httpz").testing;
