@@ -166,7 +166,6 @@ fn unHex(b: u8) u8 {
 	};
 }
 
-
 test "url: parse" {
 	{
 		// absolute root

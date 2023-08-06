@@ -1057,19 +1057,16 @@ test "request: fuzz" {
 
 	var r = t.getRandom();
 	const random = r.random();
-	for (0..1) |_| {
+	for (0..100) |_| {
 
 		// important to test with different buffer sizes, since there's a lot of
 		// special handling for different cases (e.g the buffer is full and has
 		// some of the body in it, so we need to copy that to a dynamically allocated
 		// buffer)
-
-		// how many requests should we make on this 1 individual socket (simulating
-		// keepalive AND the request pool)
 		const buffer_size = random.uintAtMost(u16, 1024) + 1024;
+
 		var request = testRequest(.{.buffer_size = buffer_size});
 		defer {
-			// normally the arena
 			t.reset();
 			request.deinit(t.allocator);
 			t.allocator.destroy(request);
@@ -1080,9 +1077,14 @@ test "request: fuzz" {
 
 		request.stream = s;
 		request.arena = t.arena;
+
+		// how many requests should we make on this 1 individual socket (simulating
+		// keepalive AND the request pool)
 		const number_of_requests = random.uintAtMost(u8, 10) + 1;
+
 		for (0..number_of_requests) |_| {
-			_ = arena.reset(.retain_capacity);
+			request.reset();
+			_ = arena.reset(.free_all);
 			const method = randomMethod(random);
 			const url = t.randomString(random, aa, 20);
 
@@ -1171,7 +1173,6 @@ test "request: fuzz" {
 			}
 
 			request.drain() catch unreachable;
-			request.reset();
 		}
 	}
 }
