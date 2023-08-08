@@ -490,7 +490,7 @@ pub const Request = struct {
 	// of the body, we just want to move the socket to end of this request (which
 	// would be the start of the next one).
 	// We assume the request will be reset after this is called, so its ok for us
-	// to c the static buffer (which various header elements point to)
+	// to clear the static buffer (which various header elements point to)
 	pub fn drain(self: *Self) !void {
 		if (self.bd_read == true) {
 			// body has already been read
@@ -502,10 +502,12 @@ pub const Request = struct {
 			var buffer = self.static;
 			var length = atoi(value) orelse return error.InvalidContentLength;
 
-			// some (or all) of the body might have already been read into static
-			// when we were loading data as part of reading the header.
-			length -= self.header_overread;
+			const header_overread = self.header_overread;
+			if (header_overread > length) {
+				return error.TooMuchData;
+			}
 
+			length -= self.header_overread;
 			while (length > 0) {
 				var n = if (buffer.len > length) buffer[0..length] else buffer;
 				length -= try stream.read(n);
@@ -1175,6 +1177,29 @@ test "request: fuzz" {
 			request.drain() catch unreachable;
 		}
 	}
+}
+
+test "requet: extra socket data" {
+	var request = testRequest(.{.buffer_size = 50});
+	defer {
+		request.deinit(t.allocator);
+		t.allocator.destroy(request);
+	}
+
+	var s = t.Stream.init();
+	defer s.deinit();
+	s.random = null;
+
+	request.stream = s;
+	request.arena = t.arena;
+
+	_ = s.add("GET / HTTP/1.1\r\nContent-Length: 5\r\n\r\nHello!");
+	request.parse() catch |err| {
+		std.debug.print("\nParse Error: {}\nInput: {s}", .{err, s.to_read.items[s.read_index..]});
+		unreachable;
+	};
+
+	try t.expectError(error.TooMuchData, request.drain());
 }
 
 fn testParse(input: []const u8, config: Config) *Request {

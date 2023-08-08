@@ -31,7 +31,7 @@ pub const Stream = struct {
 	closed: bool,
 	read_index: usize,
 	to_read: ArrayList(u8),
-	random: std.rand.DefaultPrng,
+	random: ?std.rand.DefaultPrng,
 	received: ArrayList(u8),
 
 	const Self = @This();
@@ -83,8 +83,11 @@ pub const Stream = struct {
 		const left_to_read = items.len - read_index;
 		const max_can_read = if (buf.len < left_to_read) buf.len else left_to_read;
 
-		const random = self.random.random();
-		const to_read = random.uintAtMost(usize, max_can_read - 1) + 1;
+		var to_read = max_can_read;
+		if (self.random) |*r| {
+			const random = r.random();
+			to_read = random.uintAtMost(usize, max_can_read - 1) + 1;
+		}
 
 		var data = items[read_index..(read_index+to_read)];
 		if (data.len > buf.len) {
