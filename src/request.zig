@@ -507,7 +507,7 @@ pub const Request = struct {
 				return error.TooMuchData;
 			}
 
-			length -= self.header_overread;
+			length -= header_overread;
 			while (length > 0) {
 				var n = if (buffer.len > length) buffer[0..length] else buffer;
 				length -= try stream.read(n);
