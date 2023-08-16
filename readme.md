@@ -83,13 +83,14 @@ pub fn main() !void {
     return server.listen();
 }
 
-fn increment(_: *httpz.Request, res: *httpz.Response, global: *Global) !void {
+fn increment(global: *Global, _: *httpz.Request, res: *httpz.Response) !void {
     global.l.lock();
-    var hits = global.hits + 1;
+    const hits = global.hits + 1;
     global.hits = hits;
     global.l.unlock();
 
-    res.content_type = httpz.ContentType.TEXT;
+    // or, more verbosse: httpz.ContentType.TEXT
+    res.content_type = .TEXT;
     var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
     res.body = out;
 }
@@ -97,7 +98,7 @@ fn increment(_: *httpz.Request, res: *httpz.Response, global: *Global) !void {
 
 There are a few important things to notice. First, the `init` function of `ServerCtx(G, R)` takes a 3rd parameter: the global data. Second, our actions take a new parameter of type `G`. Any custom notFound handler (set via `server.notFound(...)`) or error handler(set via `server.errorHandler(errorHandler)`) must also accept this new parameter. 
 
-Because the new parameter is first, the above can also be written as:
+Because the new parameter is first, and because of how struct methods are implemented in Zig, the above can also be written as:
 
 ```zig
 const Global = struct {
@@ -110,7 +111,7 @@ const Global = struct {
         global.hits = hits;
         global.l.unlock();
 
-        res.content_type = httpz.ContentType.TEXT;
+        res.content_type = .TEXT;
         var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
         res.body = out;
     }
@@ -673,11 +674,10 @@ try std.testing.expectEqual(@as(u16, 200), res.status);
 ```
 
 # Zig Compatibility
-0.11-dev is constantly changing, but the goal is to keep this library compatible with the latest development release. Since 0.11-dev does not support async, threads are currently and there are some thread-unsafe code paths. Since this library is itself a WIP, the entire thing is considered good enough for playing/testing, and should be stable when 0.11 itself becomes more stable.
+0.12-dev is constantly changing, but the goal is to keep this library compatible with the latest development release. Since 0.12-dev does not support async, threads are currently used. Since this library is itself a WIP, the entire thing is considered good enough for playing/testing, and should be stable when 0.12 itself becomes more stable.
 
 # HTTP Compliance
-This implementation may never be fully HTTP/1.1 compliant, as it is built with the assumption that it will sit behind a reverse proxy that is tolerant of non-compliant upstreams (e.g. nginx). 
-
+This implementation may never be fully HTTP/1.1 compliant, as it is built with the assumption that it will sit behind a reverse proxy that is tolerant of non-compliant upstreams (e.g. nginx). (One example I know of is that the server doesn't include the mandatory Date header in the response.)
 
 # Server Side Events
 Service Side Events can be enabled by calling `res.startEventStream()`. On success, this will return an `httpz.Stream` (which is a `std.net.Stream` or a mock object during testing). The stream will remain valid for the duration of the action, but `req` and `res` should no longer be used. `res.body` must not be set (directly or indirectly) prior to calling `startEventStream`.
