@@ -53,6 +53,7 @@ pub const ContentType = enum {
 	TAR,
 	TEXT,
 	TTF,
+	WASM,
 	WEBP,
 	WOFF,
 	WOFF2,
@@ -79,6 +80,7 @@ pub const ContentType = enum {
 	const JSON_BIT = @as(u32, @bitCast([4]u8{'j','s','o','n'}));
 	const HTML_BIT = @as(u32, @bitCast([4]u8{'h','t','m','l'}));
 	const TEXT_BIT = @as(u32, @bitCast([4]u8{'t','e','x','t'}));
+	const WASM_BIT = @as(u32, @bitCast([4]u8{'w','a','s','m'}));
 	const WOFF_BIT = @as(u32, @bitCast([4]u8{'w','o','f','f'}));
 	const WEBP_BIT = @as(u32, @bitCast([4]u8{'w','e','b','p'}));
 	const WOFF2_BIT = @as(u40, @bitCast([5]u8{'w','o','f','f', '2'}));
@@ -126,6 +128,7 @@ pub const ContentType = enum {
 					JSON_BIT => return .JSON,
 					HTML_BIT => return .HTML,
 					TEXT_BIT => return .TEXT,
+					WASM_BIT => return .WASM,
 					WOFF_BIT => return .WOFF,
 					WEBP_BIT => return .WEBP,
 					else => return .UNKNOWN,

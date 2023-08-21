@@ -231,6 +231,7 @@ pub const Response = struct {
 				.TAR => "Content-Type: application/x-tar\r\n",
 				.TEXT => "Content-Type: text/plain\r\n",
 				.TTF => "Content-Type: font/ttf\r\n",
+				.WASM => "Content-Type: application/wasm\r\n",
 				.WEBP => "Content-Type: image/webp\r\n",
 				.WOFF => "Content-Type: font/woff\r\n",
 				.WOFF2 => "Content-Type: font/woff2\r\n",
