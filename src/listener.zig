@@ -1,7 +1,6 @@
 const std = @import("std");
-const builtin = @import("builtin");
-
 const t = @import("t.zig");
+const builtin = @import("builtin");
 const httpz = @import("httpz.zig");
 
 const Pool = @import("pool.zig").Pool;

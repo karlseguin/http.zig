@@ -1,5 +1,4 @@
 const std = @import("std");
-const t = @import("t.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -95,6 +94,7 @@ const TestEntry = struct {
 	}
 };
 
+const t = @import("t.zig");
 test "pool: acquires & release" {
 	id = 0;
 	var p = try Pool(*TestEntry, i32).init(t.allocator, 2, TestEntry.init, 5);

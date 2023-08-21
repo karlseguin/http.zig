@@ -1,5 +1,4 @@
 const std = @import("std");
-const t = @import("t.zig");
 const Allocator = std.mem.Allocator;
 
 const ENC_20 = @as(u16, @bitCast([2]u8{'2', '0'}));
@@ -166,6 +165,7 @@ fn unHex(b: u8) u8 {
 	};
 }
 
+const t = @import("t.zig");
 test "url: parse" {
 	{
 		// absolute root

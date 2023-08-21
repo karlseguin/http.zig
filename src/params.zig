@@ -1,5 +1,4 @@
 const std = @import("std");
-const t = @import("t.zig");
 
 const mem = std.mem;
 const Allocator = std.mem.Allocator;
@@ -72,6 +71,7 @@ pub const Params = struct {
 	}
 };
 
+const t = @import("t.zig");
 test "params: get" {
 	var allocator = t.allocator;
 	var params = try Params.init(allocator, 10);

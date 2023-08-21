@@ -1,7 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const t = @import("t.zig");
 const http = @import("httpz.zig");
 
 const Url = @import("url.zig").Url;
@@ -656,6 +655,7 @@ const Error = error {
 	InvalidContentLength,
 };
 
+const t = @import("t.zig");
 test "atoi" {
 	var buf: [5]u8 = undefined;
 	for (0..99999) |i| {

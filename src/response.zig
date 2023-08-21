@@ -1,7 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const t = @import("t.zig");
 const httpz = @import("httpz.zig");
 const KeyValue = @import("key_value.zig").KeyValue;
 
@@ -455,6 +454,7 @@ fn writeInt(into: []u8, n: u32) usize {
 	return i;
 }
 
+const t = @import("t.zig");
 test "writeInt" {
 	var buf: [10]u8 = undefined;
 	var tst: [10]u8 = undefined;

@@ -1,6 +1,5 @@
 const std = @import("std");
 
-const t = @import("t.zig");
 const httpz = @import("httpz.zig");
 const Params = @import("params.zig").Params;
 const Request = @import("request.zig").Request;
@@ -529,6 +528,7 @@ fn getRoute(comptime A: type, root: Part(A), url: []const u8, params: *Params) ?
 	return null;
 }
 
+const t = @import("t.zig");
 test "route: root" {
 	var params = try Params.init(t.allocator, 5);
 	defer params.deinit(t.allocator);

@@ -1,7 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const t = @import("t.zig");
 pub const testing = @import("testing.zig");
 
 pub const routing = @import("router.zig");
@@ -353,6 +352,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 	};
 }
 
+const t = @import("t.zig");
 test {
 	std.testing.refAllDecls(@This());
 }
