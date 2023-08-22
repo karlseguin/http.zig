@@ -17,7 +17,7 @@ const net = std.net;
 const ReqResPool = Pool(*RequestResponsePair, RequestResponsePairConfig);
 
 pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Allocator, server: S, config: Config) !void {
-	var reqResPool = try initReqResPool(httpz_allocator, app_allocator, config);
+	var reqResPool = try initReqResPool(httpz_allocator, app_allocator, &config);
 	defer reqResPool.deinit();
 
 	var socket = net.StreamServer.init(.{
@@ -48,13 +48,13 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 				thrd.detach();
 			}
 		} else |err| {
-			std.log.err("failed to accept connection {}", .{err});
+			std.log.err("http.zig: failed to accept connection {}", .{err});
 		}
 	}
 }
 
-pub fn initReqResPool(httpz_allocator: Allocator, app_allocator: Allocator, config: Config) !ReqResPool {
-	return try ReqResPool.init(httpz_allocator, config.pool_size orelse 100, initReqRes, .{
+pub fn initReqResPool(httpz_allocator: Allocator, app_allocator: Allocator, config: *const Config) !ReqResPool {
+	return try ReqResPool.init(httpz_allocator, config.pool, initReqRes, .{
 		.config = config,
 		.app_allocator = app_allocator,
 		.httpz_allocator = httpz_allocator,
@@ -68,7 +68,8 @@ pub fn handleConnection(comptime S: type, server: S, conn: Conn, reqResPool: *Re
 	defer stream.close();
 
 	const reqResPair = reqResPool.acquire() catch |err| {
-		std.log.err("failed to acquire request and response object from the pool {}", .{err});
+		stream.writeAll("HTTP/1.1 503\r\nRetry-After: 10\r\nContent-Length: 36\r\n\r\nServer overloaded. Please try again.") catch {};
+		std.log.err("http.zig: failed to acquire request and response object from the pool {}", .{err});
 		return;
 	};
 	defer reqResPool.release(reqResPair);
@@ -119,7 +120,7 @@ fn requestParseError(err: anyerror, res: *httpz.Response) void {
 // but so that we have a 1 pool instead of 2, and thus have half the locking.
 // Also, both the request and response can require dynamic memory allocation.
 // Grouping them this way means we can create 1 arena per pair.
-const RequestResponsePair = struct{
+const RequestResponsePair = struct {
 	allocator: Allocator,
 	request: *httpz.Request,
 	response: *httpz.Response,
@@ -140,7 +141,7 @@ const RequestResponsePair = struct{
 };
 
 const RequestResponsePairConfig = struct {
-	config: Config,
+	config: *const Config,
 	app_allocator: Allocator,
 	httpz_allocator: Allocator,
 };

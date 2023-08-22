@@ -149,7 +149,6 @@ fn dispatcher(global: G, action: httpz.Action(R), req: *httpz.Request, res: *htt
 
 The default dispatcher merely calls the supplied `action`. A custom dispatch could time and log each request, apply filters to the request and response and do any middleware-like behavior before, after or around the action. Of note, the dispatcher doesn't have to call `action`.
 
-
 The dispatcher can be set globally and/or per route
 
 ```zig
@@ -519,8 +518,17 @@ try httpz.listen(allocator, &router, .{
     // the interface address to bind to
     .address = "127.0.0.1",
 
-    // Minimum number of request & response objects to keep pooled
-    .pool_size: usize = 100,
+    // configure the pool of request/response object pairs
+    .pool = .{
+        // number of items to keep in the pool at all times.
+        .min = 20,
+
+        // maximum number of items to create
+        .max = 500,
+
+        // time, in millisecond, to wait for an item to be available
+        .timeout = 5000,
+    },
 
     // defaults to null
     .cors = {
@@ -579,6 +587,12 @@ try httpz.listen(allocator, &router, .{
     }
 });
 ```
+
+`pool.min * (request.buffer_size + response.body_buffer_size + response.header_buffer_size)` is the minimum amount of memory this library will use (plus various overhead, but that should be relatively small in comparison).
+
+`pool.max * (request.max_body_size + response.body_buffer_size + response.header_buffer_size)` is the maximum amount of memory this library will use (plus various overhead, but that should be relatively small in comparison).
+
+Systems with memory to spare will benefit by using buffers large enough for their typical request and response bodies. Pool configuration is more complicated, especially given the (current) threaded-nature of the system and keepalive. Using a relatively small (e.g. # of cores) `pool.min` and `pool.max` would yield the highest performance (due to having less contention), but because of keepalive, that can easily result in running out of available pooled items (which results in a 503 error). 
 
 # Testing
 The `httpz.testing` namespace exists to help application developers setup `*httpz.Requests` and assert `*httpz.Responses`.

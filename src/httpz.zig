@@ -714,11 +714,12 @@ var stream = t.Stream.init();
 }
 
 fn testRequest(comptime G: type, srv: *ServerCtx(G, G), stream: *t.Stream) void {
-	var reqResPool = listener.initReqResPool(t.allocator, t.allocator, .{
-		.pool_size = 2,
+	const config = Config{
+		.pool = .{.min = 2, .max = 2},
 		.request = .{.buffer_size = 4096},
 		.response = .{.body_buffer_size = 4096},
-	}) catch unreachable;
+	};
+	var reqResPool = listener.initReqResPool(t.allocator, t.allocator, &config) catch unreachable;
 	defer reqResPool.deinit();
 	listener.handleConnection(*ServerCtx(G, G), srv, stream, &reqResPool);
 }
