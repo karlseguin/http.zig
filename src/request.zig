@@ -35,6 +35,9 @@ pub const Request = struct {
 	// The URL of the request
 	url: Url,
 
+	// the address of the client
+	address: std.net.Address,
+
 	// the underlying socket to read from
 	stream: Stream,
 
@@ -97,6 +100,7 @@ pub const Request = struct {
 		self.pos = 0;
 		self.arena = arena;
 		self.stream = undefined;
+		self.address = undefined;
 		self.max_body_size = config.max_body_size orelse 1_048_576;
 		self.qs = try KeyValue.init(allocator, config.max_query_count orelse 32);
 

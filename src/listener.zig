@@ -78,8 +78,9 @@ pub fn handleConnection(comptime S: type, server: S, conn: Conn, reqResPool: *Re
 	const res = reqResPair.response;
 	var arena = reqResPair.arena;
 
-	req.stream = stream;
 	res.stream = stream;
+	req.stream = stream;
+	req.address = conn.address;
 
 	while (true) {
 		req.reset();

@@ -30,6 +30,7 @@ pub fn getRandom() std.rand.DefaultPrng {
 pub const Stream = struct {
 	closed: bool,
 	read_index: usize,
+	address: std.net.Address,
 	to_read: ArrayList(u8),
 	random: ?std.rand.DefaultPrng,
 	received: ArrayList(u8),

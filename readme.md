@@ -251,6 +251,7 @@ The following fields are the most useful:
 * `method` - an httpz.Method enum
 * `arena` - an arena allocator that will be reset at the end of the request
 * `url.path` - the path of the request (`[]const u8`)
+* `address` - the std.net.Address of the client
 
 ### Path Parameters
 The `param` method of `*Request` returns an `?[]const u8`. For example, given the following path:
