@@ -296,7 +296,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 					res.body = "Request body is too big";
 					res.write() catch return false;
 				},
-				error.BrokenPipe, error.ConnectionResetByPeer => {
+				error.BrokenPipe, error.ConnectionResetByPeer, error.Unexpected => {
 					// TODO: maybe allow the user to set a different errorHandler for these sort of conditions
 					return false;
 				},
