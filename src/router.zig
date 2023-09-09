@@ -214,7 +214,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 		}
 
 		pub fn options(self: *Self, path: []const u8, action: Action) void {
-			self.optionC(path, action, .{});
+			self.optionsC(path, action, .{});
 		}
 		pub fn tryOptions(self: *Self, path: []const u8, action: Action) !void {
 			return self.tryOptionsC(path, action, .{});
