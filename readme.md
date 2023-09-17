@@ -12,6 +12,7 @@ This library supports native Zig module (introduced in 0.11). Add a "httpz" depe
 The library supports both simple and complex use cases. A simple use case is shown below. It's initiated by the call to `httpz.Server()`:
 
 ```zig
+const std = @import("std");
 const httpz = @import("httpz");
 
 pub fn main() !void {
@@ -67,6 +68,9 @@ fn errorHandler(req: *httpz.Request, res: *httpz.Response, err: anyerror) void {
 The call to `httpz.Server()` is a wrapper around the more powerful `httpz.ServerCtx(G, R)`. `G` and `R` are types. `G` is the type of the global data `R` is the type of per-request data. For this use case, where we only care about shared global data, we'll make G == R:
 
 ```zig
+const std = @import("std");
+const httpz = @import("httpz");
+
 const Global = struct {
     hits: usize = 0,
     l: std.Thread.Mutex = .{},
@@ -101,6 +105,9 @@ There are a few important things to notice. First, the `init` function of `Serve
 Because the new parameter is first, and because of how struct methods are implemented in Zig, the above can also be written as:
 
 ```zig
+const std = @import("std");
+const httpz = @import("httpz");
+
 const Global = struct {
     hits: usize = 0,
     l: std.Thread.Mutex = .{},
@@ -200,6 +207,9 @@ See [router groups](#groups) for a more convenient approach to defining global d
 We can combine what we've learned from the above two uses cases and use `ServerCtx(G, R)` where `G != R`. In this case, a dispatcher **must** be provided (failure to provide a dispatcher will result in 500 errors). This is because the dispatcher is needed to generate `R`.
 
 ```zig
+const std = @import("std");
+const httpz = @import("httpz");
+
 const Global = struct {
     hits: usize = 0,
     l: std.Thread.Mutex = .{},
