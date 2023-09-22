@@ -715,13 +715,13 @@ var stream = t.Stream.init();
 
 fn testRequest(comptime G: type, srv: *ServerCtx(G, G), stream: *t.Stream) void {
 	const config = Config{
-		.pool = .{.min = 2, .max = 2},
 		.request = .{.buffer_size = 4096},
 		.response = .{.body_buffer_size = 4096},
 	};
-	var reqResPool = listener.initReqResPool(t.allocator, t.allocator, &config) catch unreachable;
-	defer reqResPool.deinit();
-	listener.handleConnection(*ServerCtx(G, G), srv, stream, &reqResPool);
+
+	var worker = listener.Worker(*ServerCtx(G, G)).init(t.allocator, t.allocator, srv, &config, undefined) catch unreachable;
+	defer worker.deinit();
+	worker.handleConnection(stream);
 }
 
 fn testFail(_: u32, _: *Request, _: *Response) !void {

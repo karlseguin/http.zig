@@ -1,11 +1,9 @@
-const pool = @import("pool.zig");
 const request = @import("request.zig");
 const response = @import("response.zig");
 
 pub const Config = struct {
 	// done like this so that an external app can access it as
 	// httpz.Config.Request or httpz.Config.Response
-	pub const Pool = pool.Config;
 	pub const Request = request.Config;
 	pub const Response = response.Config;
 
@@ -22,5 +20,9 @@ pub const Config = struct {
 		headers: ?[]const u8 = null,
 		methods: ?[]const u8 = null,
 		max_age: ?[]const u8 = null,
+	};
+
+	pub const Pool = struct {
+		count: ?usize = null,
 	};
 };

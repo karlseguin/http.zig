@@ -8,6 +8,7 @@ const Params = @import("params.zig").Params;
 const KeyValue = @import("key_value.zig").KeyValue;
 
 const Reader = std.io.Reader;
+const Address = std.net.Address;
 const Allocator = std.mem.Allocator;
 const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
 
@@ -36,7 +37,7 @@ pub const Request = struct {
 	url: Url,
 
 	// the address of the client
-	address: std.net.Address,
+	address: Address,
 
 	// the underlying socket to read from
 	stream: Stream,
@@ -63,6 +64,7 @@ pub const Request = struct {
 	// Second, for keepalive, if the body wasn't read as part of the normal
 	// request handling, we need to discard it from the stream.
 	bd_read: bool,
+
 	// The body of the request, if any.
 	bd: ?[]const u8,
 
@@ -95,18 +97,25 @@ pub const Request = struct {
 
 	const Self = @This();
 
-	// Should not be called directly, but initialized through a pool, see server.zig reqResInit
-	pub fn init(self: *Self, allocator: Allocator, arena: Allocator, config: Config) !void {
-		self.pos = 0;
-		self.arena = arena;
-		self.stream = undefined;
-		self.address = undefined;
-		self.max_body_size = config.max_body_size orelse 1_048_576;
-		self.qs = try KeyValue.init(allocator, config.max_query_count orelse 32);
-
-		self.static = try allocator.alloc(u8, config.buffer_size orelse 65_8536);
-		self.headers = try KeyValue.init(allocator, config.max_header_count orelse 32);
-		self.params = try Params.init(allocator, config.max_param_count orelse 10);
+	pub fn init(allocator: Allocator, arena: Allocator, config: Config) !Request {
+		return .{
+			.pos = 0,
+			.arena = arena,
+			.method = undefined,
+			.protocol = undefined,
+			.stream = undefined,
+			.address = undefined,
+			.bd_read = false,
+			.bd = null,
+			.qs_read = false,
+			.url = .{},
+			.header_overread = 0,
+			.max_body_size = config.max_body_size orelse 1_048_576,
+			.qs = try KeyValue.init(allocator, config.max_query_count orelse 32),
+			.static = try allocator.alloc(u8, config.buffer_size orelse 65_8536),
+			.headers = try KeyValue.init(allocator, config.max_header_count orelse 32),
+			.params = try Params.init(allocator, config.max_param_count orelse 10),
+		};
 		// reset() will be called before the request is used
 	}
 
@@ -135,6 +144,9 @@ pub const Request = struct {
 
 		self.qs_read = false;
 		self.qs.reset();
+
+		self.url = .{};
+		self.header_overread = 0;
 
 		self.params.reset();
 		self.headers.reset();
@@ -1231,9 +1243,10 @@ fn expectParseError(expected: Error, input: []const u8, config: Config) !void {
 	try t.expectError(expected, request.parse());
 }
 
-fn testRequest(config: Config, ) *Request {
+fn testRequest(config: Config) *Request {
 	var req = t.allocator.create(Request) catch unreachable;
-	req.init(t.allocator, t.allocator, config) catch unreachable;
+	req.* = Request.init(t.allocator, t.allocator, config) catch unreachable;
+	req.reset();
 	return req;
 }
 

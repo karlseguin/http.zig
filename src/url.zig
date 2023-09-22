@@ -25,9 +25,9 @@ const ENC_5D = @as(u16, @bitCast([2]u8{'5', 'D'}));
 
 
 pub const Url = struct {
-	raw: []const u8,
-	path: []const u8,
-	query: []const u8,
+	raw: []const u8 = "",
+	path: []const u8 = "",
+	query: []const u8 = "",
 
 	const Self = @This();
 

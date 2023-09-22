@@ -64,11 +64,22 @@ pub const Response = struct {
 	const Self = @This();
 
 	// Should not be called directly, but initialized through a pool
-	pub fn init(self: *Self, allocator: Allocator, arena: Allocator, config: Config) !void {
-		self.arena = arena;
-		self.headers = try KeyValue.init(allocator, config.max_header_count orelse 16);
-		self.body_buffer = try allocator.alloc(u8, config.body_buffer_size orelse 32_768);
-		self.header_buffer = try allocator.alloc(u8, config.header_buffer_size orelse 4096);
+	pub fn init(allocator: Allocator, arena: Allocator, config: Config) !Response {
+		const buffer = try allocator.alloc(u8, config.body_buffer_size orelse 32_768);
+		return .{
+			.pos = 0,
+			.body = null,
+			.status = 200,
+			.arena = arena,
+			.written = false,
+			.chunked = false,
+			.stream = undefined,
+			.content_type = null,
+			.body_buffer = buffer,
+			.writer_buffer = buffer,
+			.headers = try KeyValue.init(allocator, config.max_header_count orelse 16),
+			.header_buffer = try allocator.alloc(u8, config.header_buffer_size orelse 4096),
+		};
 		// reset() will be called before the response is used
 	}
 
@@ -663,7 +674,7 @@ test "response: written" {
 
 fn testResponse(stream: Stream, config: Config) *Response {
 	var res = t.allocator.create(Response) catch unreachable;
-	res.init(t.allocator, t.allocator, config) catch unreachable;
+	res.* = Response.init(t.allocator, t.allocator, config) catch unreachable;
 	res.arena = t.arena;
 	res.stream = stream;
 	res.reset();

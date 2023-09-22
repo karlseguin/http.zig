@@ -3,33 +3,30 @@ const t = @import("t.zig");
 const builtin = @import("builtin");
 const httpz = @import("httpz.zig");
 
-const Pool = @import("pool.zig").Pool;
 const Config = @import("config.zig").Config;
+const Request = @import("request.zig").Request;
+const Response = @import("response.zig").Response;
 
-const Loop = std.event.Loop;
+const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
+
 const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
 const Conn = if (builtin.is_test) *t.Stream else std.net.StreamServer.Connection;
 
 const os = std.os;
 const net = std.net;
-
-const ReqResPool = Pool(*RequestResponsePair, RequestResponsePairConfig);
+const log = std.log.scoped(.httpz);
 
 pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Allocator, server: S, config: Config) !void {
-	var reqResPool = try initReqResPool(httpz_allocator, app_allocator, &config);
-	defer reqResPool.deinit();
+	var pool = try Pool(S).init(httpz_allocator, app_allocator, server, &config);
+	defer pool.deinit();
 
 	var socket = net.StreamServer.init(.{
 		.reuse_address = true,
 		.kernel_backlog = 1024,
 	});
 	defer socket.deinit();
-
-	var thread_pool: std.Thread.Pool = undefined;
-	if (config.thread_pool > 0) {
-		try std.Thread.Pool.init(&thread_pool, .{ .allocator = app_allocator, .n_jobs = config.thread_pool });
-	}
 
 	const listen_port = config.port.?;
 	const listen_address = config.address.?;
@@ -45,142 +42,203 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 	while (true) {
 		if (socket.accept()) |conn| {
 			const c: Conn = if (comptime builtin.is_test) undefined else conn;
-			const args = .{ S, server, c, &reqResPool };
-			if (comptime std.io.is_async) {
-				try Loop.instance.?.runDetached(httpz_allocator, handleConnection, args);
-			} else {
-				if (config.thread_pool > 0) {
-					try thread_pool.spawn(handleConnection, args);
-				} else {
-					const thrd = try std.Thread.spawn(.{}, handleConnection, args);
-					thrd.detach();
+			pool.handle(c) catch |err| {
+				log.err("internal failure to handle connection {}", .{err});
+			};
+		} else |err| {
+			log.err("failed to accept connection {}", .{err});
+		}
+	}
+}
+
+fn Pool(comptime S: type) type {
+	return struct {
+		running: bool,
+		threads: []Thread,
+		workers: []Worker(S),
+		mutex: Thread.Mutex,
+		cond: Thread.Condition,
+		httpz_allocator: Allocator,
+		pending: std.DoublyLinkedList(Conn),
+
+		const Self = @This();
+
+		fn init(httpz_allocator: Allocator, app_allocator: Allocator, server: S, config: *const Config) !*Self {
+			const worker_count = config.pool.count orelse (Thread.getCpuCount() catch 2);
+
+			var threads = try httpz_allocator.alloc(Thread, worker_count);
+			errdefer httpz_allocator.free(threads);
+
+			var workers = try httpz_allocator.alloc(Worker(S), worker_count);
+			errdefer httpz_allocator.free(workers);
+
+			var pool = try httpz_allocator.create(Self);
+			pool.* = .{
+				.cond = .{},
+				.mutex = .{},
+				.pending = .{},
+				.running = true,
+				.threads = threads,
+				.workers = workers,
+				.httpz_allocator = httpz_allocator,
+			};
+			errdefer httpz_allocator.destroy(pool);
+
+			var spawned: usize = 0;
+			errdefer pool.stop(spawned);
+			for (0..worker_count) |i| {
+				workers[i] = try Worker(S).init(httpz_allocator, app_allocator, server, config, pool);
+				errdefer workers[i].deinit();
+
+				threads[i] = try Thread.spawn(.{}, Worker(S).run, .{&workers[i]});
+				spawned += 1;
+			}
+
+			return pool;
+		}
+
+		fn deinit(self: *Self) void {
+			const allocator = self.httpz_allocator;
+			self.stop(self.threads.len);
+			allocator.free(self.threads);
+			allocator.free(self.workers);
+			allocator.destroy(self);
+		}
+
+		fn stop(self: *Self, spawned: usize) void {
+			self.mutex.lock();
+			self.running = false;
+			self.mutex.unlock();
+			self.cond.broadcast();
+
+			var threads = self.threads;
+			var workers = self.workers;
+			for (0..spawned) |i| {
+				threads[i].join();
+				workers[i].deinit();
+			}
+		}
+
+		fn handle(self: *Self, conn: Conn) !void {
+			var node = try self.httpz_allocator.create(std.DoublyLinkedList(Conn).Node);
+			node.data = conn;
+			self.mutex.lock();
+			self.pending.append(node);
+			self.mutex.unlock();
+			self.cond.signal();
+		}
+	};
+}
+
+pub fn Worker(comptime S: type) type {
+	return struct {
+		pool: *Pool(S),
+		req: Request,
+		res: Response,
+		server: S,
+		arena: *ArenaAllocator,
+		httpz_allocator: Allocator,
+
+		const Self = @This();
+
+		pub fn init(httpz_allocator: Allocator, app_allocator: Allocator, server: S, config: *const Config, pool: *Pool(S)) !Self {
+			const arena = try httpz_allocator.create(ArenaAllocator);
+			arena.* = ArenaAllocator.init(app_allocator);
+			errdefer httpz_allocator.destroy(arena);
+
+			var req = try Request.init(httpz_allocator, arena.allocator(), config.request);
+			errdefer req.deinit(httpz_allocator);
+
+			var res = try Response.init(httpz_allocator, arena.allocator(), config.response);
+			errdefer res.deinit(httpz_allocator);
+
+			return .{
+				.res = res,
+				.req = req,
+				.pool = pool,
+				.arena = arena,
+				.server = server,
+				.httpz_allocator = httpz_allocator,
+			};
+		}
+
+		pub fn deinit(self: *Self) void {
+			self.arena.deinit();
+
+			const httpz_allocator = self.httpz_allocator;
+			httpz_allocator.destroy(self.arena);
+			self.req.deinit(httpz_allocator);
+			self.res.deinit(httpz_allocator);
+		}
+
+		pub fn run(self: *Self) void {
+			std.os.maybeIgnoreSigpipe();
+
+			const pool = self.pool;
+			var mutex = &pool.mutex;
+			var pending = &pool.pending;
+
+			const httpz_allocator = self.httpz_allocator;
+
+			mutex.lock();
+			while (true) {
+				while (pending.popFirst()) |node| {
+					mutex.unlock();
+					defer mutex.lock();
+					const conn = node.data;
+					httpz_allocator.destroy(node);
+					self.handleConnection(conn);
 				}
+
+				// mutex is locked here, either because there was nothing pending
+				// or because the defer inside the while re-locked it after handleConnection
+				if (pool.running == false) {
+					return;
+				}
+				pool.cond.wait(mutex);
 			}
-		} else |err| {
-			std.log.err("http.zig: failed to accept connection {}", .{err});
 		}
-	}
-}
 
-pub fn initReqResPool(httpz_allocator: Allocator, app_allocator: Allocator, config: *const Config) !ReqResPool {
-	return try ReqResPool.init(httpz_allocator, config.pool, initReqRes, .{
-		.config = config,
-		.app_allocator = app_allocator,
-		.httpz_allocator = httpz_allocator,
-	});
-}
+		pub fn handleConnection(self: *Self, conn: Conn) void {
+			const stream = if (comptime builtin.is_test) conn else conn.stream;
+			defer stream.close();
 
-pub fn handleConnection(comptime S: type, server: S, conn: Conn, reqResPool: *ReqResPool) void {
-	std.os.maybeIgnoreSigpipe();
+			var req = &self.req;
+			req.stream = stream;
+			req.address = conn.address;
 
-	const stream = if (comptime builtin.is_test) conn else conn.stream;
-	defer stream.close();
+			var res = &self.res;
+			res.stream = stream;
 
-	const reqResPair = reqResPool.acquire() catch |err| {
-		stream.writeAll("HTTP/1.1 503\r\nRetry-After: 10\r\nContent-Length: 36\r\n\r\nServer overloaded. Please try again.") catch {};
-		std.log.err("http.zig: failed to acquire request and response object from the pool {}", .{err});
-		return;
-	};
-	defer reqResPool.release(reqResPair);
+			const arena = self.arena;
+			const server = self.server;
 
-	const req = reqResPair.request;
-	const res = reqResPair.response;
-	var arena = reqResPair.arena;
+			while (true) {
+				req.reset();
+				res.reset();
+				defer _ = arena.reset(.free_all);
 
-	res.stream = stream;
-	req.stream = stream;
-	req.address = conn.address;
-
-	while (true) {
-		req.reset();
-		res.reset();
-		defer _ = arena.reset(.free_all);
-
-		if (req.parse()) {
-			if (!server.handle(req, res)) {
-				return;
+				if (req.parse()) {
+					if (!server.handle(req, res)) {
+						return;
+					}
+				} else |err| switch (err) {
+					error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
+						res.status = 400;
+						res.body = "Invalid Request";
+						res.write() catch {};
+						return;
+					},
+					error.HeaderTooBig => {
+						res.status = 431;
+						res.body = "Request header is too big";
+						res.write() catch {};
+						return;
+					},
+					else => return,
+				}
+				req.drain() catch return;
 			}
-		} else |err| {
-			// hard to keep this request alive on a parseError since in a lot of
-			// failure cases, it's unclear where 1 request stops and another starts.
-			requestParseError(err, res);
-			return;
 		}
-		req.drain() catch {
-			return;
-		};
-	}
-}
-
-fn requestParseError(err: anyerror, res: *httpz.Response) void {
-	switch (err) {
-		error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
-			res.status = 400;
-			res.body = "Invalid Request";
-			res.write() catch {};
-		},
-		error.HeaderTooBig => {
-			res.status = 431;
-			res.body = "Request header is too big";
-			res.write() catch {};
-		},
-		else => {},
-	}
-}
-
-// We pair together requests and responses, not because they're tightly coupled,
-// but so that we have a 1 pool instead of 2, and thus have half the locking.
-// Also, both the request and response can require dynamic memory allocation.
-// Grouping them this way means we can create 1 arena per pair.
-const RequestResponsePair = struct {
-	allocator: Allocator,
-	request: *httpz.Request,
-	response: *httpz.Response,
-	arena: *std.heap.ArenaAllocator,
-
-	const Self = @This();
-
-	pub fn deinit(self: *Self, httpz_allocator: Allocator) void {
-		self.request.deinit(httpz_allocator);
-		httpz_allocator.destroy(self.request);
-
-		self.response.deinit(httpz_allocator);
-		httpz_allocator.destroy(self.response);
-		self.arena.deinit();
-		httpz_allocator.destroy(self.arena);
-		httpz_allocator.destroy(self);
-	}
-};
-
-const RequestResponsePairConfig = struct {
-	config: *const Config,
-	app_allocator: Allocator,
-	httpz_allocator: Allocator,
-};
-
-// Should not be called directly, but initialized through a pool
-pub fn initReqRes(c: RequestResponsePairConfig) !*RequestResponsePair {
-	const httpz_allocator = c.httpz_allocator;
-
-	var arena = try httpz_allocator.create(std.heap.ArenaAllocator);
-	arena.* = std.heap.ArenaAllocator.init(c.app_allocator);
-	const app_allocator = arena.allocator();
-
-	var req = try httpz_allocator.create(httpz.Request);
-	try req.init(httpz_allocator, app_allocator, c.config.request);
-
-	var res = try httpz_allocator.create(httpz.Response);
-	try res.init(httpz_allocator, app_allocator, c.config.response);
-
-	var pair = try httpz_allocator.create(RequestResponsePair);
-	pair.* = .{
-		.arena = arena,
-		.request = req,
-		.response = res,
-		.allocator = app_allocator,
 	};
-
-	return pair;
 }
-
-// All of this logic is largely tested in httpz.zig
