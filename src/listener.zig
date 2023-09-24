@@ -51,7 +51,11 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 	}
 }
 
-const Queue = std.DoublyLinkedList(Conn);
+const Queue = std.DoublyLinkedList(KeepaliveConn);
+
+const KeepaliveConn = struct {
+	conn: Conn,
+};
 
 fn Pool(comptime S: type) type {
 	return struct {
@@ -123,7 +127,7 @@ fn Pool(comptime S: type) type {
 
 		fn handle(self: *Self, conn: Conn) !void {
 			var node = try self.httpz_allocator.create(Queue.Node);
-			node.data = conn;
+			node.data = .{.conn = conn};
 			self.mutex.lock();
 			self.queue.append(node);
 			self.mutex.unlock();
@@ -135,6 +139,7 @@ fn Pool(comptime S: type) type {
 pub fn Worker(comptime S: type) type {
 	return struct {
 		server: S,
+		queue: Queue,
 		pool: *Pool(S),
 		req_state: Request.State,
 		res_state: Response.State,
@@ -156,6 +161,7 @@ pub fn Worker(comptime S: type) type {
 
 			return .{
 				.pool = pool,
+				.queue = .{},
 				.arena = arena,
 				.server = server,
 				.req_state = req_state,
@@ -172,25 +178,26 @@ pub fn Worker(comptime S: type) type {
 
 			self.arena.deinit();
 			httpz_allocator.destroy(self.arena);
+
+			while (self.queue.popFirst()) |node| {
+				node.data.conn.stream.close();
+				httpz_allocator.destroy(node);
+			}
 		}
 
-		pub fn run(self: *Self) void {
+		fn run(self: *Self) void {
 			std.os.maybeIgnoreSigpipe();
 
 			const pool = self.pool;
 			var mutex = &pool.mutex;
-			var queue = &pool.queue;
-
-			const httpz_allocator = self.httpz_allocator;
+			var pool_queue = &pool.queue;
 
 			mutex.lock();
 			while (true) {
-				while (queue.popFirst()) |node| {
+				while (pool_queue.popFirst()) |node| {
 					mutex.unlock();
 					defer mutex.lock();
-					const conn = node.data;
-					httpz_allocator.destroy(node);
-					self.handleConnection(conn);
+					self.processNewNode(node);
 				}
 
 				// mutex is locked here, either because there was nothing queue
@@ -202,9 +209,33 @@ pub fn Worker(comptime S: type) type {
 			}
 		}
 
-		pub fn handleConnection(self: *Self, conn: Conn) void {
+		fn processNewNode(self: *Self, node: *Queue.Node) void {
+			_ = self.processNode(node);
+			self.processQueue();
+		}
+
+		fn processQueue(self: *Self) void {
+			var queue = &self.queue;
+			while (queue.popFirst()) |node| {
+				if (self.processNode(node) == false) {
+					return;
+				}
+			}
+		}
+
+		fn processNode(self: *Self, node: *Queue.Node) bool {
+			const conn = node.data.conn;
+			if (self.handleRequest(conn)) {
+				self.queue.append(node);
+				return true;
+			}
+			conn.stream.close();
+			self.httpz_allocator.destroy(node);
+			return false;
+		}
+
+		pub fn handleRequest(self: *Self, conn: Conn) bool {
 			const stream = conn.stream;
-			defer stream.close();
 
 			const arena = self.arena;
 			const server = self.server;
@@ -212,38 +243,36 @@ pub fn Worker(comptime S: type) type {
 			var req_state = &self.req_state;
 			var res_state = &self.res_state;
 
+			res_state.reset();
+			req_state.reset();
 
-			while (true) {
-				res_state.reset();
-				req_state.reset();
+			defer _ = arena.reset(.free_all);
 
-				defer _ = arena.reset(.free_all);
+			var aa = arena.allocator();
+			var res = Response.init(aa, res_state, stream);
 
-				var aa = arena.allocator();
-				var res = Response.init(aa, res_state, stream);
-
-				var req = Request.parse(aa, req_state, conn) catch |err| switch (err) {
+			var req = Request.parse(aa, req_state, conn) catch |err| {
+				switch (err) {
 					error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
 						res.status = 400;
 						res.body = "Invalid Request";
-						res.write() catch {};
-						return;
 					},
 					error.HeaderTooBig => {
 						res.status = 431;
 						res.body = "Request header is too big";
-						res.write() catch {};
-						return;
 					},
-					else => return,
-				};
-
-
-				if (!server.handle(&req, &res)) {
-					return;
+					else => return false,
 				}
-				req.drain() catch return;
+				res.write() catch {};
+				return false;
+			};
+
+
+			if (!server.handle(&req, &res)) {
+				return false;
 			}
+			req.drain() catch return false;
+			return true;
 		}
 	};
 }
