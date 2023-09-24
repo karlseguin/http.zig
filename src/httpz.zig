@@ -721,7 +721,7 @@ fn testRequest(comptime G: type, srv: *ServerCtx(G, G), stream: *t.Stream) void 
 
 	var worker = listener.Worker(*ServerCtx(G, G)).init(t.allocator, t.allocator, srv, &config, undefined) catch unreachable;
 	defer worker.deinit();
-	worker.handleConnection(stream);
+	worker.handleConnection(.{.stream = stream});
 }
 
 fn testFail(_: u32, _: *Request, _: *Response) !void {

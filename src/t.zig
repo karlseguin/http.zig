@@ -27,6 +27,12 @@ pub fn getRandom() std.rand.DefaultPrng {
 	return std.rand.DefaultPrng.init(seed);
 }
 
+// mock for std.net.StreamServer.Connection
+pub const Connection = struct {
+	stream: *Stream,
+	address: std.net.Address = std.net.Address.initIp4([_]u8{0, 0, 0, 0}, 0),
+};
+
 pub const Stream = struct {
 	closed: bool,
 	read_index: usize,
@@ -34,8 +40,6 @@ pub const Stream = struct {
 	to_read: ArrayList(u8),
 	random: ?std.rand.DefaultPrng,
 	received: ArrayList(u8),
-
-	const Self = @This();
 
 	pub fn init() *Stream {
 		return initWithAllocator(allocator);
@@ -51,23 +55,28 @@ pub const Stream = struct {
 		return s;
 	}
 
-	pub fn deinit(self: *Self) void {
+	pub fn deinit(self: *Stream) void {
 		self.to_read.deinit();
 		self.received.deinit();
 		allocator.destroy(self);
 	}
 
-	pub fn reset(self: *Self) void {
+	// mock for std.net.StreamServer.Connection
+	pub fn wrap(self: *Stream) Connection {
+		return .{.stream = self};
+	}
+
+	pub fn reset(self: *Stream) void {
 		self.to_read.clearRetainingCapacity();
 		self.received.clearRetainingCapacity();
 	}
 
-	pub fn add(self: *Self, value: []const u8) *Self {
+	pub fn add(self: *Stream, value: []const u8) *Stream {
 		self.to_read.appendSlice(value) catch unreachable;
 		return self;
 	}
 
-	pub fn read(self: *Self, buf: []u8) !usize {
+	pub fn read(self: *Stream, buf: []u8) !usize {
 		std.debug.assert(!self.closed);
 
 		const read_index = self.read_index;
@@ -107,11 +116,11 @@ pub const Stream = struct {
 	}
 
 	// store messages that are written to the stream
-	pub fn writeAll(self: *Self, data: []const u8) !void {
+	pub fn writeAll(self: *Stream, data: []const u8) !void {
 		self.received.appendSlice(data) catch unreachable;
 	}
 
-	pub fn close(self: *Self) void {
+	pub fn close(self: *Stream) void {
 		self.closed = true;
 	}
 };

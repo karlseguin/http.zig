@@ -12,14 +12,31 @@ pub fn init(config: httpz.Config) Testing {
 	arena.* = std.heap.ArenaAllocator.init(t.allocator);
 
 	var aa = arena.allocator();
+	var stream = t.Stream.initWithAllocator(aa);
+
+	var req_state = aa.create(httpz.Request.State) catch unreachable;
+	req_state.* = httpz.Request.State.init(aa, config.request) catch unreachable;
+
 	var req = aa.create(httpz.Request) catch unreachable;
-	req.* = httpz.Request.init(aa, aa, config.request) catch unreachable;
-	req.url = httpz.Url.parse("/");
-	req.reset();
+	req.* = .{
+		.pos = 0,
+		.arena = aa,
+		.stream = stream,
+		.qs = req_state.qs,
+		.header_overread = 0,
+		.static = req_state.buf,
+		.params = req_state.params,
+		.headers = req_state.headers,
+		.url = httpz.Url.parse("/"),
+		.method = httpz.Method.GET,
+		.protocol = httpz.Protocol.HTTP11,
+		.address = std.net.Address.initIp4([_]u8{0, 0, 0, 0}, 0),
+		.max_body_size = req_state.max_body_size,
+	};
 
 	var res = aa.create(httpz.Response) catch unreachable;
 	res.* = httpz.Response.init(aa, aa, config.response) catch unreachable;
-	res.stream = t.Stream.initWithAllocator(aa);
+	res.stream = stream;
 	res.reset();
 
 	return Testing{
@@ -121,7 +138,6 @@ pub const Testing = struct {
 	}
 
 	pub fn body(self: *Self, bd: []const u8) void {
-		self.req.bd_read = true;
 		self.req.bd = bd;
 	}
 

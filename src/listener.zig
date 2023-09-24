@@ -12,7 +12,7 @@ const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
 const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
-const Conn = if (builtin.is_test) *t.Stream else std.net.StreamServer.Connection;
+const Conn = if (builtin.is_test) t.Connection else std.net.StreamServer.Connection;
 
 const os = std.os;
 const net = std.net;
@@ -51,15 +51,17 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 	}
 }
 
+const Queue = std.DoublyLinkedList(Conn);
+
 fn Pool(comptime S: type) type {
 	return struct {
 		running: bool,
+		queue: Queue,
 		threads: []Thread,
 		workers: []Worker(S),
 		mutex: Thread.Mutex,
 		cond: Thread.Condition,
 		httpz_allocator: Allocator,
-		pending: std.DoublyLinkedList(Conn),
 
 		const Self = @This();
 
@@ -76,7 +78,7 @@ fn Pool(comptime S: type) type {
 			pool.* = .{
 				.cond = .{},
 				.mutex = .{},
-				.pending = .{},
+				.queue = .{},
 				.running = true,
 				.threads = threads,
 				.workers = workers,
@@ -120,10 +122,10 @@ fn Pool(comptime S: type) type {
 		}
 
 		fn handle(self: *Self, conn: Conn) !void {
-			var node = try self.httpz_allocator.create(std.DoublyLinkedList(Conn).Node);
+			var node = try self.httpz_allocator.create(Queue.Node);
 			node.data = conn;
 			self.mutex.lock();
-			self.pending.append(node);
+			self.queue.append(node);
 			self.mutex.unlock();
 			self.cond.signal();
 		}
@@ -133,7 +135,7 @@ fn Pool(comptime S: type) type {
 pub fn Worker(comptime S: type) type {
 	return struct {
 		pool: *Pool(S),
-		req: Request,
+		req_state: Request.State,
 		res: Response,
 		server: S,
 		arena: *ArenaAllocator,
@@ -146,18 +148,18 @@ pub fn Worker(comptime S: type) type {
 			arena.* = ArenaAllocator.init(app_allocator);
 			errdefer httpz_allocator.destroy(arena);
 
-			var req = try Request.init(httpz_allocator, arena.allocator(), config.request);
-			errdefer req.deinit(httpz_allocator);
+			var req_state = try Request.State.init(httpz_allocator, config.request);
+			errdefer req_state.deinit(httpz_allocator);
 
 			var res = try Response.init(httpz_allocator, arena.allocator(), config.response);
 			errdefer res.deinit(httpz_allocator);
 
 			return .{
 				.res = res,
-				.req = req,
 				.pool = pool,
 				.arena = arena,
 				.server = server,
+				.req_state = req_state,
 				.httpz_allocator = httpz_allocator,
 			};
 		}
@@ -167,8 +169,8 @@ pub fn Worker(comptime S: type) type {
 
 			const httpz_allocator = self.httpz_allocator;
 			httpz_allocator.destroy(self.arena);
-			self.req.deinit(httpz_allocator);
 			self.res.deinit(httpz_allocator);
+			self.req_state.deinit(httpz_allocator);
 		}
 
 		pub fn run(self: *Self) void {
@@ -176,13 +178,13 @@ pub fn Worker(comptime S: type) type {
 
 			const pool = self.pool;
 			var mutex = &pool.mutex;
-			var pending = &pool.pending;
+			var queue = &pool.queue;
 
 			const httpz_allocator = self.httpz_allocator;
 
 			mutex.lock();
 			while (true) {
-				while (pending.popFirst()) |node| {
+				while (queue.popFirst()) |node| {
 					mutex.unlock();
 					defer mutex.lock();
 					const conn = node.data;
@@ -190,7 +192,7 @@ pub fn Worker(comptime S: type) type {
 					self.handleConnection(conn);
 				}
 
-				// mutex is locked here, either because there was nothing pending
+				// mutex is locked here, either because there was nothing queue
 				// or because the defer inside the while re-locked it after handleConnection
 				if (pool.running == false) {
 					return;
@@ -200,29 +202,19 @@ pub fn Worker(comptime S: type) type {
 		}
 
 		pub fn handleConnection(self: *Self, conn: Conn) void {
-			const stream = if (comptime builtin.is_test) conn else conn.stream;
-			defer stream.close();
-
-			var req = &self.req;
-			req.stream = stream;
-			req.address = conn.address;
+			const arena = self.arena;
+			defer conn.stream.close();
 
 			var res = &self.res;
-			res.stream = stream;
+			res.stream = conn.stream;
 
-			const arena = self.arena;
 			const server = self.server;
 
 			while (true) {
-				req.reset();
 				res.reset();
 				defer _ = arena.reset(.free_all);
 
-				if (req.parse()) {
-					if (!server.handle(req, res)) {
-						return;
-					}
-				} else |err| switch (err) {
+				var req = Request.parse(arena.allocator(), &self.req_state, conn) catch |err| switch (err) {
 					error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
 						res.status = 400;
 						res.body = "Invalid Request";
@@ -236,6 +228,9 @@ pub fn Worker(comptime S: type) type {
 						return;
 					},
 					else => return,
+				};
+				if (!server.handle(&req, res)) {
+					return;
 				}
 				req.drain() catch return;
 			}
