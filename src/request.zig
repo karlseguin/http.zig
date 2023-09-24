@@ -132,6 +132,12 @@ pub const Request = struct {
 			self.params.deinit(allocator);
 			self.headers.deinit(allocator);
 		}
+
+		pub fn reset(self: *State) void {
+			self.qs.reset();
+			self.params.reset();
+			self.headers.reset();
+		}
 	};
 
 	pub fn parse(arena: Allocator, state: *const State, conn: anytype) !Request {
@@ -1204,13 +1210,12 @@ fn expectParseError(expected: Error, input: []const u8, config: Config) !void {
 
 fn testRequest(config: Config, stream: *t.Stream) !Request {
 	const req_state = Request.State.init(t.arena, config) catch unreachable;
-	var req = try Request.parse(t.arena, &req_state, stream.wrap());
-	return req;
+	return Request.parse(t.arena, &req_state, stream.wrap());
 }
 
 fn testCleanup(r: Request) void {
 	r.stream.deinit();
-	t.reset();
+	_ = t.aa.reset(.free_all);
 }
 
 fn randomMethod(random: std.rand.Random) []const u8 {

@@ -134,10 +134,10 @@ fn Pool(comptime S: type) type {
 
 pub fn Worker(comptime S: type) type {
 	return struct {
+		server: S,
 		pool: *Pool(S),
 		req_state: Request.State,
-		res: Response,
-		server: S,
+		res_state: Response.State,
 		arena: *ArenaAllocator,
 		httpz_allocator: Allocator,
 
@@ -151,26 +151,27 @@ pub fn Worker(comptime S: type) type {
 			var req_state = try Request.State.init(httpz_allocator, config.request);
 			errdefer req_state.deinit(httpz_allocator);
 
-			var res = try Response.init(httpz_allocator, arena.allocator(), config.response);
-			errdefer res.deinit(httpz_allocator);
+			var res_state = try Response.State.init(httpz_allocator, config.response);
+			errdefer req_state.deinit(httpz_allocator);
 
 			return .{
-				.res = res,
 				.pool = pool,
 				.arena = arena,
 				.server = server,
 				.req_state = req_state,
+				.res_state = res_state,
 				.httpz_allocator = httpz_allocator,
 			};
 		}
 
 		pub fn deinit(self: *Self) void {
-			self.arena.deinit();
-
 			const httpz_allocator = self.httpz_allocator;
-			httpz_allocator.destroy(self.arena);
-			self.res.deinit(httpz_allocator);
+
 			self.req_state.deinit(httpz_allocator);
+			self.res_state.deinit(httpz_allocator);
+
+			self.arena.deinit();
+			httpz_allocator.destroy(self.arena);
 		}
 
 		pub fn run(self: *Self) void {
@@ -202,19 +203,26 @@ pub fn Worker(comptime S: type) type {
 		}
 
 		pub fn handleConnection(self: *Self, conn: Conn) void {
+			const stream = conn.stream;
+			defer stream.close();
+
 			const arena = self.arena;
-			defer conn.stream.close();
-
-			var res = &self.res;
-			res.stream = conn.stream;
-
 			const server = self.server;
 
+			var req_state = &self.req_state;
+			var res_state = &self.res_state;
+
+
 			while (true) {
-				res.reset();
+				res_state.reset();
+				req_state.reset();
+
 				defer _ = arena.reset(.free_all);
 
-				var req = Request.parse(arena.allocator(), &self.req_state, conn) catch |err| switch (err) {
+				var aa = arena.allocator();
+				var res = Response.init(aa, res_state, stream);
+
+				var req = Request.parse(aa, req_state, conn) catch |err| switch (err) {
 					error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
 						res.status = 400;
 						res.body = "Invalid Request";
@@ -229,7 +237,9 @@ pub fn Worker(comptime S: type) type {
 					},
 					else => return,
 				};
-				if (!server.handle(&req, res)) {
+
+
+				if (!server.handle(&req, &res)) {
 					return;
 				}
 				req.drain() catch return;

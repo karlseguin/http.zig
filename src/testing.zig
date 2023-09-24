@@ -34,10 +34,12 @@ pub fn init(config: httpz.Config) Testing {
 		.max_body_size = req_state.max_body_size,
 	};
 
+
+	var res_state = aa.create(httpz.Response.State) catch unreachable;
+	res_state.* = httpz.Response.State.init(aa, config.response) catch unreachable;
+
 	var res = aa.create(httpz.Response) catch unreachable;
-	res.* = httpz.Response.init(aa, aa, config.response) catch unreachable;
-	res.stream = stream;
-	res.reset();
+	res.* = httpz.Response.init(aa, res_state, stream);
 
 	return Testing{
 		.req = req,

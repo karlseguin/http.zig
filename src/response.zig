@@ -46,7 +46,7 @@ pub const Response = struct {
 	// fit, we'll allocate the necessary space using the arena allocator.
 	body_buffer: []u8,
 
-	// This is either a referene to body_buffer, or a dynamically allocated
+	// This is either a reference to body_buffer, or a dynamically allocated
 	// buffer (in our arena). Used by our writer.
 	writer_buffer: []u8,
 
@@ -61,9 +61,34 @@ pub const Response = struct {
 	// whether or not we've already written the response
 	written: bool,
 
+	// All the upfront memory allocation that we can do. Gets re-used from request
+	// to request.
+	pub const State = struct {
+		buf: []u8,
+		headers: KeyValue,
+		header_buffer: []u8,
+
+		pub fn init(allocator: Allocator, config: Config) !Response.State {
+			return .{
+				.buf = try allocator.alloc(u8, config.body_buffer_size orelse 32_768),
+				.headers = try KeyValue.init(allocator, config.max_header_count orelse 16),
+				.header_buffer = try allocator.alloc(u8, config.header_buffer_size orelse 4096),
+			};
+		}
+
+		pub fn deinit(self: *State, allocator: Allocator) void {
+			self.headers.deinit(allocator);
+			allocator.free(self.buf);
+			allocator.free(self.header_buffer);
+		}
+
+		pub fn reset(self: *State) void {
+			self.headers.reset();
+		}
+	};
+
 	// Should not be called directly, but initialized through a pool
-	pub fn init(allocator: Allocator, arena: Allocator, config: Config) !Response {
-		const buffer = try allocator.alloc(u8, config.body_buffer_size orelse 32_768);
+	pub fn init(arena: Allocator, state: *const State, stream: Stream) Response {
 		return .{
 			.pos = 0,
 			.body = null,
@@ -71,31 +96,13 @@ pub const Response = struct {
 			.arena = arena,
 			.written = false,
 			.chunked = false,
-			.stream = undefined,
+			.stream = stream,
 			.content_type = null,
-			.body_buffer = buffer,
-			.writer_buffer = buffer,
-			.headers = try KeyValue.init(allocator, config.max_header_count orelse 16),
-			.header_buffer = try allocator.alloc(u8, config.header_buffer_size orelse 4096),
+			.headers = state.headers,
+			.body_buffer = state.buf,
+			.writer_buffer = state.buf,
+			.header_buffer = state.header_buffer,
 		};
-		// reset() will be called before the response is used
-	}
-
-	pub fn deinit(self: *Response, allocator: Allocator) void {
-		self.headers.deinit(allocator);
-		allocator.free(self.body_buffer);
-		allocator.free(self.header_buffer);
-	}
-
-	pub fn reset(self: *Response) void {
-		self.pos = 0;
-		self.body = null;
-		self.status = 200;
-		self.written = false;
-		self.chunked = false;
-		self.content_type = null;
-		self.writer_buffer = self.body_buffer;
-		self.headers.reset();
 	}
 
 	pub fn json(self: *Response, value: anytype, options: std.json.StringifyOptions) !void {
@@ -476,11 +483,12 @@ test "writeInt" {
 
 test "response: write" {
 	var s = t.Stream.init();
-	var res = testResponse(s, .{});
-	defer testCleanup(res, s);
+	defer s.deinit();
 
 	{
 		// no body
+		var res = testResponse(s, .{});
+		defer testCleanup(res);
 		res.status = 401;
 		try res.write();
 		try t.expectString("HTTP/1.1 401\r\nContent-Length: 0\r\n\r\n", s.received.items);
@@ -488,7 +496,9 @@ test "response: write" {
 
 	{
 		// body
-		s.reset(); res.reset();
+		var res = testResponse(s, .{});
+		defer testCleanup(res);
+
 		res.status = 200;
 		res.body = "hello";
 		try res.write();
@@ -498,14 +508,14 @@ test "response: write" {
 
 test "response: content_type" {
 	var s = t.Stream.init();
-	var res = testResponse(s, .{});
-	defer testCleanup(res, s);
+	defer s.deinit();
 
-	{
-		res.content_type = httpz.ContentType.WEBP;
-		try res.write();
-		try t.expectString("HTTP/1.1 200\r\nContent-Type: image/webp\r\nContent-Length: 0\r\n\r\n", s.received.items);
-	}
+	var res = testResponse(s, .{});
+	defer testCleanup(res);
+
+	res.content_type = httpz.ContentType.WEBP;
+	try res.write();
+	try t.expectString("HTTP/1.1 200\r\nContent-Type: image/webp\r\nContent-Length: 0\r\n\r\n", s.received.items);
 }
 
 test "response: write header_buffer_size" {
@@ -514,8 +524,9 @@ test "response: write header_buffer_size" {
 		// 19 is the length of our longest header line
 		for (19..40) |i| {
 			var s = t.Stream.init();
+			defer s.deinit();
 			var res = testResponse(s, .{.header_buffer_size = i});
-			defer testCleanup(res, s);
+			defer testCleanup(res);
 
 			res.status = 792;
 			try res.write();
@@ -528,8 +539,9 @@ test "response: write header_buffer_size" {
 		// 19 is the length of our longest header line
 		for (19..110) |i| {
 			var s = t.Stream.init();
+			defer s.deinit();
 			var res = testResponse(s, .{.header_buffer_size = i});
-			defer testCleanup(res, s);
+			defer testCleanup(res);
 
 			res.status = 401;
 			res.header("a-header", "a-value");
@@ -544,8 +556,9 @@ test "response: write header_buffer_size" {
 		// 22 is the length of our longest header line (the content-length)
 		for (22..110) |i| {
 			var s = t.Stream.init();
+			defer s.deinit();
 			var res = testResponse(s, .{.header_buffer_size = i});
-			defer testCleanup(res, s);
+			defer testCleanup(res);
 
 			res.status = 8;
 			res.header("a-header", "a-value");
@@ -569,8 +582,9 @@ test "response: json fuzz" {
 
 		for (0..100) |i| {
 			var s = t.Stream.init();
+			defer s.deinit();
 			var res = testResponse(s, .{.body_buffer_size = i});
-			defer testCleanup(res, s);
+			defer testCleanup(res);
 
 			res.status = 200;
 			try res.json(body, .{});
@@ -593,8 +607,10 @@ test "response: writer fuzz" {
 
 		for (0..100) |i| {
 			var s = t.Stream.init();
+			defer s.deinit();
+
 			var res = testResponse(s, .{.body_buffer_size = i});
-			defer testCleanup(res, s);
+			defer testCleanup(res);
 
 			res.status = 204;
 			try std.json.stringify(body, .{}, res.writer());
@@ -608,8 +624,10 @@ test "response: writer fuzz" {
 
 test "response: direct writer" {
 	var s = t.Stream.init();
+	defer s.deinit();
+
 	var res = testResponse(s, .{});
-	defer testCleanup(res, s);
+	defer testCleanup(res);
 
 	var writer = res.directWriter();
 	writer.truncate(1);
@@ -630,11 +648,14 @@ test "response: direct writer" {
 
 test "response: chunked" {
 	var s = t.Stream.init();
-	var res = testResponse(s, .{});
-	defer testCleanup(res, s);
+	defer s.deinit();
+
 
 	{
 		// no headers, single chunk
+		var res = testResponse(s, .{});
+		defer testCleanup(res);
+
 		res.status = 200;
 		try res.chunk("Hello");
 		try res.write();
@@ -643,7 +664,9 @@ test "response: chunked" {
 
 	{
 		// headers, multiple chunk
-		s.reset(); res.reset();
+		var res = testResponse(s, .{});
+		defer testCleanup(res);
+
 		res.status = 1;
 		res.content_type = httpz.ContentType.XML;
 		res.header("Test", "Chunked");
@@ -656,8 +679,10 @@ test "response: chunked" {
 
 test "response: written" {
 	var s = t.Stream.init();
+	defer s.deinit();
+
 	var res = testResponse(s, .{});
-	defer testCleanup(res, s);
+	defer testCleanup(res);
 
 	res.body = "abc";
 	try res.write();
@@ -670,18 +695,12 @@ test "response: written" {
 	try t.expectString("", s.received.items);
 }
 
-fn testResponse(stream: Stream, config: Config) *Response {
-	var res = t.allocator.create(Response) catch unreachable;
-	res.* = Response.init(t.allocator, t.allocator, config) catch unreachable;
-	res.arena = t.arena;
-	res.stream = stream;
-	res.reset();
-	return res;
+fn testResponse(stream: *t.Stream, config: Config) Response {
+	const res_state = Response.State.init(t.arena, config) catch unreachable;
+	return Response.init(t.arena, &res_state, stream);
 }
 
-fn testCleanup(r: *Response, s: *t.Stream) void {
-	r.deinit(t.allocator);
-	t.reset();
-	t.allocator.destroy(r);
-	defer s.deinit();
+fn testCleanup(r: Response) void {
+	_ = t.aa.reset(.free_all);
+	r.stream.reset();
 }

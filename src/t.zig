@@ -20,10 +20,6 @@ pub const expectString = std.testing.expectEqualStrings;
 pub var aa = std.heap.ArenaAllocator.init(allocator);
 pub const arena = aa.allocator();
 
-pub fn reset() void {
-	_ = aa.reset(.free_all);
-}
-
 pub fn getRandom() std.rand.DefaultPrng {
 	var seed: u64 = undefined;
 	std.os.getrandom(std.mem.asBytes(&seed)) catch unreachable;
