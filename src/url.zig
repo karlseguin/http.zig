@@ -29,9 +29,8 @@ pub const Url = struct {
 	path: []const u8 = "",
 	query: []const u8 = "",
 
-	const Self = @This();
 
-	pub fn parse(raw: []const u8) Self {
+	pub fn parse(raw: []const u8) Url {
 		var path = raw;
 		var query: []const u8 = "";
 
@@ -48,7 +47,7 @@ pub const Url = struct {
 	}
 
 	// the special "*" url, which is valid in HTTP OPTIONS request.
-	pub fn star() Self {
+	pub fn star() Url {
 		return .{
 			.raw = "*",
 			.path = "*",

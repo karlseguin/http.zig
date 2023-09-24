@@ -9,24 +9,22 @@ pub const KeyValue = struct {
 	keys: [][]const u8,
 	values: [][]const u8,
 
-	const Self = @This();
-
-	pub fn init(allocator: Allocator, max: usize) !Self {
+	pub fn init(allocator: Allocator, max: usize) !KeyValue {
 		const keys = try allocator.alloc([]const u8, max);
 		const values = try allocator.alloc([]const u8, max);
-		return Self{
+		return .{
 			.len = 0,
 			.keys = keys,
 			.values = values,
 		};
 	}
 
-	pub fn deinit(self: *Self, allocator: Allocator) void {
+	pub fn deinit(self: *KeyValue, allocator: Allocator) void {
 		allocator.free(self.keys);
 		allocator.free(self.values);
 	}
 
-	pub fn add(self: *Self, key: []const u8, value: []const u8) void {
+	pub fn add(self: *KeyValue, key: []const u8, value: []const u8) void {
 		const len = self.len;
 		var keys = self.keys;
 		if (len == keys.len) {
@@ -38,7 +36,7 @@ pub const KeyValue = struct {
 		self.len = len + 1;
 	}
 
-	pub fn get(self: Self, needle: []const u8) ?[]const u8 {
+	pub fn get(self: KeyValue, needle: []const u8) ?[]const u8 {
 		const keys = self.keys[0..self.len];
 		for (keys, 0..) |key, i| {
 			if (mem.eql(u8, key, needle)) {
@@ -49,7 +47,7 @@ pub const KeyValue = struct {
 		return null;
 	}
 
-	pub fn reset(self: *Self) void {
+	pub fn reset(self: *KeyValue) void {
 		self.len = 0;
 	}
 };

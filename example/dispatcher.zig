@@ -10,12 +10,10 @@ const GlobalContext = struct {
 
 // our per-request data
 const RequestContext = struct {
-	const Self = @This();
-
 	user_id: ?[]const u8,
 	global: *GlobalContext,
 
-	pub fn increment(self: *Self, _: *httpz.Request, res: *httpz.Response) !void {
+	pub fn increment(self: *RequestContext, _: *httpz.Request, res: *httpz.Response) !void {
 		// we don't actually do anything with ctx.user_id
 		// except make sure it's been set. This could be common in a route
 		// where any user can take an action as long as they're logged in.

@@ -4,12 +4,10 @@ const Allocator = std.mem.Allocator;
 
 // Our global state
 const GlobalContext = struct {
-	const Self = @This();
-
 	hits: usize = 0,
 	l: std.Thread.Mutex = .{},
 
-	pub fn increment(self: *Self, _: *httpz.Request, res: *httpz.Response) !void {
+	pub fn increment(self: *GlobalContext, _: *httpz.Request, res: *httpz.Response) !void {
 		self.l.lock();
 		var hits = self.hits + 1;
 		self.hits = hits;

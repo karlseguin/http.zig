@@ -61,8 +61,6 @@ pub const Response = struct {
 	// whether or not we've already written the response
 	written: bool,
 
-	const Self = @This();
-
 	// Should not be called directly, but initialized through a pool
 	pub fn init(allocator: Allocator, arena: Allocator, config: Config) !Response {
 		const buffer = try allocator.alloc(u8, config.body_buffer_size orelse 32_768);
@@ -83,13 +81,13 @@ pub const Response = struct {
 		// reset() will be called before the response is used
 	}
 
-	pub fn deinit(self: *Self, allocator: Allocator) void {
+	pub fn deinit(self: *Response, allocator: Allocator) void {
 		self.headers.deinit(allocator);
 		allocator.free(self.body_buffer);
 		allocator.free(self.header_buffer);
 	}
 
-	pub fn reset(self: *Self) void {
+	pub fn reset(self: *Response) void {
 		self.pos = 0;
 		self.body = null;
 		self.status = 200;
@@ -100,16 +98,16 @@ pub const Response = struct {
 		self.headers.reset();
 	}
 
-	pub fn json(self: *Self, value: anytype, options: std.json.StringifyOptions) !void {
+	pub fn json(self: *Response, value: anytype, options: std.json.StringifyOptions) !void {
 		try std.json.stringify(value, options, Writer.init(self));
 		self.content_type = httpz.ContentType.JSON;
 	}
 
-	pub fn header(self: *Self, name: []const u8, value: []const u8) void {
+	pub fn header(self: *Response, name: []const u8, value: []const u8) void {
 		self.headers.add(name, value);
 	}
 
-	pub fn startEventStream(self: *Self) !Stream {
+	pub fn startEventStream(self: *Response) !Stream {
 		self.content_type = .EVENTS;
 		self.headers.add("Cache-Control", "no-cache");
 		self.headers.add("Connection", "keep-alive");
@@ -119,7 +117,7 @@ pub const Response = struct {
 		return stream;
 	}
 
-	pub fn write(self: *Self) !void {
+	pub fn write(self: *Response) !void {
 		if (self.written) return;
 		self.written = true;
 
@@ -142,7 +140,7 @@ pub const Response = struct {
 		}
 	}
 
-	fn writeHeaders(self: *Self, stream: Stream) !void {
+	fn writeHeaders(self: *Response, stream: Stream) !void {
 		var header_pos: usize = 14; // "HTTP/1.1 XXX\r\n".len
 		var header_buffer = self.header_buffer;
 
@@ -323,7 +321,7 @@ pub const Response = struct {
 		}
 	}
 
-	pub fn chunk(self: *Self, data: []const u8) !void {
+	pub fn chunk(self: *Response, data: []const u8) !void {
 		const stream = self.stream;
 		if (!self.chunked) {
 			self.chunked = true;
@@ -339,11 +337,11 @@ pub const Response = struct {
 		try stream.writeAll(data);
 	}
 
-	pub fn writer(self: *Self) Writer.IOWriter {
+	pub fn writer(self: *Response) Writer.IOWriter {
 		return .{.context = Writer.init(self)};
 	}
 
-	pub fn directWriter(self: *Self) Writer {
+	pub fn directWriter(self: *Response) Writer {
 		return Writer.init(self);
 	}
 
