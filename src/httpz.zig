@@ -367,7 +367,7 @@ test "httpz: invalid request (not enough data, assume closed)" {
 	testRequest(u32, &srv, stream);
 
 	try t.expectEqual(true, stream.closed);
-	try t.expectEqual(@as(usize, 0), stream.received.items.len);
+	try t.expectEqual(0, stream.received.items.len);
 }
 
 test "httpz: invalid request" {
@@ -705,7 +705,7 @@ var stream = t.Stream.init();
 	var res = try testing.parse(stream.received.items);
 	defer res.deinit();
 
-	try t.expectEqual(@as(u16, 818), res.status);
+	try t.expectEqual(818, res.status);
 	try t.expectEqual(true, res.headers.get("Content-Length") == null);
 	try t.expectString("text/event-stream", res.headers.get("Content-Type").?);
 	try t.expectString("no-cache", res.headers.get("Cache-Control").?);

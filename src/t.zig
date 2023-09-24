@@ -10,7 +10,10 @@ const ArrayList = std.ArrayList;
 pub const expect = std.testing.expect;
 pub const allocator = std.testing.allocator;
 
-pub const expectEqual = std.testing.expectEqual;
+pub fn expectEqual(expected: anytype, actual: anytype) !void {
+	try std.testing.expectEqual(@as(@TypeOf(actual), expected), actual);
+}
+
 pub const expectError = std.testing.expectError;
 pub const expectString = std.testing.expectEqualStrings;
 

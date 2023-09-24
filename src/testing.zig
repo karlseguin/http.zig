@@ -67,7 +67,7 @@ pub const Testing = struct {
 			if (expected) |e| {
 				try t.expectString(e, self.headers.get(name).?);
 			} else {
-				try t.expectEqual(@as(?[]const u8, null), self.headers.get(name));
+				try t.expectEqual(null, self.headers.get(name));
 			}
 		}
 
@@ -408,7 +408,7 @@ test "testing: params" {
 
 	ht.param("id", "over9000");
 	try t.expectString("over9000", ht.req.params.get("id").?);
-	try t.expectEqual(@as(?[]const u8, null), ht.req.params.get("other"));
+	try t.expectEqual(null, ht.req.params.get("other"));
 }
 
 test "testing: query" {
@@ -422,7 +422,7 @@ test "testing: query" {
 	try t.expectString("t:ea", query.get("search").?);
 	try t.expectString("447", query.get("category").?);
 	try t.expectString("search=t%3Aea&category=447", ht.req.url.query);
-	try t.expectEqual(@as(?[]const u8, null), query.get("other"));
+	try t.expectEqual(null, query.get("other"));
 }
 
 test "testing: empty query" {
@@ -430,7 +430,7 @@ test "testing: empty query" {
 	defer ht.deinit();
 
 	const query = try ht.req.query();
-	try t.expectEqual(@as(usize, 0), query.len);
+	try t.expectEqual(0, query.len);
 }
 
 test "testing: query via url" {
@@ -451,7 +451,7 @@ test "testing: header" {
 
 	try t.expectString("tea", ht.req.headers.get("search").?);
 	try t.expectString("447", ht.req.headers.get("category").?);
-	try t.expectEqual(@as(?[]const u8, null), ht.req.headers.get("other"));
+	try t.expectEqual(null, ht.req.headers.get("other"));
 }
 
 test "testing: body" {
@@ -519,6 +519,6 @@ test "testing: parseResponse" {
 
 	try ht.expectStatus(201);
 	const res = try ht.parseResponse();
-	try t.expectEqual(@as(u16, 201), res.status);
-	try t.expectEqual(@as(usize, 2), res.headers.count());
+	try t.expectEqual(201, res.status);
+	try t.expectEqual(2, res.headers.count());
 }

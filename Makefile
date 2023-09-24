@@ -1,6 +1,6 @@
 .PHONY: t
 t:
-	zig build test --summary all
+	zig build test -freference-trace --summary all
 
 .PHONY: s
 s:

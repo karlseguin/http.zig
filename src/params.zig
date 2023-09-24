@@ -78,15 +78,16 @@ test "params: get" {
 	params.addValue("idaho");
 	params.addNames(names[0..]);
 
-	try t.expectEqual(@as(?[]const u8, "9000"), params.get("over"));
-	try t.expectEqual(@as(?[]const u8, "idaho"), params.get("duncan"));
+	try t.expectEqual("9000", params.get("over").?);
+	try t.expectEqual("idaho", params.get("duncan").?);
 
 	params.reset();
-	try t.expectEqual(@as(?[]const u8, null), params.get("over"));
-	try t.expectEqual(@as(?[]const u8, null), params.get("duncan"));
+	try t.expectEqual(null, params.get("over"));
+	try t.expectEqual(null, params.get("duncan"));
+
 	params.addValue("!9000!");
 	params.addNames(names[0..1]);
-	try t.expectEqual(@as(?[]const u8, "!9000!"), params.get("over"));
+	try t.expectEqual("!9000!", params.get("over").?);
 
 	params.deinit(t.allocator);
 }

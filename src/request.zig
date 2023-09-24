@@ -660,17 +660,17 @@ test "atoi" {
 		try t.expectEqual(i, atoi(buf[0..n]).?);
 	}
 
-	try t.expectEqual(@as(?usize, null), atoi(""));
-	try t.expectEqual(@as(?usize, null), atoi("392a"));
-	try t.expectEqual(@as(?usize, null), atoi("b392"));
-	try t.expectEqual(@as(?usize, null), atoi("3c92"));
+	try t.expectEqual(null, atoi(""));
+	try t.expectEqual(null, atoi("392a"));
+	try t.expectEqual(null, atoi("b392"));
+	try t.expectEqual(null, atoi("3c92"));
 }
 
 test "request: findCarriageReturnIndex" {
 	var input = ("z" ** 128).*;
 	for (1..input.len) |i| {
 		var buf = input[0..i];
-		try t.expectEqual(@as(?usize, null), findCarriageReturnIndex(buf));
+		try t.expectEqual(null, findCarriageReturnIndex(buf));
 
 		for (0..i) |j| {
 			buf[j] = CR;
@@ -806,14 +806,14 @@ test "request: parse headers" {
 	{
 		var r = testParse("PUT / HTTP/1.0\r\n\r\n", .{});
 		defer testCleanup(r);
-		try t.expectEqual(@as(usize, 0), r.headers.len);
+		try t.expectEqual(0, r.headers.len);
 	}
 
 	{
 		var r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\n\r\n", .{});
 		defer testCleanup(r);
 
-		try t.expectEqual(@as(usize, 1), r.headers.len);
+		try t.expectEqual(1, r.headers.len);
 		try t.expectString("pondzpondz.com", r.headers.get("host").?);
 	}
 
@@ -821,7 +821,7 @@ test "request: parse headers" {
 		var r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nMisc:  Some-Value\r\nAuthorization:none\r\n\r\n", .{});
 		defer testCleanup(r);
 
-		try t.expectEqual(@as(usize, 3), r.headers.len);
+		try t.expectEqual(3, r.headers.len);
 		try t.expectString("pondzpondz.com", r.header("host").?);
 		try t.expectString("Some-Value", r.header("misc").?);
 		try t.expectString("none", r.header("authorization").?);
@@ -856,14 +856,14 @@ test "request: query" {
 		// none
 		var r = testParse("PUT / HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
-		try t.expectEqual(@as(usize, 0), (try r.query()).len);
+		try t.expectEqual(0, (try r.query()).len);
 	}
 
 	{
 		// none with path
 		var r = testParse("PUT /why/would/this/matter HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
-		try t.expectEqual(@as(usize, 0), (try r.query()).len);
+		try t.expectEqual(0, (try r.query()).len);
 	}
 
 	{
@@ -871,9 +871,9 @@ test "request: query" {
 		var r = testParse("PUT /?a HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		const query = try r.query();
-		try t.expectEqual(@as(usize, 1), query.len);
+		try t.expectEqual(1, query.len);
 		try t.expectString("", query.get("a").?);
-		try t.expectEqual(@as(?[]const u8, null), query.get("b"));
+		try t.expectEqual(null, query.get("b"));
 	}
 
 	{
@@ -881,9 +881,9 @@ test "request: query" {
 		var r = testParse("PUT /?a=1 HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		const query = try r.query();
-		try t.expectEqual(@as(usize, 1), query.len);
+		try t.expectEqual(1, query.len);
 		try t.expectString("1", query.get("a").?);
-		try t.expectEqual(@as(?[]const u8, null), query.get("b"));
+		try t.expectEqual(null, query.get("b"));
 	}
 
 	{
@@ -891,7 +891,7 @@ test "request: query" {
 		var r = testParse("PUT /path?Teg=Tea&it%20%20IS=over%209000%24&ha%09ck HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		const query = try r.query();
-		try t.expectEqual(@as(usize, 3), query.len);
+		try t.expectEqual(3, query.len);
 		try t.expectString("Tea", query.get("Teg").?);
 		try t.expectString("over 9000$", query.get("it  IS").?);
 		try t.expectString("", query.get("ha\tck").?);
@@ -910,8 +910,8 @@ test "request: body content-length" {
 		// no body
 		var r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
 		defer testCleanup(r);
-		try t.expectEqual(@as(?[]const u8, null), try r.body());
-		try t.expectEqual(@as(?[]const u8, null), try r.body());
+		try t.expectEqual(null, try r.body());
+		try t.expectEqual(null, try r.body());
 	}
 
 	{
@@ -975,8 +975,8 @@ test "body: json" {
 		// no body
 		var r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
 		defer testCleanup(r);
-		try t.expectEqual(@as(?Tea, null), try r.json(Tea));
-		try t.expectEqual(@as(?Tea, null), try r.json(Tea));
+		try t.expectEqual(null, try r.json(Tea));
+		try t.expectEqual(null, try r.json(Tea));
 	}
 
 	{
@@ -1000,8 +1000,8 @@ test "body: jsonValue" {
 		// no body
 		var r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
 		defer testCleanup(r);
-		try t.expectEqual(@as(?std.json.Value, null), try r.jsonValue());
-		try t.expectEqual(@as(?std.json.Value, null), try r.jsonValue());
+		try t.expectEqual(null, try r.jsonValue());
+		try t.expectEqual(null, try r.jsonValue());
 	}
 
 	{
@@ -1025,16 +1025,16 @@ test "body: jsonObject" {
 		// no body
 		var r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
 		defer testCleanup(r);
-		try t.expectEqual(@as(?std.json.ObjectMap, null), try r.jsonObject());
-		try t.expectEqual(@as(?std.json.ObjectMap, null), try r.jsonObject());
+		try t.expectEqual(null, try r.jsonObject());
+		try t.expectEqual(null, try r.jsonObject());
 	}
 
 	{
 		// not an object
 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 7\r\n\r\n\"hello\"", .{});
 		defer testCleanup(r);
-		try t.expectEqual(@as(?std.json.ObjectMap, null), try r.jsonObject());
-		try t.expectEqual(@as(?std.json.ObjectMap, null), try r.jsonObject());
+		try t.expectEqual(null, try r.jsonObject());
+		try t.expectEqual(null, try r.jsonObject());
 	}
 
 	{
@@ -1158,7 +1158,7 @@ test "request: fuzz" {
 				if (body) |b| {
 					try t.expectString(b, actual.?);
 				} else {
-					try t.expectEqual(@as(?[]const u8, null), actual);
+					try t.expectEqual(null, actual);
 				}
 			}
 
