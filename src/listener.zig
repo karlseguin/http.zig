@@ -51,11 +51,7 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 	}
 }
 
-const Queue = std.DoublyLinkedList(KeepaliveConn);
-
-const KeepaliveConn = struct {
-	conn: Conn,
-};
+const Queue = std.DoublyLinkedList(Conn);
 
 fn Pool(comptime S: type) type {
 	return struct {
@@ -92,6 +88,7 @@ fn Pool(comptime S: type) type {
 
 			var spawned: usize = 0;
 			errdefer pool.stop(spawned);
+
 			for (0..worker_count) |i| {
 				workers[i] = try Worker(S).init(httpz_allocator, app_allocator, server, config, pool);
 				errdefer workers[i].deinit();
@@ -127,7 +124,7 @@ fn Pool(comptime S: type) type {
 
 		fn handle(self: *Self, conn: Conn) !void {
 			var node = try self.httpz_allocator.create(Queue.Node);
-			node.data = .{.conn = conn};
+			node.data = conn;
 			self.mutex.lock();
 			self.queue.append(node);
 			self.mutex.unlock();
@@ -139,12 +136,30 @@ fn Pool(comptime S: type) type {
 pub fn Worker(comptime S: type) type {
 	return struct {
 		server: S,
-		queue: Queue,
+
 		pool: *Pool(S),
+
+		// all data we can allocate upfront and re-use from request to request
 		req_state: Request.State,
+
+		// all data we can allocate upfront and re-use from request ot request (for the response)
 		res_state: Response.State,
+
+		// every request and response will be given an allocator from this arena
 		arena: *ArenaAllocator,
+
+		// allocator for httpz internal allocations
 		httpz_allocator: Allocator,
+
+		// the number of connections this working is currently monitoring
+		len: usize,
+
+		// an array of Conn objects that we're currently monitoring
+		conns: []Conn,
+
+		// an array of pollfd objects, corresponding to `connections`.
+		// separate array so we can pass this as-is to os.poll
+		poll_fds: []os.pollfd,
 
 		const Self = @This();
 
@@ -159,30 +174,35 @@ pub fn Worker(comptime S: type) type {
 			var res_state = try Response.State.init(httpz_allocator, config.response);
 			errdefer req_state.deinit(httpz_allocator);
 
+			const max_conns = config.pool.worker_max_conn orelse 512;
+
 			return .{
 				.pool = pool,
-				.queue = .{},
 				.arena = arena,
 				.server = server,
 				.req_state = req_state,
 				.res_state = res_state,
 				.httpz_allocator = httpz_allocator,
+				.len = 0,
+				.conns = try httpz_allocator.alloc(Conn, max_conns),
+				.poll_fds = try httpz_allocator.alloc(os.pollfd, max_conns),
 			};
 		}
 
 		pub fn deinit(self: *Self) void {
 			const httpz_allocator = self.httpz_allocator;
 
+			for (self.conns[0..self.len]) |conn| {
+				conn.stream.close();
+			}
+			httpz_allocator.free(self.conns);
+			httpz_allocator.free(self.poll_fds);
+
 			self.req_state.deinit(httpz_allocator);
 			self.res_state.deinit(httpz_allocator);
 
 			self.arena.deinit();
 			httpz_allocator.destroy(self.arena);
-
-			while (self.queue.popFirst()) |node| {
-				node.data.conn.stream.close();
-				httpz_allocator.destroy(node);
-			}
 		}
 
 		fn run(self: *Self) void {
@@ -190,48 +210,92 @@ pub fn Worker(comptime S: type) type {
 
 			const pool = self.pool;
 			var mutex = &pool.mutex;
-			var pool_queue = &pool.queue;
+			var queue = &pool.queue;
+			const httpz_allocator = self.httpz_allocator;
 
 			mutex.lock();
 			while (true) {
-				while (pool_queue.popFirst()) |node| {
+				if (queue.popFirst()) |node| {
 					mutex.unlock();
-					defer mutex.lock();
-					self.processNewNode(node);
+					const conn = node.data;
+					httpz_allocator.destroy(node);
+					if (self.handleRequest(conn)) {
+						self.newConn(conn) catch {
+							// TODO
+							unreachable;
+						};
+					}
+				} else {
+					defer mutex.unlock();
+					if (pool.running == false) {
+						return;
+					}
 				}
+				self.poll();
+				mutex.lock();
+			}
+		}
 
-				// mutex is locked here, either because there was nothing queue
-				// or because the defer inside the while re-locked it after handleConnection
-				if (pool.running == false) {
+		fn newConn(self: *Self, conn: Conn) !void {
+			const len = self.len;
+			self.conns[len] = conn;
+			self.poll_fds[len] = os.pollfd{
+				.revents = 0,
+				.events = os.POLL.IN,
+				.fd = conn.stream.handle,
+			};
+			self.len = len + 1;
+		}
+
+		fn poll(self: *Self) void {
+			var len = self.len;
+			if (len == 0) {
+				return;
+			}
+			var conns = self.conns;
+			var poll_fds = self.poll_fds;
+			while (true) {
+				const is_full = len == conns.len;
+
+				// if our worker is full, we can't accept new connections
+				const timeout: i32 = if (is_full) -1 else 10;
+
+				const count = os.poll(poll_fds, timeout) catch {
+					unreachable; // TODO;
+				};
+
+				if (count == 0) {
 					return;
 				}
-				pool.cond.wait(mutex);
-			}
-		}
 
-		fn processNewNode(self: *Self, node: *Queue.Node) void {
-			_ = self.processNode(node);
-			self.processQueue();
-		}
+				var i: usize = 0;
+				// shrink as we remove items
+				while (i < len) {
+					if (poll_fds[i].revents == 0) {
+						i += 1;
+						continue;
+					}
 
-		fn processQueue(self: *Self) void {
-			var queue = &self.queue;
-			while (queue.popFirst()) |node| {
-				if (self.processNode(node) == false) {
-					return;
+					const conn = conns[i];
+					if (self.handleRequest(conn) == true) {
+						i += 1;
+					} else {
+						// this connection is closed (or in some invalid state)
+						conn.stream.close();
+
+						// we "remove" this item from our list by swaping the last item in its place
+						len -= 1;
+						if (len == 0) {
+							self.len = 0;
+							return;
+						}
+						conns[i] = conns[len];
+						poll_fds[i] = poll_fds[len];
+						// don't increment i, since it now contains the previous last
+					}
 				}
+				self.len = len;
 			}
-		}
-
-		fn processNode(self: *Self, node: *Queue.Node) bool {
-			const conn = node.data.conn;
-			if (self.handleRequest(conn)) {
-				self.queue.append(node);
-				return true;
-			}
-			conn.stream.close();
-			self.httpz_allocator.destroy(node);
-			return false;
 		}
 
 		pub fn handleRequest(self: *Self, conn: Conn) bool {
@@ -243,8 +307,8 @@ pub fn Worker(comptime S: type) type {
 			var req_state = &self.req_state;
 			var res_state = &self.res_state;
 
-			res_state.reset();
 			req_state.reset();
+			res_state.reset();
 
 			defer _ = arena.reset(.free_all);
 

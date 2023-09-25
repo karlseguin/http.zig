@@ -120,7 +120,7 @@ pub const Request = struct {
 			return .{
 				.max_body_size = config.max_body_size orelse 1_048_576,
 				.qs = try KeyValue.init(allocator, config.max_query_count orelse 32),
-				.buf = try allocator.alloc(u8, config.buffer_size orelse 65_8536),
+				.buf = try allocator.alloc(u8, config.buffer_size orelse 32_768),
 				.headers = try KeyValue.init(allocator, config.max_header_count orelse 32),
 				.params = try Params.init(allocator, config.max_param_count orelse 10),
 			};
@@ -185,7 +185,7 @@ pub const Request = struct {
 			.header_overread = buf_len - pos,
 			.max_body_size = state.max_body_size,
 			.qs = state.qs,
-			.static = state.buf,
+			.static = buf,
 			.headers = headers,
 			.params = state.params,
 		};

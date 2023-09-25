@@ -24,5 +24,6 @@ pub const Config = struct {
 
 	pub const Pool = struct {
 		count: ?usize = null,
+		worker_max_conn: ?u16 = null,
 	};
 };
