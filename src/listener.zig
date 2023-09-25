@@ -214,7 +214,7 @@ pub fn Worker(comptime S: type) type {
 			const httpz_allocator = self.httpz_allocator;
 
 			mutex.lock();
-			while (true) {
+			loop: while (true) {
 				if (queue.popFirst()) |node| {
 					mutex.unlock();
 					const conn = node.data;
@@ -226,9 +226,13 @@ pub fn Worker(comptime S: type) type {
 						};
 					}
 				} else {
-					defer mutex.unlock();
 					if (pool.running == false) {
+						mutex.unlock();
 						return;
+					}
+					if (self.len == 0) {
+						pool.cond.wait(mutex);
+						continue :loop;
 					}
 				}
 				self.poll();
@@ -265,6 +269,7 @@ pub fn Worker(comptime S: type) type {
 				};
 
 				if (count == 0) {
+					// can only be true when is_full = false, else we'd block on poll
 					return;
 				}
 
