@@ -256,14 +256,15 @@ pub fn Worker(comptime S: type) type {
 			if (len == 0) {
 				return;
 			}
-			var conns = self.conns;
-			var poll_fds = self.poll_fds;
+			const conns = self.conns;
+			const poll_fds = self.poll_fds;
+
 			while (true) {
 				const is_full = len == conns.len;
 
 				// if our worker is full, we can't accept new connections
 				const timeout: i32 = if (is_full) -1 else 10;
-				const count = os.poll(poll_fds, timeout) catch {
+				const count = os.poll(poll_fds[0..len], timeout) catch {
 					unreachable; // TODO;
 				};
 
@@ -273,6 +274,7 @@ pub fn Worker(comptime S: type) type {
 				}
 
 				var i: usize = 0;
+				var found: usize = 0;
 				// shrink as we remove items
 				while (i < len) {
 					if (poll_fds[i].revents == 0) {
@@ -296,6 +298,10 @@ pub fn Worker(comptime S: type) type {
 						conns[i] = conns[len];
 						poll_fds[i] = poll_fds[len];
 						// don't increment i, since it now contains the previous last
+					}
+					found += 1;
+					if (found == count) {
+						break;
 					}
 				}
 				self.len = len;
