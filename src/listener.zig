@@ -32,8 +32,8 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 	const listen_address = config.address.?;
 	try socket.listen(net.Address.parseIp(listen_address, listen_port) catch unreachable);
 
-	// TODO: I believe this should work, but it currently doesn't on 0.11-dev. Instead I have to
-	// hardcode 1 for the setsocopt NODELAY option
+	// TODO: Broken on darwin:
+	// https://github.com/ziglang/zig/issues/17260
 	// if (@hasDecl(os.TCP, "NODELAY")) {
 	// 	try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, os.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
 	// }
@@ -220,10 +220,7 @@ pub fn Worker(comptime S: type) type {
 					const conn = node.data;
 					httpz_allocator.destroy(node);
 					if (self.handleRequest(conn)) {
-						self.newConn(conn) catch {
-							// TODO
-							unreachable;
-						};
+						self.newConn(conn);
 					}
 				} else {
 					if (pool.running == false) {
@@ -240,7 +237,7 @@ pub fn Worker(comptime S: type) type {
 			}
 		}
 
-		fn newConn(self: *Self, conn: Conn) !void {
+		fn newConn(self: *Self, conn: Conn) void {
 			const len = self.len;
 			self.conns[len] = conn;
 			self.poll_fds[len] = os.pollfd{
@@ -340,7 +337,6 @@ pub fn Worker(comptime S: type) type {
 				res.write() catch {};
 				return false;
 			};
-
 
 			if (!server.handle(&req, &res)) {
 				return false;
