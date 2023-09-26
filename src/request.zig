@@ -596,7 +596,7 @@ const VECTOR_64_IOTA = std.simd.iota(u8, VECTOR_64_LEN);
 const VECTOR_64_NULLS: @Vector(64, u8) = @splat(@as(u8, 255));
 
 fn findCarriageReturnIndex(buf: []u8) ?usize {
-	if (VECTOR_32_LEN == 0) {
+	if (comptime VECTOR_32_LEN == 0) {
 		return std.mem.indexOfScalar(u8, buf, CR);
 	}
 
@@ -604,11 +604,14 @@ fn findCarriageReturnIndex(buf: []u8) ?usize {
 	var left = buf.len;
 	while (left > 0) {
 		if (left < VECTOR_8_LEN) {
-			if (std.mem.indexOfScalar(u8, buf[pos..], CR)) |n| {
-				return pos + n;
+			for (buf[pos..], 0..) |c, i| {
+				if (c == CR) {
+					return pos + i;
+				}
 			}
 			return null;
 		}
+
 		var index: u8 = undefined;
 		var vector_len: usize = undefined;
 		if (left < VECTOR_16_LEN) {

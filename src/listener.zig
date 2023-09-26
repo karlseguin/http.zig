@@ -263,7 +263,6 @@ pub fn Worker(comptime S: type) type {
 
 				// if our worker is full, we can't accept new connections
 				const timeout: i32 = if (is_full) -1 else 10;
-
 				const count = os.poll(poll_fds, timeout) catch {
 					unreachable; // TODO;
 				};
