@@ -605,8 +605,10 @@ fn findCarriageReturnIndex(buf: []u8) ?usize {
 	var left = buf.len;
 	while (left > 0) {
 		if (left < VECTOR_8_LEN) {
-			if (std.mem.indexOfScalar(u8, buf[pos..], CR)) |n| {
-				return pos + n;
+			for (buf[pos..], 0..) |c, i| {
+				if (c == CR) {
+					return pos + i;
+				}
 			}
 			return null;
 		}
