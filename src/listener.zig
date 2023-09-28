@@ -159,7 +159,6 @@ fn Pool(comptime S: type) type {
 			const next_worker = self.next_worker;
 			try self.streams[next_worker].writeAll(notify);
 			self.next_worker = (next_worker + 1) % self.streams.len;
-			std.debug.print("{d}\n", .{self.next_worker});
 		}
 	};
 }
