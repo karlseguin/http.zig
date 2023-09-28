@@ -43,6 +43,7 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 		if (socket.accept()) |conn| {
 			const c: Conn = if (comptime builtin.is_test) undefined else conn;
 			pool.handle(c) catch |err| {
+				conn.stream.close();
 				log.err("internal failure to handle connection {}", .{err});
 			};
 		} else |err| {
@@ -55,18 +56,33 @@ const Queue = std.DoublyLinkedList(Conn);
 
 fn Pool(comptime S: type) type {
 	return struct {
-		running: bool,
+		// pending connections that need to be picked up by a worker
 		queue: Queue,
-		threads: []Thread,
-		workers: []Worker(S),
+
+		// protect the queue
 		mutex: Thread.Mutex,
-		cond: Thread.Condition,
+
+		// the pool's side of a socketpair, used to communicate with the workers
+		streams: []Stream,
+
+		// the worker thread
+		threads: []Thread,
+
+		// the workers
+		workers: []Worker(S),
+
+		// the index of the nexst worker to get a connection
+		next_worker: usize,
+
 		httpz_allocator: Allocator,
 
 		const Self = @This();
 
 		fn init(httpz_allocator: Allocator, app_allocator: Allocator, server: S, config: *const Config) !*Self {
 			const worker_count = config.pool.count orelse (Thread.getCpuCount() catch 2);
+
+			var streams = try httpz_allocator.alloc(Stream, worker_count);
+			errdefer httpz_allocator.free(streams);
 
 			var threads = try httpz_allocator.alloc(Thread, worker_count);
 			errdefer httpz_allocator.free(threads);
@@ -76,12 +92,12 @@ fn Pool(comptime S: type) type {
 
 			var pool = try httpz_allocator.create(Self);
 			pool.* = .{
-				.cond = .{},
 				.mutex = .{},
 				.queue = .{},
-				.running = true,
+				.streams = streams,
 				.threads = threads,
 				.workers = workers,
+				.next_worker = 0,
 				.httpz_allocator = httpz_allocator,
 			};
 			errdefer httpz_allocator.destroy(pool);
@@ -89,8 +105,21 @@ fn Pool(comptime S: type) type {
 			var spawned: usize = 0;
 			errdefer pool.stop(spawned);
 
+			const dummy_address = std.net.Address.initIp4([_]u8{127, 0, 0, 127}, 9999);
+
 			for (0..worker_count) |i| {
+				var pair: [2]c_int = undefined;
+				const rc = std.c.socketpair(std.os.AF.LOCAL, std.os.SOCK.STREAM, 0, &pair);
+				if (rc != 0) {
+					log.err("std.c.socketpair failure: {any}\n", .{std.os.errno(rc)});
+					return error.SetupError;
+				}
+				const pool_control = Stream{.handle = pair[0]};
+				const worker_control = Conn{.stream = .{.handle = pair[1]}, .address = dummy_address};
+				streams[i] = pool_control;
+
 				workers[i] = try Worker(S).init(httpz_allocator, app_allocator, server, config, pool);
+				workers[i].newConn(worker_control);
 				errdefer workers[i].deinit();
 
 				threads[i] = try Thread.spawn(.{}, Worker(S).run, .{&workers[i]});
@@ -103,32 +132,34 @@ fn Pool(comptime S: type) type {
 		fn deinit(self: *Self) void {
 			const allocator = self.httpz_allocator;
 			self.stop(self.threads.len);
+			allocator.free(self.streams);
 			allocator.free(self.threads);
 			allocator.free(self.workers);
 			allocator.destroy(self);
 		}
 
 		fn stop(self: *Self, spawned: usize) void {
-			self.mutex.lock();
-			self.running = false;
-			self.mutex.unlock();
-			self.cond.broadcast();
-
-			var threads = self.threads;
-			var workers = self.workers;
 			for (0..spawned) |i| {
-				threads[i].join();
-				workers[i].deinit();
+				self.streams[i].close();
+				self.threads[i].join();
+				self.workers[i].deinit();
 			}
 		}
 
 		fn handle(self: *Self, conn: Conn) !void {
+			const notify = &[1]u8{0};
 			var node = try self.httpz_allocator.create(Queue.Node);
+			errdefer self.httpz_allocator.destroy(node);
+
 			node.data = conn;
 			self.mutex.lock();
 			self.queue.append(node);
 			self.mutex.unlock();
-			self.cond.signal();
+
+			const next_worker = self.next_worker;
+			try self.streams[next_worker].writeAll(notify);
+			self.next_worker = (next_worker + 1) % self.streams.len;
+			std.debug.print("{d}\n", .{self.next_worker});
 		}
 	};
 }
@@ -176,16 +207,22 @@ pub fn Worker(comptime S: type) type {
 
 			const max_conns = config.pool.worker_max_conn orelse 512;
 
+			var conns = try httpz_allocator.alloc(Conn, max_conns);
+			errdefer httpz_allocator.free(conns);
+
+			var poll_fds = try httpz_allocator.alloc(os.pollfd, max_conns);
+			errdefer httpz_allocator.free(poll_fds);
+
 			return .{
+				.len = 0,
 				.pool = pool,
 				.arena = arena,
 				.server = server,
+				.poll_fds = poll_fds,
 				.req_state = req_state,
 				.res_state = res_state,
 				.httpz_allocator = httpz_allocator,
-				.len = 0,
-				.conns = try httpz_allocator.alloc(Conn, max_conns),
-				.poll_fds = try httpz_allocator.alloc(os.pollfd, max_conns),
+				.conns = conns,
 			};
 		}
 
@@ -208,71 +245,58 @@ pub fn Worker(comptime S: type) type {
 		fn run(self: *Self) void {
 			std.os.maybeIgnoreSigpipe();
 
-			const pool = self.pool;
-			var mutex = &pool.mutex;
-			var queue = &pool.queue;
-			const httpz_allocator = self.httpz_allocator;
-
-			mutex.lock();
-			loop: while (true) {
-				if (queue.popFirst()) |node| {
-					mutex.unlock();
-					const conn = node.data;
-					httpz_allocator.destroy(node);
-					if (self.handleRequest(conn)) {
-						self.newConn(conn);
-					}
-				} else {
-					if (pool.running == false) {
-						mutex.unlock();
-						return;
-					}
-					if (self.len == 0) {
-						pool.cond.wait(mutex);
-						continue :loop;
-					}
-				}
-				self.poll();
-				mutex.lock();
-			}
-		}
-
-		fn newConn(self: *Self, conn: Conn) void {
-			const len = self.len;
-			self.conns[len] = conn;
-			self.poll_fds[len] = os.pollfd{
-				.revents = 0,
-				.events = os.POLL.IN,
-				.fd = conn.stream.handle,
-			};
-			self.len = len + 1;
-		}
-
-		fn poll(self: *Self) void {
 			var len = self.len;
-			if (len == 0) {
-				return;
-			}
+			var has_pending = false;
+			var pool_buf: [8]u8 = undefined;
+
 			const conns = self.conns;
+			const max_len = conns.len;
 			const poll_fds = self.poll_fds;
 
 			while (true) {
-				const is_full = len == conns.len;
-
-				// if our worker is full, we can't accept new connections
-				const timeout: i32 = if (is_full) -1 else 10;
-				const count = os.poll(poll_fds[0..len], timeout) catch {
-					unreachable; // TODO;
-				};
-
-				if (count == 0) {
-					// can only be true when is_full = false, else we'd block on poll
-					return;
+				if (has_pending and len < max_len) {
+					self.len = len;
+					switch (self.acceptConn()) {
+						.none => has_pending = false,
+						.one => {
+							len += 1;
+							has_pending = false;
+						},
+						.many => len += 1,  // keep has_pending = true
+					}
 				}
 
-				var i: usize = 0;
-				var found: usize = 0;
-				// shrink as we remove items
+				_ = os.poll(poll_fds[0..len], -1) catch |err| {
+					log.err("failed to poll sockets: {any}", .{err});
+					std.time.sleep(std.time.ns_per_s);
+					continue;
+				};
+
+				pool_event: {
+					// our special socketpair is always at index 0, if we have data here, it
+					// means the pool is trying to tell us something
+					const pool_event = poll_fds[0].revents;
+					if (pool_event == 0) {
+						break :pool_event;
+					}
+
+					if (pool_event & os.POLL.HUP == os.POLL.HUP) {
+						// other end closed, indicating that we're shutting down
+						self.len = len;
+						return;
+					}
+
+					if (pool_event & os.POLL.IN == os.POLL.IN) {
+						const n = conns[0].stream.read(&pool_buf) catch return;
+						if (n == 0) return;
+						has_pending = true;
+					} else {
+						log.info("unexpected poll event on socketpair: {d}\n", .{pool_event});
+					}
+				}
+
+				// skip 1, since we just handled it above
+				var i: usize = 1;
 				while (i < len) {
 					if (poll_fds[i].revents == 0) {
 						i += 1;
@@ -288,21 +312,40 @@ pub fn Worker(comptime S: type) type {
 
 						// we "remove" this item from our list by swaping the last item in its place
 						len -= 1;
-						if (len == 0) {
-							self.len = 0;
-							return;
+						if (i != len) {
+							conns[i] = conns[len];
+							poll_fds[i] = poll_fds[len];
 						}
-						conns[i] = conns[len];
-						poll_fds[i] = poll_fds[len];
 						// don't increment i, since it now contains the previous last
 					}
-					found += 1;
-					if (found == count) {
-						break;
-					}
 				}
-				self.len = len;
 			}
+		}
+
+		fn acceptConn(self: *Self) AcceptResult {
+			const pool = self.pool;
+			pool.mutex.lock();
+			if (pool.queue.popFirst()) |node| {
+				const state = if (pool.queue.len == 0) AcceptResult.one else AcceptResult.many;
+				pool.mutex.unlock();
+				const conn = node.data;
+				self.httpz_allocator.destroy(node);
+				self.newConn(conn);
+				return state;
+			}
+			pool.mutex.unlock();
+			return .none;
+		}
+
+		fn newConn(self: *Self, conn: Conn) void {
+			const len = self.len;
+			self.conns[len] = conn;
+			self.poll_fds[len] = os.pollfd{
+				.revents = 0,
+				.events = os.POLL.IN,
+				.fd = conn.stream.handle,
+			};
+			self.len = len + 1;
 		}
 
 		pub fn handleRequest(self: *Self, conn: Conn) bool {
@@ -346,3 +389,9 @@ pub fn Worker(comptime S: type) type {
 		}
 	};
 }
+
+const AcceptResult = enum {
+	none,
+	one,
+	many,
+};

@@ -164,6 +164,13 @@ fn unHex(b: u8) u8 {
 	};
 }
 
+fn indexOfScalar(buf: []const u8, value: u8) ?usize {
+	for (buf, 0..) |c, i| {
+		if (c == value) return i;
+	}
+	return null;
+}
+
 const t = @import("t.zig");
 test "url: parse" {
 	{

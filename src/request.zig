@@ -649,6 +649,13 @@ fn findCarriageReturnIndex(buf: []u8) ?usize {
 	return null;
 }
 
+fn indexOfScalar(buf: []const u8, value: u8) ?usize {
+	for (buf, 0..) |c, i| {
+		if (c == value) return i;
+	}
+	return null;
+}
+
 const Error = error {
 	BodyTooBig,
 	HeaderTooBig,
