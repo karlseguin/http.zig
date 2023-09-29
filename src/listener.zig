@@ -11,7 +11,7 @@ const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
+const Stream = if (builtin.is_test) t.Stream else std.net.Stream;
 const Conn = if (builtin.is_test) t.Connection else std.net.StreamServer.Connection;
 
 const os = std.os;

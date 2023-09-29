@@ -13,7 +13,7 @@ pub const Request = request.Request;
 pub const Response = response.Response;
 pub const Url = @import("url.zig").Url;
 pub const Config = @import("config.zig").Config;
-pub const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
+pub const Stream = if (builtin.is_test) t.Stream else std.net.Stream;
 
 const Allocator = std.mem.Allocator;
 
@@ -368,7 +368,7 @@ test "httpz: invalid request (not enough data, assume closed)" {
 	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
 	defer srv.deinit();
 	try t.expectEqual(false, testRequest(u32, &srv, stream));
-	try t.expectEqual(0, stream.received.items.len);
+	try t.expectEqual(0, stream.received().len);
 }
 
 test "httpz: invalid request" {
@@ -380,7 +380,7 @@ test "httpz: invalid request" {
 	defer srv.deinit();
 	try t.expectEqual(false, testRequest(u32, &srv, stream));
 
-	try t.expectString("HTTP/1.1 400\r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received.items);
+	try t.expectString("HTTP/1.1 400\r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received());
 }
 
 test "httpz: no route" {
@@ -392,7 +392,7 @@ test "httpz: no route" {
 	defer srv.deinit();
 	try t.expectEqual(true, testRequest(u32, &srv, stream));
 
-	try t.expectString("HTTP/1.1 404\r\nContent-Length: 9\r\n\r\nNot Found", stream.received.items);
+	try t.expectString("HTTP/1.1 404\r\nContent-Length: 9\r\n\r\nNot Found", stream.received());
 }
 
 test "httpz: no route with custom notFound handler" {
@@ -405,7 +405,7 @@ test "httpz: no route with custom notFound handler" {
 	srv.notFound(testNotFound);
 	try t.expectEqual(true, testRequest(u32, &srv, stream));
 
-	try t.expectString("HTTP/1.1 404\r\nCtx: 3\r\nContent-Length: 10\r\n\r\nwhere lah?", stream.received.items);
+	try t.expectString("HTTP/1.1 404\r\nCtx: 3\r\nContent-Length: 10\r\n\r\nwhere lah?", stream.received());
 }
 
 test "httpz: unhandled exception" {
@@ -421,7 +421,7 @@ test "httpz: unhandled exception" {
 	srv.router().get("/fail", testFail);
 	try t.expectEqual(true, testRequest(u32, &srv, stream));
 
-	try t.expectString("HTTP/1.1 500\r\nContent-Length: 21\r\n\r\nInternal Server Error", stream.received.items);
+	try t.expectString("HTTP/1.1 500\r\nContent-Length: 21\r\n\r\nInternal Server Error", stream.received());
 }
 
 test "httpz: unhandled exception with custom error handler" {
@@ -438,7 +438,7 @@ test "httpz: unhandled exception with custom error handler" {
 	srv.router().get("/fail", testFail);
 	try t.expectEqual(true, testRequest(u32, &srv, stream));
 
-	try t.expectString("HTTP/1.1 500\r\nCtx: 4\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", stream.received.items);
+	try t.expectString("HTTP/1.1 500\r\nCtx: 4\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", stream.received());
 }
 
 test "httpz: route params" {
@@ -451,7 +451,7 @@ test "httpz: route params" {
 	srv.router().all("/api/:version/users/:UserId", testParams);
 	try t.expectEqual(true, testRequest(u32, &srv, stream));
 
-	try t.expectString("HTTP/1.1 200\r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", stream.received.items);
+	try t.expectString("HTTP/1.1 200\r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", stream.received());
 }
 
 test "httpz: request and response headers" {
@@ -464,7 +464,7 @@ test "httpz: request and response headers" {
 	srv.router().get("/test/headers", testHeaders);
 	try t.expectEqual(true, testRequest(u32, &srv, stream));
 
-	try t.expectString("HTTP/1.1 200\r\nCtx: 88\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", stream.received.items);
+	try t.expectString("HTTP/1.1 200\r\nCtx: 88\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", stream.received());
 }
 
 test "httpz: content-length body" {
@@ -477,7 +477,7 @@ test "httpz: content-length body" {
 	srv.router().get("/test/body/cl", testCLBody);
 	try t.expectEqual(true, testRequest(u32, &srv, stream));
 
-	try t.expectString("HTTP/1.1 200\r\nEcho-Body: abcz\r\nContent-Length: 0\r\n\r\n", stream.received.items);
+	try t.expectString("HTTP/1.1 200\r\nEcho-Body: abcz\r\nContent-Length: 0\r\n\r\n", stream.received());
 }
 
 test "httpz: json response" {
@@ -490,7 +490,7 @@ test "httpz: json response" {
 	srv.router().get("/test/json", testJsonRes);
 	try t.expectEqual(true, testRequest(void, &srv, stream));
 
-	try t.expectString("HTTP/1.1 201\r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", stream.received.items);
+	try t.expectString("HTTP/1.1 201\r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", stream.received());
 }
 
 test "httpz: query" {
@@ -503,7 +503,7 @@ test "httpz: query" {
 	srv.router().get("/test/query", testReqQuery);
 	try t.expectEqual(true, testRequest(void, &srv, stream));
 
-	try t.expectString("HTTP/1.1 200\r\nContent-Length: 11\r\n\r\nkeemun tea!", stream.received.items);
+	try t.expectString("HTTP/1.1 200\r\nContent-Length: 11\r\n\r\nkeemun tea!", stream.received());
 }
 
 test "httpz: custom dispatcher" {
@@ -517,7 +517,7 @@ test "httpz: custom dispatcher" {
 
 	_ = stream.add("HEAD /test/dispatcher HTTP/1.1\r\n\r\n");
 	try t.expectEqual(true, testRequest(void, &srv, stream));
-	try t.expectString("HTTP/1.1 200\r\ndispatcher: test-dispatcher-1\r\nContent-Length: 6\r\n\r\naction", stream.received.items);
+	try t.expectString("HTTP/1.1 200\r\ndispatcher: test-dispatcher-1\r\nContent-Length: 6\r\n\r\naction", stream.received());
 }
 
 test "httpz: router groups" {
@@ -543,7 +543,7 @@ test "httpz: router groups" {
 		_ = stream.add("GET / HTTP/1.1\r\n\r\n");
 
 		try t.expectEqual(true, testRequest(i32, &srv, stream));
-		var res = try testing.parse(stream.received.items);
+		var res = try testing.parse(stream.received());
 		defer res.deinit();
 
 		try res.expectJson(.{.ctx = 33, .method = "GET", .path = "/"});
@@ -556,7 +556,7 @@ test "httpz: router groups" {
 		_ = stream.add("GET /admin/users HTTP/1.1\r\n\r\n");
 
 		try t.expectEqual(true, testRequest(i32, &srv, stream));
-		var res = try testing.parse(stream.received.items);
+		var res = try testing.parse(stream.received());
 		defer res.deinit();
 
 		try res.expectJson(.{.ctx = 99, .method = "GET", .path = "/admin/users"});
@@ -569,7 +569,7 @@ test "httpz: router groups" {
 		_ = stream.add("PUT /admin/users/:id HTTP/1.1\r\n\r\n");
 
 		try t.expectEqual(true, testRequest(i32, &srv, stream));
-		var res = try testing.parse(stream.received.items);
+		var res = try testing.parse(stream.received());
 		defer res.deinit();
 
 		try res.expectJson(.{.ctx = 99, .method = "PUT", .path = "/admin/users/:id"});
@@ -582,7 +582,7 @@ test "httpz: router groups" {
 		_ = stream.add("HEAD /debug/ping HTTP/1.1\r\n\r\n");
 
 		try t.expectEqual(true, testRequest(i32, &srv, stream));
-		var res = try testing.parse(stream.received.items);
+		var res = try testing.parse(stream.received());
 		defer res.deinit();
 
 		try res.expectJson(.{.ctx = 20, .method = "HEAD", .path = "/debug/ping"});
@@ -595,7 +595,7 @@ test "httpz: router groups" {
 		_ = stream.add("OPTIONS /debug/stats HTTP/1.1\r\n\r\n");
 
 		try t.expectEqual(true, testRequest(i32, &srv, stream));
-		var res = try testing.parse(stream.received.items);
+		var res = try testing.parse(stream.received());
 		defer res.deinit();
 
 		try res.expectJson(.{.ctx = 20, .method = "OPTIONS", .path = "/debug/stats"});
@@ -608,7 +608,7 @@ test "httpz: router groups" {
 		_ = stream.add("POST /login HTTP/1.1\r\n\r\n");
 
 		try t.expectEqual(true, testRequest(i32, &srv, stream));
-		var res = try testing.parse(stream.received.items);
+		var res = try testing.parse(stream.received());
 		defer res.deinit();
 
 		try res.expectJson(.{.ctx = 33, .method = "POST", .path = "/login"});
@@ -631,7 +631,7 @@ test "httpz: CORS" {
 		_ = stream.add("GET /debug/stats HTTP/1.1\r\n\r\n");
 
 		try t.expectEqual(true, testRequest(void, &srv, stream));
-		var res = try testing.parse(stream.received.items);
+		var res = try testing.parse(stream.received());
 		defer res.deinit();
 		try t.expectEqual(true, res.headers.get("Access-Control-Max-Age") == null);
 		try t.expectEqual(true, res.headers.get("Access-Control-Allow-Methods") == null);
@@ -646,7 +646,7 @@ test "httpz: CORS" {
 		_ = stream.add("OPTIONS /debug/stats HTTP/1.1\r\nSec-Fetch-Mode: navigate\r\n\r\n");
 
 		try t.expectEqual(true, testRequest(void, &srv, stream));
-		var res = try testing.parse(stream.received.items);
+		var res = try testing.parse(stream.received());
 		defer res.deinit();
 
 		try t.expectEqual(true, res.headers.get("Access-Control-Max-Age") == null);
@@ -662,7 +662,7 @@ test "httpz: CORS" {
 		_ = stream.add("OPTIONS /debug/stats HTTP/1.1\r\nSec-Fetch-Mode: cors\r\n\r\n");
 
 		try t.expectEqual(true, testRequest(void, &srv, stream));
-		var res = try testing.parse(stream.received.items);
+		var res = try testing.parse(stream.received());
 		defer res.deinit();
 
 		try t.expectString("httpz.local", res.headers.get("Access-Control-Allow-Origin").?);
@@ -703,7 +703,7 @@ var stream = t.Stream.init();
 	srv.router().get("/test/stream", testEventStream);
 	try t.expectEqual(true, testRequest(void, &srv, stream));
 
-	var res = try testing.parse(stream.received.items);
+	var res = try testing.parse(stream.received());
 	defer res.deinit();
 
 	try t.expectEqual(818, res.status);
@@ -714,7 +714,7 @@ var stream = t.Stream.init();
 	try t.expectString("a message", res.body);
 }
 
-fn testRequest(comptime G: type, srv: *ServerCtx(G, G), stream: *t.Stream) bool {
+fn testRequest(comptime G: type, srv: *ServerCtx(G, G), stream: t.Stream) bool {
 	const config = Config{
 		.request = .{.buffer_size = 4096},
 		.response = .{.body_buffer_size = 4096},

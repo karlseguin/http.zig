@@ -26,61 +26,73 @@ pub fn getRandom() std.rand.DefaultPrng {
 	return std.rand.DefaultPrng.init(seed);
 }
 
+const dummy_address = std.net.Address.initIp4([_]u8{127, 0, 0, 200}, 0);
+
 // mock for std.net.StreamServer.Connection
 pub const Connection = struct {
-	stream: *Stream,
-	address: std.net.Address = std.net.Address.initIp4([_]u8{0, 0, 0, 0}, 0),
+	stream: Stream,
+	address: std.net.Address = dummy_address,
 };
 
 pub const Stream = struct {
-	closed: bool,
-	read_index: usize,
-	address: std.net.Address,
-	to_read: ArrayList(u8),
-	random: ?std.rand.DefaultPrng,
-	received: ArrayList(u8),
+	state: *State = undefined,
 	handle: c_int = 0,
 
-	pub fn init() *Stream {
+	const State = struct {
+		closed: bool,
+		read_index: usize,
+		to_read: ArrayList(u8),
+		random: ?std.rand.DefaultPrng,
+		received: ArrayList(u8),
+	};
+
+	pub fn init() Stream {
 		return initWithAllocator(allocator);
 	}
 
-	pub fn initWithAllocator(a: std.mem.Allocator) *Stream {
-		var s = a.create(Stream) catch unreachable;
-		s.closed = false;
-		s.read_index = 0;
-		s.random = getRandom();
-		s.to_read = ArrayList(u8).init(a);
-		s.received = ArrayList(u8).init(a);
-		return s;
+	pub fn initWithAllocator(a: std.mem.Allocator) Stream {
+		const state = a.create(State) catch unreachable;
+		state.* = .{
+			.closed = false,
+			.read_index = 0,
+			.random = getRandom(),
+			.to_read = ArrayList(u8).init(a),
+			.received = ArrayList(u8).init(a),
+		};
+
+		return .{
+			.handle = 0,
+			.state = state,
+		};
 	}
 
-	pub fn deinit(self: *Stream) void {
-		self.to_read.deinit();
-		self.received.deinit();
-		allocator.destroy(self);
+	pub fn deinit(self: Stream) void {
+		self.state.to_read.deinit();
+		self.state.received.deinit();
+		allocator.destroy(self.state);
 	}
 
 	// mock for std.net.StreamServer.Connection
-	pub fn wrap(self: *Stream) Connection {
+	pub fn wrap(self: Stream) Connection {
 		return .{.stream = self};
 	}
 
-	pub fn reset(self: *Stream) void {
-		self.to_read.clearRetainingCapacity();
-		self.received.clearRetainingCapacity();
+	pub fn reset(self: Stream) void {
+		self.state.to_read.clearRetainingCapacity();
+		self.state.received.clearRetainingCapacity();
 	}
 
-	pub fn add(self: *Stream, value: []const u8) *Stream {
-		self.to_read.appendSlice(value) catch unreachable;
+	pub fn add(self: Stream, value: []const u8) Stream {
+		self.state.to_read.appendSlice(value) catch unreachable;
 		return self;
 	}
 
-	pub fn read(self: *Stream, buf: []u8) !usize {
-		std.debug.assert(!self.closed);
+	pub fn read(self: Stream, buf: []u8) !usize {
+		var state = self.state;
+		std.debug.assert(!state.closed);
 
-		const read_index = self.read_index;
-		const items = self.to_read.items;
+		const read_index = state.read_index;
+		const items = state.to_read.items;
 
 		if (read_index == items.len) {
 			return 0;
@@ -94,7 +106,7 @@ pub const Stream = struct {
 		const max_can_read = if (buf.len < left_to_read) buf.len else left_to_read;
 
 		var to_read = max_can_read;
-		if (self.random) |*r| {
+		if (state.random) |*r| {
 			const random = r.random();
 			to_read = random.uintAtMost(usize, max_can_read - 1) + 1;
 		}
@@ -105,7 +117,7 @@ pub const Stream = struct {
 			// we'll give it when it can take
 			data = data[0..buf.len];
 		}
-		self.read_index = read_index + data.len;
+		state.read_index = read_index + data.len;
 
 		// std.debug.print("TEST: {d} {d} {d}\n", .{data.len, read_index, max_can_read});
 		for (data, 0..) |b, i| {
@@ -116,12 +128,16 @@ pub const Stream = struct {
 	}
 
 	// store messages that are written to the stream
-	pub fn writeAll(self: *Stream, data: []const u8) !void {
-		self.received.appendSlice(data) catch unreachable;
+	pub fn writeAll(self: Stream, data: []const u8) !void {
+		self.state.received.appendSlice(data) catch unreachable;
 	}
 
-	pub fn close(self: *Stream) void {
-		self.closed = true;
+	pub fn close(self: Stream) void {
+		self.state.closed = true;
+	}
+
+	pub fn received(self: Stream) []u8 {
+		return self.state.received.items;
 	}
 };
 

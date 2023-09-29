@@ -186,7 +186,7 @@ pub const Testing = struct {
 		if (self.parsed_response) |r| return r;
 		try self.res.write();
 
-		const pr = try parseWithAllocator(self.arena, self.res.stream.received.items);
+		const pr = try parseWithAllocator(self.arena, self.res.stream.received());
 		self.parsed_response = pr;
 		return pr;
 	}

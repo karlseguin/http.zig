@@ -11,7 +11,7 @@ const KeyValue = @import("key_value.zig").KeyValue;
 const Reader = std.io.Reader;
 const Address = std.net.Address;
 const Allocator = std.mem.Allocator;
-const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
+const Stream = if (builtin.is_test) t.Stream else std.net.Stream;
 
 // this approach to matching method name comes from zhp
 const GET_ = @as(u32, @bitCast([4]u8{'G', 'E', 'T', ' '}));
@@ -1172,7 +1172,7 @@ test "request: fuzz" {
 			}
 
 			var request = testRequest(.{.buffer_size = buffer_size}, s) catch |err| {
-				std.debug.print("\nParse Error: {}\nInput: {s}", .{err, s.to_read.items[s.read_index..]});
+				std.debug.print("\nParse Error: {}\nInput: {s}", .{err, s.state.to_read.items[s.state.read_index..]});
 				unreachable;
 			};
 			defer _ = t.aa.reset(.free_all);
@@ -1210,12 +1210,12 @@ test "request: fuzz" {
 
 test "requet: extra socket data" {
 	var s = t.Stream.init();
-	s.random = null;
+	s.state.random = null;
 
 	_ = s.add("GET / HTTP/1.1\r\nContent-Length: 5\r\n\r\nHello!");
 
 	var request = testRequest(.{.buffer_size = 50}, s) catch |err| {
-		std.debug.print("\nParse Error: {}\nInput: {s}", .{err, s.to_read.items[s.read_index..]});
+		std.debug.print("\nParse Error: {}\nInput: {s}", .{err, s.state.to_read.items[s.state.read_index..]});
 		unreachable;
 	};
 	defer testCleanup(request);
@@ -1243,7 +1243,7 @@ fn expectParseError(expected: Error, input: []const u8, config: Config) !void {
 	try t.expectError(expected, Request.parse(t.allocator, &req_state, s.add(input).wrap()));
 }
 
-fn testRequest(config: Config, stream: *t.Stream) !Request {
+fn testRequest(config: Config, stream: t.Stream) !Request {
 	const req_state = Request.State.init(t.arena, config) catch unreachable;
 	return Request.parse(t.arena, &req_state, stream.wrap());
 }
