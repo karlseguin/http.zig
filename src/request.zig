@@ -331,7 +331,7 @@ pub const Request = struct {
 		var allocator = self.arena;
 		var buffer = self.static[pos..];
 
-		var it = std.mem.split(u8, raw, "&");
+		var it = std.mem.splitScalar(u8, raw, '&');
 		while (it.next()) |pair| {
 			if (std.mem.indexOfScalar(u8, pair, '=')) |sep| {
 				const key_res = try Url.unescape(allocator, buffer, pair[0..sep]);

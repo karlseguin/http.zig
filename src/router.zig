@@ -415,7 +415,7 @@ fn addRoute(comptime A: type, allocator: Allocator, root: *Part(A), url: []const
 	defer param_name_collector.deinit();
 
 	var route_part = root;
-	var it = std.mem.split(u8, normalized, "/");
+	var it = std.mem.splitScalar(u8, normalized, '/');
 	while (it.next()) |part| {
 		if (part[0] == ':') {
 			try param_name_collector.append(part[1..]);
@@ -488,7 +488,7 @@ fn getRoute(comptime A: type, root: Part(A), url: []const u8, params: *Params) ?
 	var route_part = &r;
 
 	var glob_all: ?*Part(A) = null;
-	var it = std.mem.split(u8, normalized, "/");
+	var it = std.mem.splitScalar(u8, normalized, '/');
 	while (it.next()) |part| {
 		// the most specific "glob_all" route we find, which is the one most deeply
 		// nested, is the one we'll use in case there are no other matches.

@@ -206,7 +206,7 @@ pub fn parseWithAllocator(allocator: Allocator, data: []u8) !Testing.Response {
 	var header_length: usize = 0;
 	var headers = std.StringHashMap([]const u8).init(allocator);
 
-	var it = std.mem.split(u8, raw, "\r\n");
+	var it = std.mem.splitSequence(u8, raw, "\r\n");
 	if (it.next()) |line| {
 		header_length = line.len + 2;
 		status = try std.fmt.parseInt(u16, line[9..], 10);
