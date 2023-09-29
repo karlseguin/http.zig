@@ -9,10 +9,11 @@ pub const Config = struct {
 
 	port: ?u16 = null,
 	address: ?[]const u8 = null,
-	pool: Pool = Pool{},
+	pool: Pool = .{},
 	thread_pool: u32 = 0,
-	request: Request = Request{},
-	response: Response = Response{},
+	request: Request = .{},
+	response: Response = .{},
+	keepalive: Keepalive = .{},
 	cors: ?CORS = null,
 
 	pub const CORS = struct {
@@ -25,5 +26,9 @@ pub const Config = struct {
 	pub const Pool = struct {
 		count: ?usize = null,
 		worker_max_conn: ?u16 = null,
+	};
+
+	pub const Keepalive = struct {
+		timeout: ?u32 = null,
 	};
 };

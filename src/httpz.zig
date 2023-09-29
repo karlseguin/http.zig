@@ -309,8 +309,11 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 					}
 				}
 			};
+			if (!req.canKeepAlive()) {
+				res.keepalive = false;
+			}
 			res.write() catch return false;
-			return req.canKeepAlive();
+			return res.keepalive;
 		}
 
 		inline fn dispatch(self: Self, dispatchable_action: ?DispatchableAction(G, R), req: *Request, res: *Response) !void {
@@ -719,7 +722,7 @@ fn testRequest(comptime G: type, srv: *ServerCtx(G, G), stream: *t.Stream) bool 
 
 	var worker = listener.Worker(*ServerCtx(G, G)).init(t.allocator, t.allocator, srv, &config, undefined) catch unreachable;
 	defer worker.deinit();
-	return worker.handleRequest(.{.stream = stream});
+	return worker.handleRequest(.{.stream = stream}, false);
 }
 
 fn testFail(_: u32, _: *Request, _: *Response) !void {

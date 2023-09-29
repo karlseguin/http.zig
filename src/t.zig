@@ -39,6 +39,7 @@ pub const Stream = struct {
 	to_read: ArrayList(u8),
 	random: ?std.rand.DefaultPrng,
 	received: ArrayList(u8),
+	handle: c_int = 0,
 
 	pub fn init() *Stream {
 		return initWithAllocator(allocator);

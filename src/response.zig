@@ -61,6 +61,10 @@ pub const Response = struct {
 	// whether or not we've already written the response
 	written: bool,
 
+	// when false, the Connection: Close header is sent. This should not be set
+	// directly, rather set req.keepalive = false.
+	keepalive: bool,
+
 	// All the upfront memory allocation that we can do. Gets re-used from request
 	// to request.
 	pub const State = struct {
@@ -97,6 +101,7 @@ pub const Response = struct {
 			.written = false,
 			.chunked = false,
 			.stream = stream,
+			.keepalive = true,
 			.content_type = null,
 			.headers = state.headers,
 			.body_buffer = state.buf,
@@ -258,6 +263,13 @@ pub const Response = struct {
 				@memcpy(header_buffer[header_pos..end_pos], value);
 				header_pos = end_pos;
 			}
+		}
+
+		if (self.keepalive == false) {
+			const CLOSE_HEADER = "Connection: Close\r\n";
+			const end_pos = header_pos + CLOSE_HEADER.len;
+			@memcpy(header_buffer[header_pos..end_pos], CLOSE_HEADER);
+			header_pos = end_pos;
 		}
 
 		{

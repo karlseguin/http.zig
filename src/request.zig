@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const os = std.os;
 const http = @import("httpz.zig");
 
 const Url = @import("url.zig").Url;
@@ -30,6 +31,7 @@ pub const Config = struct {
 	max_header_count: ?usize = null,
 	max_param_count: ?usize = null,
 	max_query_count: ?usize = null,
+	read_header_timeout: ?u32 = null,
 };
 
 // Each parsing step (method, target, protocol, headers, body)
@@ -107,6 +109,10 @@ pub const Request = struct {
 	// this arena. This is the same arena as response.arena.
 	arena: Allocator,
 
+	// whether or not, from the server's point of view, we should keep this connection
+	// alive or not
+	keepalive: bool,
+
 	// All the upfront memory allocation that we can do. Gets re-used from request
 	// to request.
 	pub const State = struct {
@@ -115,6 +121,7 @@ pub const Request = struct {
 		headers: KeyValue,
 		params: Params,
 		max_body_size: usize,
+		read_header_timeout: ?i32,
 
 		pub fn init(allocator: Allocator, config: Config) !Request.State {
 			return .{
@@ -123,6 +130,7 @@ pub const Request = struct {
 				.buf = try allocator.alloc(u8, config.buffer_size orelse 32_768),
 				.headers = try KeyValue.init(allocator, config.max_header_count orelse 32),
 				.params = try Params.init(allocator, config.max_param_count orelse 10),
+				.read_header_timeout = if (config.read_header_timeout) |timeout| @intCast(timeout) else null,
 			};
 		}
 
@@ -141,29 +149,37 @@ pub const Request = struct {
 	};
 
 	pub fn parse(arena: Allocator, state: *const State, conn: anytype) !Request {
+		var config = ReadConfig{
+			.pfd = [_]os.pollfd{.{
+				.revents = 0,
+				.events = os.POLL.IN,
+				.fd = conn.stream.handle,
+			}},
+			.timeout = state.read_header_timeout,
+		};
 		// Header must always fits inside our static buffer
 		const buf = state.buf;
 		const stream = conn.stream;
 
-		const method_result = try parseMethod(stream, buf);
+		const method_result = try parseMethod(stream, buf, &config);
 		const method = method_result.value;
 
 		var pos = method_result.used;
 		var buf_len = method_result.read;
 
-		const url_result = try parseURL(stream, buf[pos..], buf_len - pos);
+		const url_result = try parseURL(stream, buf[pos..], buf_len - pos, &config);
 		const url = url_result.value;
 		pos += url_result.used;
 		buf_len += url_result.read;
 
-		const protocol_result = try parseProtocol(stream, buf[pos..], buf_len - pos);
+		const protocol_result = try parseProtocol(stream, buf[pos..], buf_len - pos, &config);
 		const protocol = protocol_result.value;
 		pos += protocol_result.used;
 		buf_len += protocol_result.read;
 
 		var headers = state.headers;
 		while (true) {
-			const res = try parseOneHeader(stream, buf[pos..], buf_len - pos);
+			const res = try parseOneHeader(stream, buf[pos..], buf_len - pos, &config);
 			const used = res.used;
 			pos += used;
 			buf_len += res.read;
@@ -180,6 +196,7 @@ pub const Request = struct {
 			.arena = arena,
 			.stream = stream,
 			.method = method,
+			.keepalive = true,
 			.protocol = protocol,
 			.address = conn.address,
 			.header_overread = buf_len - pos,
@@ -380,6 +397,10 @@ pub const Request = struct {
 	}
 
 	pub fn canKeepAlive(self: *const Request) bool {
+		if (self.keepalive == false) {
+			return false;
+		}
+
 		return switch (self.protocol) {
 			http.Protocol.HTTP11 => {
 				if (self.headers.get("connection")) |conn| {
@@ -392,10 +413,10 @@ pub const Request = struct {
 	}
 };
 
-fn parseMethod(stream: Stream, buf: []u8) !ParseResult(http.Method) {
+fn parseMethod(stream: Stream, buf: []u8, config: *ReadConfig) !ParseResult(http.Method) {
 	var buf_len: usize = 0;
 	while (buf_len < 4) {
-		buf_len += try readForHeader(stream, buf[buf_len..]);
+		buf_len += try readForHeader(stream, buf[buf_len..], config);
 	}
 
 	switch (@as(u32, @bitCast(buf[0..4].*))) {
@@ -403,7 +424,7 @@ fn parseMethod(stream: Stream, buf: []u8) !ParseResult(http.Method) {
 		PUT_ => return .{.read = buf_len, .used = 4, .value = .PUT},
 		POST => {
 			// only need 1 more byte, so at most, we need 1 more read
-			if (buf_len < 5) buf_len += try readForHeader(stream, buf[buf_len..]);
+			if (buf_len < 5) buf_len += try readForHeader(stream, buf[buf_len..], config);
 			if (buf[4] != ' ') {
 				return error.UnknownMethod;
 			}
@@ -411,28 +432,28 @@ fn parseMethod(stream: Stream, buf: []u8) !ParseResult(http.Method) {
 		},
 		HEAD => {
 			// only need 1 more byte, so at most, we need 1 more read
-			if (buf_len < 5) buf_len += try readForHeader(stream, buf[buf_len..]);
+			if (buf_len < 5) buf_len += try readForHeader(stream, buf[buf_len..], config);
 			if (buf[4] != ' ') {
 				return error.UnknownMethod;
 			}
 			return .{.read = buf_len, .used = 5, .value = .HEAD};
 		},
 		PATC => {
-			while (buf_len < 6)  buf_len += try readForHeader(stream, buf[buf_len..]);
+			while (buf_len < 6)  buf_len += try readForHeader(stream, buf[buf_len..], config);
 			if (buf[4] != 'H' or buf[5] != ' ') {
 				return error.UnknownMethod;
 			}
 			return .{.read = buf_len, .used = 6, .value = .PATCH};
 		},
 		DELE => {
-			while (buf_len < 7) buf_len += try readForHeader(stream, buf[buf_len..]);
+			while (buf_len < 7) buf_len += try readForHeader(stream, buf[buf_len..], config);
 			if (buf[4] != 'T' or buf[5] != 'E' or buf[6] != ' ' ) {
 				return error.UnknownMethod;
 			}
 			return .{.read = buf_len, .used = 7, .value = .DELETE};
 		},
 		OPTI => {
-			while (buf_len < 8) buf_len += try readForHeader(stream, buf[buf_len..]);
+			while (buf_len < 8) buf_len += try readForHeader(stream, buf[buf_len..], config);
 			if (buf[4] != 'O' or buf[5] != 'N' or buf[6] != 'S' or buf[7] != ' ' ) {
 				return error.UnknownMethod;
 			}
@@ -442,10 +463,10 @@ fn parseMethod(stream: Stream, buf: []u8) !ParseResult(http.Method) {
 	}
 }
 
-fn parseURL(stream: Stream, buf: []u8, len: usize) !ParseResult(Url) {
+fn parseURL(stream: Stream, buf: []u8, len: usize, config: *ReadConfig) !ParseResult(Url) {
 	var buf_len = len;
 	if (buf_len == 0) {
-		buf_len = try readForHeader(stream, buf);
+		buf_len = try readForHeader(stream, buf, config);
 	}
 
 	switch (buf[0]) {
@@ -455,13 +476,13 @@ fn parseURL(stream: Stream, buf: []u8, len: usize) !ParseResult(Url) {
 					// +1 to consume the space
 					return .{.used = end_index + 1, .read = buf_len - len, .value = Url.parse(buf[0..end_index])};
 				}
-				buf_len += try readForHeader(stream, buf[buf_len..]);
+				buf_len += try readForHeader(stream, buf[buf_len..], config);
 			}
 		},
 		'*' => {
 			// must be a "* ", so we need at least 1 more byte
 			if (buf_len == 1) {
-				buf_len += try readForHeader(stream, buf[buf_len..]);
+				buf_len += try readForHeader(stream, buf[buf_len..], config);
 			}
 			// Read never returns 0, so if we're here, buf.len >= 1
 			if (buf[1] != ' ') {
@@ -474,10 +495,10 @@ fn parseURL(stream: Stream, buf: []u8, len: usize) !ParseResult(Url) {
 	}
 }
 
-fn parseProtocol(stream: Stream, buf: []u8, len: usize) !ParseResult(http.Protocol) {
+fn parseProtocol(stream: Stream, buf: []u8, len: usize, config: *ReadConfig) !ParseResult(http.Protocol) {
 	var buf_len = len;
 	while (buf_len < 10) {
-		buf_len += try readForHeader(stream, buf[buf_len..]);
+		buf_len += try readForHeader(stream, buf[buf_len..], config);
 	}
 	if (@as(u32, @bitCast(buf[0..4].*)) != HTTP) {
 		return error.UnknownProtocol;
@@ -496,13 +517,13 @@ fn parseProtocol(stream: Stream, buf: []u8, len: usize) !ParseResult(http.Protoc
 	return .{.read = buf_len - len, .used = 10, .value = proto};
 }
 
-fn parseOneHeader(stream: Stream, buf: []u8, len: usize) !ParseResult(?struct{name: []u8, value: []const u8}) {
+fn parseOneHeader(stream: Stream, buf: []u8, len: usize, config: *ReadConfig) !ParseResult(?struct{name: []u8, value: []const u8}) {
 	var buf_len = len;
 	while (true) {
 		if (findCarriageReturnIndex(buf[0..buf_len])) |header_end| {
 
 			const next = header_end + 1;
-			if (next == buf_len) buf_len += try readForHeader(stream, buf[buf_len..]);
+			if (next == buf_len) buf_len += try readForHeader(stream, buf[buf_len..], config);
 
 			if (buf[next] != '\n') {
 				return error.InvalidHeaderLine;
@@ -533,7 +554,7 @@ fn parseOneHeader(stream: Stream, buf: []u8, len: usize) !ParseResult(?struct{na
 			}
 			return error.InvalidHeaderLine;
 		}
-		buf_len += try readForHeader(stream, buf[buf_len..]);
+		buf_len += try readForHeader(stream, buf[buf_len..], config);
 	}
 }
 
@@ -547,7 +568,13 @@ inline fn trimLeadingSpace(in: []const u8) []const u8 {
 	return "";
 }
 
-fn readForHeader(stream: Stream, buffer: []u8) !usize {
+fn readForHeader(stream: Stream, buffer: []u8, config: *ReadConfig) !usize {
+	if (config.timeout) |timeout| {
+		if (try os.poll(&config.pfd, timeout) == 0) {
+			return error.Timeout;
+		}
+	}
+
 	const n = try stream.read(buffer);
 	if (n == 0) {
 		if (buffer.len == 0) {
@@ -557,6 +584,11 @@ fn readForHeader(stream: Stream, buffer: []u8) !usize {
 	}
 	return n;
 }
+
+const ReadConfig = struct {
+	timeout: ?i32,
+	pfd: [1]os.pollfd,
+};
 
 fn atoi(str: []const u8) ?usize {
 	if (str.len == 0) {

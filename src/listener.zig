@@ -52,7 +52,13 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 	}
 }
 
-const Queue = std.DoublyLinkedList(Conn);
+
+const KeepaliveConn = struct {
+	conn: Conn,
+	last_request: i64,
+};
+
+const Queue = std.DoublyLinkedList(KeepaliveConn);
 
 fn Pool(comptime S: type) type {
 	return struct {
@@ -79,7 +85,9 @@ fn Pool(comptime S: type) type {
 		const Self = @This();
 
 		fn init(httpz_allocator: Allocator, app_allocator: Allocator, server: S, config: *const Config) !*Self {
-			const worker_count = config.pool.count orelse (Thread.getCpuCount() catch 2);
+			// don't want to use Thread.getCpuCount() because it'll detect hyperthreads
+			// which perform a lot worse.
+			const worker_count = config.pool.count orelse 2;
 
 			var streams = try httpz_allocator.alloc(Stream, worker_count);
 			errdefer httpz_allocator.free(streams);
@@ -119,7 +127,7 @@ fn Pool(comptime S: type) type {
 				streams[i] = pool_control;
 
 				workers[i] = try Worker(S).init(httpz_allocator, app_allocator, server, config, pool);
-				workers[i].newConn(worker_control);
+				workers[i].newConn(.{.conn = worker_control, .last_request = 0});
 				errdefer workers[i].deinit();
 
 				threads[i] = try Thread.spawn(.{}, Worker(S).run, .{&workers[i]});
@@ -151,14 +159,21 @@ fn Pool(comptime S: type) type {
 			var node = try self.httpz_allocator.create(Queue.Node);
 			errdefer self.httpz_allocator.destroy(node);
 
-			node.data = conn;
-			self.mutex.lock();
-			self.queue.append(node);
-			self.mutex.unlock();
+			// do this outside the lock
+			// (we need to hold a long lock incase our write fails and we need to
+			// pop the node back off the queue)
+			const worker_index = self.next_worker;
+			const next_worker = (worker_index + 1) % self.streams.len;
+			const stream = self.streams[worker_index];
 
-			const next_worker = self.next_worker;
-			try self.streams[next_worker].writeAll(notify);
-			self.next_worker = (next_worker + 1) % self.streams.len;
+			node.data = .{.conn = conn, .last_request = std.time.microTimestamp()};
+			self.mutex.lock();
+			defer self.mutex.unlock();
+			self.queue.append(node);
+			errdefer _ = self.queue.pop();
+
+			try stream.writeAll(notify);
+			self.next_worker =next_worker ;
 		}
 	};
 }
@@ -185,11 +200,13 @@ pub fn Worker(comptime S: type) type {
 		len: usize,
 
 		// an array of Conn objects that we're currently monitoring
-		conns: []Conn,
+		conns: []KeepaliveConn,
 
 		// an array of pollfd objects, corresponding to `connections`.
 		// separate array so we can pass this as-is to os.poll
 		poll_fds: []os.pollfd,
+
+		keepalive_timeout: u32,
 
 		const Self = @This();
 
@@ -206,7 +223,7 @@ pub fn Worker(comptime S: type) type {
 
 			const max_conns = config.pool.worker_max_conn orelse 512;
 
-			var conns = try httpz_allocator.alloc(Conn, max_conns);
+			var conns = try httpz_allocator.alloc(KeepaliveConn, max_conns);
 			errdefer httpz_allocator.free(conns);
 
 			var poll_fds = try httpz_allocator.alloc(os.pollfd, max_conns);
@@ -216,20 +233,21 @@ pub fn Worker(comptime S: type) type {
 				.len = 0,
 				.pool = pool,
 				.arena = arena,
+				.conns = conns,
 				.server = server,
 				.poll_fds = poll_fds,
 				.req_state = req_state,
 				.res_state = res_state,
 				.httpz_allocator = httpz_allocator,
-				.conns = conns,
+				.keepalive_timeout = config.keepalive.timeout orelse 4294967295,
 			};
 		}
 
 		pub fn deinit(self: *Self) void {
 			const httpz_allocator = self.httpz_allocator;
 
-			for (self.conns[0..self.len]) |conn| {
-				conn.stream.close();
+			for (self.conns[0..self.len]) |kconn| {
+				kconn.conn.stream.close();
 			}
 			httpz_allocator.free(self.conns);
 			httpz_allocator.free(self.poll_fds);
@@ -251,17 +269,18 @@ pub fn Worker(comptime S: type) type {
 			const conns = self.conns;
 			const max_len = conns.len;
 			const poll_fds = self.poll_fds;
+			const keepalive_timeout = self.keepalive_timeout;
 
 			while (true) {
 				if (has_pending and len < max_len) {
 					self.len = len;
 					switch (self.acceptConn()) {
+						.many => len += 1,  // keep has_pending = true
 						.none => has_pending = false,
 						.one => {
 							len += 1;
 							has_pending = false;
 						},
-						.many => len += 1,  // keep has_pending = true
 					}
 				}
 
@@ -271,14 +290,10 @@ pub fn Worker(comptime S: type) type {
 					continue;
 				};
 
-				pool_event: {
-					// our special socketpair is always at index 0, if we have data here, it
-					// means the pool is trying to tell us something
-					const pool_event = poll_fds[0].revents;
-					if (pool_event == 0) {
-						break :pool_event;
-					}
-
+				// our special socketpair is always at index 0, if we have data here, it
+				// means the pool is trying to tell us something
+				const pool_event = poll_fds[0].revents;
+				if (pool_event != 0) {
 					if (pool_event & os.POLL.HUP == os.POLL.HUP) {
 						// other end closed, indicating that we're shutting down
 						self.len = len;
@@ -286,7 +301,7 @@ pub fn Worker(comptime S: type) type {
 					}
 
 					if (pool_event & os.POLL.IN == os.POLL.IN) {
-						const n = conns[0].stream.read(&pool_buf) catch return;
+						const n = conns[0].conn.stream.read(&pool_buf) catch return;
 						if (n == 0) return;
 						has_pending = true;
 					} else {
@@ -294,21 +309,23 @@ pub fn Worker(comptime S: type) type {
 					}
 				}
 
+				const now = std.time.microTimestamp();
+
 				// skip 1, since we just handled it above
 				var i: usize = 1;
 				while (i < len) {
-					if (poll_fds[i].revents == 0) {
-						i += 1;
-						continue;
+					const kconn = &conns[i];
+					var will_close = (now - kconn.last_request) > keepalive_timeout;
+					if (poll_fds[i].revents != 0) {
+						if (self.handleRequest(kconn.conn, will_close)) {
+							kconn.last_request = now;
+						} else {
+							will_close = true;
+						}
 					}
 
-					const conn = conns[i];
-					if (self.handleRequest(conn) == true) {
-						i += 1;
-					} else {
-						// this connection is closed (or in some invalid state)
-						conn.stream.close();
-
+					if (will_close) {
+						kconn.conn.stream.close();
 						// we "remove" this item from our list by swaping the last item in its place
 						len -= 1;
 						if (i != len) {
@@ -316,6 +333,8 @@ pub fn Worker(comptime S: type) type {
 							poll_fds[i] = poll_fds[len];
 						}
 						// don't increment i, since it now contains the previous last
+					} else {
+						i += 1;
 					}
 				}
 			}
@@ -325,29 +344,29 @@ pub fn Worker(comptime S: type) type {
 			const pool = self.pool;
 			pool.mutex.lock();
 			if (pool.queue.popFirst()) |node| {
-				const state = if (pool.queue.len == 0) AcceptResult.one else AcceptResult.many;
+				const len = pool.queue.len;
 				pool.mutex.unlock();
-				const conn = node.data;
+				const kconn = node.data;
 				self.httpz_allocator.destroy(node);
-				self.newConn(conn);
-				return state;
+				self.newConn(kconn);
+				return if (len == 0) .one else .many;
 			}
 			pool.mutex.unlock();
 			return .none;
 		}
 
-		fn newConn(self: *Self, conn: Conn) void {
+		fn newConn(self: *Self, kconn: KeepaliveConn) void {
 			const len = self.len;
-			self.conns[len] = conn;
+			self.conns[len] = kconn;
 			self.poll_fds[len] = os.pollfd{
 				.revents = 0,
 				.events = os.POLL.IN,
-				.fd = conn.stream.handle,
+				.fd = kconn.conn.stream.handle,
 			};
 			self.len = len + 1;
 		}
 
-		pub fn handleRequest(self: *Self, conn: Conn) bool {
+		pub fn handleRequest(self: *Self, conn: Conn, will_close: bool) bool {
 			const stream = conn.stream;
 
 			const arena = self.arena;
@@ -380,6 +399,7 @@ pub fn Worker(comptime S: type) type {
 				return false;
 			};
 
+			req.keepalive = !will_close;
 			if (!server.handle(&req, &res)) {
 				return false;
 			}

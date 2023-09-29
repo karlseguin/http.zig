@@ -22,6 +22,7 @@ pub fn init(config: httpz.Config) Testing {
 		.pos = 0,
 		.arena = aa,
 		.stream = stream,
+		.keepalive = true,
 		.qs = req_state.qs,
 		.header_overread = 0,
 		.static = req_state.buf,
