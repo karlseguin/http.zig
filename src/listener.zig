@@ -219,7 +219,7 @@ pub fn Worker(comptime S: type) type {
 			errdefer req_state.deinit(httpz_allocator);
 
 			var res_state = try Response.State.init(httpz_allocator, config.response);
-			errdefer req_state.deinit(httpz_allocator);
+			errdefer res_state.deinit(httpz_allocator);
 
 			const max_conns = config.pool.worker_max_conn orelse 512;
 
