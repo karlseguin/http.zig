@@ -6,6 +6,15 @@ http.zig powers the <https://www.aolium.com> [api server](https://github.com/kar
 # Installation
 This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`.
 
+## Async, Threads, Scale
+Until async support is re-added to Zig, this library is using a stopgap approach for concurrency. 
+
+In the master branch, a naive thread-per-connection is used. This approach is straightforward and simple to reason about. Despite using a pool of objects, this approach can still cause unpredictable memory spikes due to the overhead of the threads themselves. Plus, performance can be hurt due to thread thrashing.
+
+As a simple alternative, the `thread_pool = #` configuration value can be set which will use an `std.Thread.Pool`. This will make memory usage predictable and can result in better performance.
+
+If your system has access to poll(2) (e.g. Linux, BSD, MacOS), you can also try the [thread_pool](https://github.com/karlseguin/http.zig/tree/thread_pool) branch. This uses a custom thread pool, and poll(2) for better concurrency. It also supports additional timeout configurations (though, ideally, you leave them disabled and set timeouts in your reverse proxy).
+
 # Usage
 
 ## Simple Use Case
