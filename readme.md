@@ -6,6 +6,12 @@ http.zig powers the <https://www.aolium.com> [api server](https://github.com/kar
 # Installation
 This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`.
 
+# Important Notice
+Please consider running http.zig behind a robust reverse proxy (e.g. NGINX). First, it doesn't support TLS termination. Second, this library was written at a time where async support was being temporarily dropped from Zig. I want http.zig to be robust, but I don't want to write a cross-platform I/O interface only to have to scrap it when async is re-added to Zig. As such, the current implementation can be considered a stopgap until async is properly supported. Of particularly note is the ability for a misbehaving client to stall legitimate requests from being processed. (essentially by feeding a single byte per timeout interval).
+
+## Thread Pool Branch
+This branch uses a custom thread-pool rather than the more naive thread-per-connection model of master. This branch only works on systems that expose poll(2), such as BDS, MacOS and Linux. This branch is more tolerant of misbehaving clients, has more stable memory usage and won't kill itself trying to serve a high number of concurrent connections.
+
 # Usage
 
 ## Simple Use Case
@@ -523,22 +529,19 @@ The third option given to `listen` is an `httpz.Config` instance. Possible value
 
 ```zig
 try httpz.listen(allocator, &router, .{
-    // the port to listen on
+    // Port to listen on
     .port = 5882, 
 
-    // the interface address to bind to
+    // Interface address to bind to
     .address = "127.0.0.1",
 
     // configure the pool of request/response object pairs
     .pool = .{
-        // number of items to keep in the pool at all times.
-        .min = 20,
+        // Number of worker threads
+        .count = 2,
 
-        // maximum number of items to create
-        .max = 500,
-
-        // time, in millisecond, to wait for an item to be available
-        .timeout = 5000,
+        // Maximum number of concurrent connection each worker can handle
+        .worker_max_conn = 500,
     },
 
     // defaults to null
@@ -551,7 +554,7 @@ try httpz.listen(allocator, &router, .{
 
     // various options for tweaking request processing
     .request = .{
-        // The maximum body size that we'll process. We'll can allocate up 
+        // Maximum body size that we'll process. We'll can allocate up 
         // to this much memory per request for the body. Internally, we might
         // keep this memory around for a number of requests as an optimization.
         // So the maximum amount of memory that our request pool will use is in
@@ -562,22 +565,29 @@ try httpz.listen(allocator, &router, .{
         // This memory is allocated upfront. The request header _must_ fit into
         // this space, else the request will be rejected. If possible, we'll 
         // try to load the body in here too. The minimum amount of memory that our request
-        // pool will use is in the neighborhood of pool_size * buffer_size. It will never
+        // pool will use is in the neighborhood of pool.count * buffer_size. It will never
         // be smaller than this (there are other static allocations, but this is the biggest chunk.)
         .buffer_size: usize = 65_536,
 
-        // The maximum number of headers to accept. 
+        // Maximum number of headers to accept. 
         // Additional headers will be silently ignored.
         .max_header_count: usize = 32,
 
-        // the maximum number of URL parameters to accept.
+        // Maximum number of URL parameters to accept.
         // Additional parameters will be silently ignored.
         .max_param_count: usize = 10,
 
-        // the maximum number of query string parameters to accept.
+        // Maximum number of query string parameters to accept.
         // Additional parameters will be silently ignored.
         .max_query_count: usize = 32,
-    }
+
+        // Time in millisecond to wait for reading the header
+        .read_header_timeout = null,
+
+        // Time in millisecond to wait for reading the body
+        .read_header_timeout = null,
+    },
+
     // various options for tweaking response object
     .response = .{
         // Used to buffer the response header.
@@ -595,15 +605,26 @@ try httpz.listen(allocator, &router, .{
         // The maximum number of headers to accept. 
         // Additional headers will be silently ignored.
         .max_header_count: usize = 16,
+    },
+
+    .keepalive = .{
+        // Time in milliseconds that keepalive connections will be kept alive
+        // Note that this only represents the minimum time. On a non-busy system
+        // the connection can be kept alive much longer.
+        .timeout = null
     }
 });
 ```
 
-`pool.min * (request.buffer_size + response.body_buffer_size + response.header_buffer_size)` is the minimum amount of memory this library will use (plus various overhead, but that should be relatively small in comparison).
+`pool.count * (request.buffer_size + response.body_buffer_size + response.header_buffer_size)` is the minimum amount of memory this library will use (plus various overhead, but that should be relatively small in comparison).
 
-`pool.max * (request.max_body_size + response.body_buffer_size + response.header_buffer_size)` is the maximum amount of memory this library will use (plus various overhead, but that should be relatively small in comparison).
+`pool.count * (request.max_body_size + response.body_buffer_size + response.header_buffer_size)` is the maximum amount of memory this library will use (plus various overhead, but that should be relatively small in comparison).
 
 Systems with memory to spare will benefit by using buffers large enough for their typical request and response bodies. Pool configuration is more complicated, especially given the (current) threaded-nature of the system and keepalive. Using a relatively small (e.g. # of cores) `pool.min` and `pool.max` would yield the highest performance (due to having less contention), but because of keepalive, that can easily result in running out of available pooled items (which results in a 503 error). 
+
+
+### Timeouts
+The system supports various timeouts: `keepalive.timeout`, `request.read_header_timeout` and `request.read_body_timeout`.
 
 # Testing
 The `httpz.testing` namespace exists to help application developers setup `*httpz.Requests` and assert `*httpz.Responses`.
