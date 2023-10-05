@@ -624,7 +624,9 @@ Systems with memory to spare will benefit by using buffers large enough for thei
 
 
 ### Timeouts
-The system supports various timeouts: `keepalive.timeout`, `request.read_header_timeout` and `request.read_body_timeout`.
+The system supports various timeouts: `keepalive.timeout`, `request.read_header_timeout` and `request.read_body_timeout`. It is recommended that you leave these null (disabled) and use the appropriate timeout in your reverse proxy (e.g. NGINX). 
+
+Only if http.zig is exposed without a reverse proxy (not recommended), should these timeouts be set.
 
 # Testing
 The `httpz.testing` namespace exists to help application developers setup `*httpz.Requests` and assert `*httpz.Responses`.
