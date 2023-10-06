@@ -436,22 +436,47 @@ pub const Response = struct {
 	};
 };
 
-fn writeInt(into: []u8, n: u32) usize {
-	if (n == 0) {
-		into[0] = '0';
-		return 1;
+fn writeInt(into: []u8, value: u32) usize {
+	var buf = into[0..numberOfDigits(value)];
+
+	var a = value;
+	var index = buf.len;
+	while (a >= 100) : (a = @divTrunc(a, 100)) {
+		index -= 2;
+		buf[index..][0..2].* = digits2(@as(usize, @intCast(a % 100)));
 	}
 
-	var num = n;
-	var i: usize = 0;
-	while (num != 0) : (i += 1) {
-		const rem = num % 10;
-		into[i] = @as(u8, @intCast(rem)) + '0';
-		num = num / 10;
+	if (a < 10) {
+		index -= 1;
+		buf[index] = '0' + @as(u8, @intCast(a));
+	} else {
+		index -= 2;
+		buf[index..][0..2].* = digits2(@as(usize, @intCast(a)));
 	}
-	const a = into[0..i];
-	std.mem.reverse(u8, a);
-	return i;
+	return buf.len;
+}
+
+fn digits2(value: usize) [2]u8 {
+	return ("0001020304050607080910111213141516171819" ++
+		"2021222324252627282930313233343536373839" ++
+		"4041424344454647484950515253545556575859" ++
+		"6061626364656667686970717273747576777879" ++
+		"8081828384858687888990919293949596979899")[value * 2 ..][0..2].*;
+}
+
+fn numberOfDigits(value: u32) usize {
+	var v = value;
+	var count: usize = 1;
+	while (true) {
+		if (v < 10) return count;
+		if (v < 100) return count + 1;
+		if (v < 1000) return count + 2;
+		if (v < 10000) return count + 3;
+		if (v < 100000) return count + 4;
+		if (v < 1000000) return count + 5;
+		v = v / 1000000;
+		count += 6;
+	}
 }
 
 const t = @import("t.zig");

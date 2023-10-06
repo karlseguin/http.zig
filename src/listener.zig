@@ -26,6 +26,11 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 	});
 	defer socket.deinit();
 
+	var thread_pool: std.Thread.Pool = undefined;
+	if (config.thread_pool > 0) {
+		try std.Thread.Pool.init(&thread_pool, .{ .allocator = app_allocator, .n_jobs = config.thread_pool });
+	}
+
 	const listen_port = config.port.?;
 	const listen_address = config.address.?;
 	try socket.listen(net.Address.parseIp(listen_address, listen_port) catch unreachable);
@@ -40,12 +45,16 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 	while (true) {
 		if (socket.accept()) |conn| {
 			const c: Conn = if (comptime builtin.is_test) undefined else conn;
-			const args = .{S, server, c, &reqResPool};
+			const args = .{ S, server, c, &reqResPool };
 			if (comptime std.io.is_async) {
 				try Loop.instance.?.runDetached(httpz_allocator, handleConnection, args);
 			} else {
-				const thrd = try std.Thread.spawn(.{}, handleConnection, args);
-				thrd.detach();
+				if (config.thread_pool > 0) {
+					try thread_pool.spawn(handleConnection, args);
+				} else {
+					const thrd = try std.Thread.spawn(.{}, handleConnection, args);
+					thrd.detach();
+				}
 			}
 		} else |err| {
 			std.log.err("http.zig: failed to accept connection {}", .{err});
@@ -97,7 +106,9 @@ pub fn handleConnection(comptime S: type, server: S, conn: Conn, reqResPool: *Re
 			requestParseError(err, res);
 			return;
 		}
-		req.drain() catch { return; };
+		req.drain() catch {
+			return;
+		};
 	}
 }
 
