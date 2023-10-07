@@ -10,7 +10,7 @@ This library supports native Zig module (introduced in 0.11). Add a "httpz" depe
 Please consider running http.zig behind a robust reverse proxy (e.g. NGINX). First, it doesn't support TLS termination. Second, this library was written at a time where async support was being temporarily dropped from Zig. I want http.zig to be robust, but I don't want to write a cross-platform I/O interface only to have to scrap it when async is re-added to Zig. As such, the current implementation can be considered a stopgap until async is properly supported. Of particularly note is the ability for a misbehaving client to stall legitimate requests from being processed. (essentially by feeding a single byte per timeout interval).
 
 ## Thread Pool Branch
-This branch uses a custom thread-pool rather than the more naive thread-per-connection model of master. This branch only works on systems that expose poll(2), such as BDS, MacOS and Linux. This branch is more tolerant of misbehaving clients, has more stable memory usage and won't kill itself trying to serve a high number of concurrent connections.
+This branch uses a custom thread-pool rather than the more naive thread-per-connection model of master. This branch only works on systems that expose poll(2), such as BSD, MacOS and Linux. This branch is more tolerant of misbehaving clients, has more stable memory usage and won't kill itself trying to serve a high number of concurrent connections.
 
 # Usage
 
