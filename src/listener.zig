@@ -1,18 +1,18 @@
 const std = @import("std");
 const t = @import("t.zig");
-const builtin = @import("builtin");
 const httpz = @import("httpz.zig");
 
+const response = @import("response.zig");
 const Config = @import("config.zig").Config;
 const Request = @import("request.zig").Request;
-const Response = @import("response.zig").Response;
+const Response = httpz.Response;
 
 const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-const Stream = if (builtin.is_test) t.Stream else std.net.Stream;
-const Conn = if (builtin.is_test) t.Connection else std.net.StreamServer.Connection;
+const Stream = std.net.Stream;
+const Conn = std.net.StreamServer.Connection;
 
 const os = std.os;
 const net = std.net;
@@ -41,8 +41,7 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 
 	while (true) {
 		if (socket.accept()) |conn| {
-			const c: Conn = if (comptime builtin.is_test) undefined else conn;
-			pool.handle(c) catch |err| {
+			pool.handle(conn) catch |err| {
 				conn.stream.close();
 				log.err("internal failure to handle connection {}", .{err});
 			};

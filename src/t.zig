@@ -28,116 +28,95 @@ pub fn getRandom() std.rand.DefaultPrng {
 
 const dummy_address = std.net.Address.initIp4([_]u8{127, 0, 0, 200}, 0);
 
-// mock for std.net.StreamServer.Connection
-pub const Connection = struct {
-	stream: Stream,
-	address: std.net.Address = dummy_address,
-};
+// // mock for std.net.StreamServer.Connection
+// pub const Connection = struct {
+// 	stream: Stream,
+// 	address: std.net.Address = dummy_address,
+// };
 
 pub const Stream = struct {
-	state: *State = undefined,
-	handle: c_int = 0,
+	// the stream that the server gets
+	stream: std.net.Stream,
 
-	const State = struct {
-		closed: bool,
-		read_index: usize,
-		to_read: ArrayList(u8),
-		random: ?std.rand.DefaultPrng,
-		received: ArrayList(u8),
-	};
+	// the client (e.g. browser stream)
+	client: std.net.Stream,
+
+	closed: bool = false,
+
+	conn: std.net.StreamServer.Connection,
 
 	pub fn init() Stream {
-		return initWithAllocator(allocator);
-	}
+		var pair: [2]c_int = undefined;
+		const rc = std.c.socketpair(std.os.AF.LOCAL, std.os.SOCK.STREAM, 0, &pair);
+		if (rc != 0) {
+			@panic("socketpair fail");
+		}
 
-	pub fn initWithAllocator(a: std.mem.Allocator) Stream {
-		const state = a.create(State) catch unreachable;
-		state.* = .{
-			.closed = false,
-			.read_index = 0,
-			.random = getRandom(),
-			.to_read = ArrayList(u8).init(a),
-			.received = ArrayList(u8).init(a),
-		};
+		const timeout = std.mem.toBytes(std.os.timeval{
+			.tv_sec = 0,
+			.tv_usec = 20_000,
+		});
+		std.os.setsockopt(pair[0], std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &timeout) catch unreachable;
+		std.os.setsockopt(pair[0], std.os.SOL.SOCKET, std.os.SO.SNDTIMEO, &timeout) catch unreachable;
+		std.os.setsockopt(pair[1], std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &timeout) catch unreachable;
+		std.os.setsockopt(pair[1], std.os.SOL.SOCKET, std.os.SO.SNDTIMEO, &timeout) catch unreachable;
 
+		std.os.setsockopt(pair[1], std.os.SOL.SOCKET, std.os.SO.SNDBUF, &mem.toBytes(@as(c_int, 10_000))) catch unreachable;
+
+		const server = std.net.Stream{.handle = pair[0]};
 		return .{
-			.handle = 0,
-			.state = state,
+			.stream = server,
+			.conn = .{.stream = server, .address = dummy_address},
+			.client = std.net.Stream{.handle = pair[1]},
 		};
 	}
 
-	pub fn deinit(self: Stream) void {
-		self.state.to_read.deinit();
-		self.state.received.deinit();
-		allocator.destroy(self.state);
-	}
-
-	// mock for std.net.StreamServer.Connection
-	pub fn wrap(self: Stream) Connection {
-		return .{.stream = self};
-	}
-
-	pub fn reset(self: Stream) void {
-		self.state.to_read.clearRetainingCapacity();
-		self.state.received.clearRetainingCapacity();
-	}
-
-	pub fn add(self: Stream, value: []const u8) Stream {
-		self.state.to_read.appendSlice(value) catch unreachable;
-		return self;
-	}
-
-	pub fn read(self: Stream, buf: []u8) !usize {
-		var state = self.state;
-		std.debug.assert(!state.closed);
-
-		const read_index = state.read_index;
-		const items = state.to_read.items;
-
-		if (read_index == items.len) {
-			return 0;
+	pub fn deinit(self: *Stream) void {
+		if (self.closed == false) {
+			self.closed = true;
+			self.stream.close();
 		}
-		if (buf.len == 0) {
-			return 0;
-		}
-
-		// let's fragment this message
-		const left_to_read = items.len - read_index;
-		const max_can_read = if (buf.len < left_to_read) buf.len else left_to_read;
-
-		var to_read = max_can_read;
-		if (state.random) |*r| {
-			const random = r.random();
-			to_read = random.uintAtMost(usize, max_can_read - 1) + 1;
-		}
-
-		var data = items[read_index..(read_index+to_read)];
-		if (data.len > buf.len) {
-			// we have more data than we have space in buf (our target)
-			// we'll give it when it can take
-			data = data[0..buf.len];
-		}
-		state.read_index = read_index + data.len;
-
-		// std.debug.print("TEST: {d} {d} {d}\n", .{data.len, read_index, max_can_read});
-		for (data, 0..) |b, i| {
-			buf[i] = b;
-		}
-
-		return data.len;
+		self.client.close();
 	}
 
-	// store messages that are written to the stream
-	pub fn writeAll(self: Stream, data: []const u8) !void {
-		self.state.received.appendSlice(data) catch unreachable;
+	// force the server side socket to be closed, which helps our reading-test
+	// know that there's no more data.
+	pub fn close(self: *Stream) void {
+		if (self.closed == false) {
+			self.closed = true;
+			self.stream.close();
+		}
 	}
 
-	pub fn close(self: Stream) void {
-		self.state.closed = true;
+	pub fn write(self: Stream, data: []const u8) void {
+		self.client.writeAll(data) catch unreachable;
 	}
 
-	pub fn received(self: Stream) []u8 {
-		return self.state.received.items;
+	pub fn read(self: Stream, a: std.mem.Allocator) !ArrayList(u8) {
+		var buf: [1024]u8 = undefined;
+		var arr = std.ArrayList(u8).init(a);
+
+		while (true) {
+			const n = self.client.read(&buf) catch |err| switch (err) {
+				error.WouldBlock => return arr,
+				else => return err,
+			};
+			if (n == 0) return arr;
+			try arr.appendSlice(buf[0..n]);
+		}
+		unreachable;
+	}
+
+	pub fn expect(self: Stream, expected: []const u8) !void {
+		var pos: usize = 0;
+		var buf = try allocator.alloc(u8, expected.len);
+		defer allocator.free(buf);
+		while (pos < buf.len) {
+			const n = try self.client.read(buf[pos..]);
+			if (n == 0) break;
+			pos += n;
+		}
+		try expectString(expected, buf);
 	}
 };
 

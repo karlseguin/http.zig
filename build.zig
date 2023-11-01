@@ -8,7 +8,6 @@ pub fn build(b: *std.Build) !void {
 		.source_file = .{ .path = "src/httpz.zig" },
 	});
 
-	// setup executable
 	const exe = b.addExecutable(.{
 		.name = "http.zig demo",
 		.root_source_file = .{ .path = "example/main.zig" },
@@ -23,15 +22,15 @@ pub fn build(b: *std.Build) !void {
 	if (b.args) |args| {
 		run_cmd.addArgs(args);
 	}
-
-	// setup tests
 	const run_step = b.step("run", "Run the app");
 	run_step.dependOn(&run_cmd.step);
+
 
 	const lib_test = b.addTest(.{
 		.root_source_file = .{ .path = "src/httpz.zig" },
 		.target = target,
 		.optimize = optimize,
+		.test_runner = "test_runner.zig",
 	});
 	const run_test = b.addRunArtifact(lib_test);
 	run_test.has_side_effects = true;

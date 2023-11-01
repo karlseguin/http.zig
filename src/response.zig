@@ -5,8 +5,8 @@ const httpz = @import("httpz.zig");
 const KeyValue = @import("key_value.zig").KeyValue;
 
 const mem = std.mem;
-const Allocator = std.mem.Allocator;
-const Stream = if (builtin.is_test) t.Stream else std.net.Stream;
+const Stream = std.net.Stream;
+const Allocator = mem.Allocator;
 
 pub const Config = struct {
 	max_header_count: ?usize = null,
@@ -529,7 +529,7 @@ test "response: write" {
 		defer testCleanup(res);
 		res.status = 401;
 		try res.write();
-		try t.expectString("HTTP/1.1 401\r\nContent-Length: 0\r\n\r\n", s.received());
+		try s.expect("HTTP/1.1 401\r\nContent-Length: 0\r\n\r\n");
 	}
 
 	{
@@ -540,7 +540,7 @@ test "response: write" {
 		res.status = 200;
 		res.body = "hello";
 		try res.write();
-		try t.expectString("HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello", s.received());
+		try s.expect("HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello");
 	}
 }
 
@@ -553,7 +553,7 @@ test "response: content_type" {
 
 	res.content_type = httpz.ContentType.WEBP;
 	try res.write();
-	try t.expectString("HTTP/1.1 200\r\nContent-Type: image/webp\r\nContent-Length: 0\r\n\r\n", s.received());
+	try s.expect("HTTP/1.1 200\r\nContent-Type: image/webp\r\nContent-Length: 0\r\n\r\n");
 }
 
 test "response: write header_buffer_size" {
@@ -568,7 +568,7 @@ test "response: write header_buffer_size" {
 
 			res.status = 792;
 			try res.write();
-			try t.expectString("HTTP/1.1 792\r\nContent-Length: 0\r\n\r\n", s.received());
+			try s.expect("HTTP/1.1 792\r\nContent-Length: 0\r\n\r\n");
 		}
 	}
 
@@ -586,7 +586,7 @@ test "response: write header_buffer_size" {
 			res.header("b-hdr", "b-val");
 			res.header("c-header11", "cv");
 			try res.write();
-			try t.expectString("HTTP/1.1 401\r\na-header: a-value\r\nb-hdr: b-val\r\nc-header11: cv\r\nContent-Length: 0\r\n\r\n", s.received());
+			try s.expect("HTTP/1.1 401\r\na-header: a-value\r\nb-hdr: b-val\r\nc-header11: cv\r\nContent-Length: 0\r\n\r\n");
 		}
 	}
 
@@ -604,7 +604,7 @@ test "response: write header_buffer_size" {
 			res.header("c-header11", "cv");
 			res.body = "hello world!";
 			try res.write();
-			try t.expectString("HTTP/1.1 8\r\na-header: a-value\r\nb-hdr: b-val\r\nc-header11: cv\r\nContent-Length: 12\r\n\r\nhello world!", s.received());
+			try s.expect("HTTP/1.1 8\r\na-header: a-value\r\nb-hdr: b-val\r\nc-header11: cv\r\nContent-Length: 12\r\n\r\nhello world!");
 		}
 	}
 }
@@ -629,7 +629,7 @@ test "response: json fuzz" {
 			try res.write();
 
 			const expected = try std.fmt.allocPrint(t.arena, "HTTP/1.1 200\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n\"{s}\"", .{expected_encoded_length, body});
-			try t.expectString(expected, s.received());
+			try s.expect(expected);
 		}
 	}
 }
@@ -655,7 +655,7 @@ test "response: writer fuzz" {
 			try res.write();
 
 			const expected = try std.fmt.allocPrint(t.arena, "HTTP/1.1 204\r\nContent-Length: {d}\r\n\r\n\"{s}\"", .{expected_encoded_length, body});
-			try t.expectString(expected, s.received());
+			try s.expect(expected);
 		}
 	}
 }
@@ -681,13 +681,12 @@ test "response: direct writer" {
 	try writer.writeByte(']');
 
 	try res.write();
-	try t.expectString("HTTP/1.1 200\r\nContent-Length: 9\r\n\r\n[123,456]", s.received());
+	try s.expect("HTTP/1.1 200\r\nContent-Length: 9\r\n\r\n[123,456]");
 }
 
 test "response: chunked" {
 	var s = t.Stream.init();
 	defer s.deinit();
-
 
 	{
 		// no headers, single chunk
@@ -697,7 +696,7 @@ test "response: chunked" {
 		res.status = 200;
 		try res.chunk("Hello");
 		try res.write();
-		try t.expectString("HTTP/1.1 200\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n", s.received());
+		try s.expect("HTTP/1.1 200\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n");
 	}
 
 	{
@@ -711,7 +710,7 @@ test "response: chunked" {
 		try res.chunk("Hello");
 		try res.chunk("another slightly bigger chunk");
 		try res.write();
-		try t.expectString("HTTP/1.1 1\r\nContent-Type: application/xml\r\nTest: Chunked\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n1D\r\nanother slightly bigger chunk\r\n0\r\n\r\n", s.received());
+		try s.expect("HTTP/1.1 1\r\nContent-Type: application/xml\r\nTest: Chunked\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n1D\r\nanother slightly bigger chunk\r\n0\r\n\r\n");
 	}
 }
 
@@ -724,21 +723,19 @@ test "response: written" {
 
 	res.body = "abc";
 	try res.write();
-	try t.expectString("HTTP/1.1 200\r\nContent-Length: 3\r\n\r\nabc", s.received());
+	try s.expect("HTTP/1.1 200\r\nContent-Length: 3\r\n\r\nabc");
 
 	// write again, without a res.reset, nothing gets written
-	s.reset();
 	res.body = "yo!";
 	try res.write();
-	try t.expectString("", s.received());
+	try s.expect("");
 }
 
-fn testResponse(stream: t.Stream, config: Config) Response {
+fn testResponse(ts: t.Stream, config: Config) Response {
 	const res_state = Response.State.init(t.arena, config) catch unreachable;
-	return Response.init(t.arena, &res_state, stream);
+	return Response.init(t.arena, &res_state, ts.stream);
 }
 
-fn testCleanup(r: Response) void {
+fn testCleanup(_: Response) void {
 	_ = t.aa.reset(.free_all);
-	r.stream.reset();
 }

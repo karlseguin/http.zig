@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 const os = std.os;
 const http = @import("httpz.zig");
@@ -9,9 +8,9 @@ const Params = @import("params.zig").Params;
 const KeyValue = @import("key_value.zig").KeyValue;
 
 const Reader = std.io.Reader;
+const Stream = std.net.Stream;
 const Address = std.net.Address;
 const Allocator = std.mem.Allocator;
-const Stream = if (builtin.is_test) t.Stream else std.net.Stream;
 
 // this approach to matching method name comes from zhp
 const GET_ = @as(u32, @bitCast([4]u8{'G', 'E', 'T', ' '}));
@@ -292,7 +291,7 @@ pub const Request = struct {
 			while (read < length) {
 				const n = try stream.read(buffer[read..]);
 				if (n == 0) {
-					return Error.ConnectionClosed;
+					return error.ConnectionClosed;
 				}
 				read += n;
 			}
@@ -697,18 +696,6 @@ fn findCarriageReturnIndex(buf: []u8) ?usize {
 	return null;
 }
 
-const Error = error {
-	BodyTooBig,
-	HeaderTooBig,
-	ConnectionClosed,
-	UnknownMethod,
-	InvalidRequestTarget,
-	UnknownProtocol,
-	UnsupportedProtocol,
-	InvalidHeaderLine,
-	InvalidContentLength,
-};
-
 const t = @import("t.zig");
 test "atoi" {
 	var buf: [5]u8 = undefined;
@@ -741,15 +728,15 @@ test "request: findCarriageReturnIndex" {
 }
 
 test "request: header too big" {
-	try expectParseError(Error.HeaderTooBig, "GET / HTTP/1.1\r\n\r\n", .{.buffer_size = 17});
-	try expectParseError(Error.HeaderTooBig, "GET / HTTP/1.1\r\nH: v\r\n\r\n", .{.buffer_size = 23});
+	try expectParseError(error.HeaderTooBig, "GET / HTTP/1.1\r\n\r\n", .{.buffer_size = 17});
+	try expectParseError(error.HeaderTooBig, "GET / HTTP/1.1\r\nH: v\r\n\r\n", .{.buffer_size = 23});
 }
 
 test "request: parse method" {
 	{
-		try expectParseError(Error.ConnectionClosed, "GET", .{});
-		try expectParseError(Error.UnknownMethod, "GETT ", .{});
-		try expectParseError(Error.UnknownMethod, " PUT ", .{});
+		try expectParseError(error.WouldBlock, "GET", .{});
+		try expectParseError(error.UnknownMethod, "GETT ", .{});
+		try expectParseError(error.UnknownMethod, " PUT ", .{});
 	}
 
 	{
@@ -797,12 +784,12 @@ test "request: parse method" {
 
 test "request: parse request target" {
 	{
-		try expectParseError(Error.InvalidRequestTarget, "GET NOPE", .{});
-		try expectParseError(Error.InvalidRequestTarget, "GET nope ", .{});
-		try expectParseError(Error.InvalidRequestTarget, "GET http://www.pondzpondz.com/test ", .{}); // this should be valid
-		try expectParseError(Error.InvalidRequestTarget, "PUT hello ", .{});
-		try expectParseError(Error.InvalidRequestTarget, "POST  /hello ", .{});
-		try expectParseError(Error.InvalidRequestTarget, "POST *hello ", .{});
+		try expectParseError(error.InvalidRequestTarget, "GET NOPE", .{});
+		try expectParseError(error.InvalidRequestTarget, "GET nope ", .{});
+		try expectParseError(error.InvalidRequestTarget, "GET http://www.pondzpondz.com/test ", .{}); // this should be valid
+		try expectParseError(error.InvalidRequestTarget, "PUT hello ", .{});
+		try expectParseError(error.InvalidRequestTarget, "POST  /hello ", .{});
+		try expectParseError(error.InvalidRequestTarget, "POST *hello ", .{});
 	}
 
 	{
@@ -832,11 +819,11 @@ test "request: parse request target" {
 
 test "request: parse protocol" {
 	{
-		try expectParseError(Error.ConnectionClosed, "GET / ", .{});
-		try expectParseError(Error.ConnectionClosed, "GET /  ", .{});
-		try expectParseError(Error.ConnectionClosed, "GET / H\r\n", .{});
-		try expectParseError(Error.UnknownProtocol, "GET / http/1.1\r\n", .{});
-		try expectParseError(Error.UnsupportedProtocol, "GET / HTTP/2.0\r\n", .{});
+		try expectParseError(error.WouldBlock, "GET / ", .{});
+		try expectParseError(error.WouldBlock, "GET /  ", .{});
+		try expectParseError(error.WouldBlock, "GET / H\r\n", .{});
+		try expectParseError(error.UnknownProtocol, "GET / http/1.1\r\n", .{});
+		try expectParseError(error.UnsupportedProtocol, "GET / HTTP/2.0\r\n", .{});
 	}
 
 	{
@@ -854,10 +841,10 @@ test "request: parse protocol" {
 
 test "request: parse headers" {
 	{
-		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nH", .{});
-		try expectParseError(Error.InvalidHeaderLine, "GET / HTTP/1.1\r\nHost\r\n", .{});
-		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nHost:another\r\n\r", .{});
-		try expectParseError(Error.ConnectionClosed, "GET / HTTP/1.1\r\nHost: pondzpondz.com\r\n", .{});
+		try expectParseError(error.WouldBlock, "GET / HTTP/1.1\r\nH", .{});
+		try expectParseError(error.InvalidHeaderLine, "GET / HTTP/1.1\r\nHost\r\n", .{});
+		try expectParseError(error.WouldBlock, "GET / HTTP/1.1\r\nHost:another\r\n\r", .{});
+		try expectParseError(error.WouldBlock, "GET / HTTP/1.1\r\nHost: pondzpondz.com\r\n", .{});
 	}
 
 	{
@@ -960,7 +947,7 @@ test "request: body content-length" {
 		// too big
 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{.max_body_size = 9});
 		defer testCleanup(r);
-		try t.expectError(Error.BodyTooBig, r.body());
+		try t.expectError(error.BodyTooBig, r.body());
 	}
 
 	{
@@ -1025,7 +1012,7 @@ test "body: json" {
 		// too big
 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{.max_body_size = 16});
 		defer testCleanup(r);
-		try t.expectError(Error.BodyTooBig, r.json(Tea));
+		try t.expectError(error.BodyTooBig, r.json(Tea));
 	}
 
 	{
@@ -1050,7 +1037,7 @@ test "body: jsonValue" {
 		// too big
 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{.max_body_size = 16});
 		defer testCleanup(r);
-		try t.expectError(Error.BodyTooBig, r.jsonValue());
+		try t.expectError(error.BodyTooBig, r.jsonValue());
 	}
 
 	{
@@ -1075,7 +1062,7 @@ test "body: jsonObject" {
 		// too big
 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{.max_body_size = 16});
 		defer testCleanup(r);
-		try t.expectError(Error.BodyTooBig, r.jsonObject());
+		try t.expectError(error.BodyTooBig, r.jsonObject());
 	}
 
 	{
@@ -1134,13 +1121,13 @@ test "request: fuzz" {
 			const method = randomMethod(random);
 			const url = t.randomString(random, aa, 20);
 
-			_ = s.add(method);
-			_ = s.add(" /");
-			_ = s.add(url);
+			s.write(method);
+			s.write(" /");
+			s.write(url);
 
 			const number_of_qs = random.uintAtMost(u8, 4);
 			if (number_of_qs != 0) {
-				_ = s.add("?");
+				s.write("?");
 			}
 			var query = std.StringHashMap([]const u8).init(aa);
 			for (0..number_of_qs) |_| {
@@ -1150,14 +1137,14 @@ test "request: fuzz" {
 					// TODO: figure out how we want to handle duplicate query values
 					// (the spec doesn't specifiy what to do)
 					query.put(key, value) catch unreachable;
-					_ = s.add(key);
-					_ = s.add("=");
-					_ = s.add(value);
-					_ = s.add("&");
+					s.write(key);
+					s.write("=");
+					s.write(value);
+					s.write("&");
 				}
 			}
 
-			_ = s.add(" HTTP/1.1\r\n");
+			_ = s.write(" HTTP/1.1\r\n");
 
 			var headers = std.StringHashMap([]const u8).init(aa);
 			for (0..random.uintAtMost(u8, 4)) |_| {
@@ -1167,28 +1154,28 @@ test "request: fuzz" {
 					// TODO: figure out how we want to handle duplicate query values
 					// Note, the spec says we should merge these!
 					headers.put(name, value) catch unreachable;
-					_ = s.add(name);
-					_ = s.add(": ");
-					_ = s.add(value);
-					_ = s.add("\r\n");
+					s.write(name);
+					s.write(": ");
+					s.write(value);
+					s.write("\r\n");
 				}
 			}
 
 			var body: ?[]u8 = null;
 			if (random.uintAtMost(u8, 4) == 0) {
-				_ = s.add("\r\n"); // no body
+				s.write("\r\n"); // no body
 			} else {
 				body = t.randomString(random, aa, 8000);
 				const cl = std.fmt.allocPrint(aa, "{d}", .{body.?.len}) catch unreachable;
 				headers.put("content-length", cl) catch unreachable;
-				_ = s.add("content-length: ");
-				_ = s.add(cl);
-				_ = s.add("\r\n\r\n");
-				_ = s.add(body.?);
+				s.write("content-length: ");
+				s.write(cl);
+				s.write("\r\n\r\n");
+				s.write(body.?);
 			}
 
 			var request = testRequest(.{.buffer_size = buffer_size}, s) catch |err| {
-				std.debug.print("\nParse Error: {}\nInput: {s}", .{err, s.state.to_read.items[s.state.read_index..]});
+				std.debug.print("\nParse Error: {}", .{err});
 				unreachable;
 			};
 			defer _ = t.aa.reset(.free_all);
@@ -1226,22 +1213,22 @@ test "request: fuzz" {
 
 test "requet: extra socket data" {
 	var s = t.Stream.init();
-	s.state.random = null;
 
-	_ = s.add("GET / HTTP/1.1\r\nContent-Length: 5\r\n\r\nHello!");
+	s.write("GET / HTTP/1.1\r\nContent-Length: 5\r\n\r\nHello!");
 
 	var request = testRequest(.{.buffer_size = 50}, s) catch |err| {
-		std.debug.print("\nParse Error: {}\nInput: {s}", .{err, s.state.to_read.items[s.state.read_index..]});
+		std.debug.print("\nParse Error: {}", .{err});
 		unreachable;
 	};
 	defer testCleanup(request);
 
-	// try t.expectError(error.TooMuchData, request.drain());
+	try t.expectError(error.TooMuchData, request.drain());
 }
 
 fn testParse(input: []const u8, config: Config) Request {
 	var s = t.Stream.init();
-	return testRequest(config, s.add(input)) catch |err| {
+	s.write(input);
+	return testRequest(config,s) catch |err| {
 		s.deinit();
 		_ = t.aa.reset(.free_all);
 		std.debug.print("\nParse Error: {}\nInput: {s}", .{err, input});
@@ -1249,23 +1236,23 @@ fn testParse(input: []const u8, config: Config) Request {
 	};
 }
 
-fn expectParseError(expected: Error, input: []const u8, config: Config) !void {
+fn expectParseError(expected: anyerror, input: []const u8, config: Config) !void {
 	defer _ = t.aa.reset(.free_all);
 
 	var s = t.Stream.init();
-	defer s.deinit();
+	s.write(input);
 
 	const req_state = Request.State.init(t.arena, config) catch unreachable;
-	try t.expectError(expected, Request.parse(t.allocator, &req_state, s.add(input).wrap()));
+	try t.expectError(expected, Request.parse(t.allocator, &req_state, s.conn));
 }
 
 fn testRequest(config: Config, stream: t.Stream) !Request {
 	const req_state = Request.State.init(t.arena, config) catch unreachable;
-	return Request.parse(t.arena, &req_state, stream.wrap());
+	return Request.parse(t.arena, &req_state, stream.conn);
 }
 
 fn testCleanup(r: Request) void {
-	r.stream.deinit();
+	r.stream.close();
 	_ = t.aa.reset(.free_all);
 }
 

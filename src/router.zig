@@ -2,8 +2,8 @@ const std = @import("std");
 
 const httpz = @import("httpz.zig");
 const Params = @import("params.zig").Params;
-const Request = @import("request.zig").Request;
-const Response = @import("response.zig").Response;
+const Request = httpz.Request;
+const Response = httpz.Response;
 
 const Allocator = std.mem.Allocator;
 const StringHashMap = std.StringHashMap;

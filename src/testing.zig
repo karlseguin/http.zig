@@ -3,6 +3,7 @@
 const std = @import("std");
 const t = @import("t.zig");
 const httpz = @import("httpz.zig");
+const response = @import("response.zig");
 
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
@@ -11,9 +12,9 @@ pub fn init(config: httpz.Config) Testing {
 	var arena = t.allocator.create(std.heap.ArenaAllocator) catch unreachable;
 	arena.* = std.heap.ArenaAllocator.init(t.allocator);
 
-	var aa = arena.allocator();
-	var stream = t.Stream.initWithAllocator(aa);
+	var ts = t.Stream.init();
 
+	var aa = arena.allocator();
 	var req_state = aa.create(httpz.Request.State) catch unreachable;
 	req_state.* = httpz.Request.State.init(aa, config.request) catch unreachable;
 
@@ -21,7 +22,7 @@ pub fn init(config: httpz.Config) Testing {
 	req.* = .{
 		.pos = 0,
 		.arena = aa,
-		.stream = stream,
+		.stream = ts.stream,
 		.keepalive = true,
 		.qs = req_state.qs,
 		.header_overread = 0,
@@ -35,29 +36,30 @@ pub fn init(config: httpz.Config) Testing {
 		.max_body_size = req_state.max_body_size,
 	};
 
-
 	var res_state = aa.create(httpz.Response.State) catch unreachable;
 	res_state.* = httpz.Response.State.init(aa, config.response) catch unreachable;
 
 	var res = aa.create(httpz.Response) catch unreachable;
-	res.* = httpz.Response.init(aa, res_state, stream);
+	res.* = httpz.Response.init(aa, res_state, ts.stream);
 
 	return Testing{
+		._ts = ts,
+		._arena = arena,
 		.req = req,
 		.res = res,
-		._arena = arena,
 		.arena = aa,
 	};
 }
 
 pub const Testing = struct {
+	_ts: t.Stream,
 	_arena: *std.heap.ArenaAllocator,
 	req: *httpz.Request,
 	res: *httpz.Response,
 	arena: std.mem.Allocator,
 	parsed_response: ?Response = null,
 
-	const Response = struct {
+	pub const Response = struct {
 		status: u16,
 		raw: []const u8,
 		body: []const u8,
@@ -97,6 +99,7 @@ pub const Testing = struct {
 	};
 
 	pub fn deinit(self: *Testing) void {
+		self._ts.deinit();
 		self._arena.deinit();
 		t.allocator.destroy(self._arena);
 	}
@@ -185,8 +188,10 @@ pub const Testing = struct {
 	pub fn parseResponse(self: *Testing) !Response {
 		if (self.parsed_response) |r| return r;
 		try self.res.write();
+		self._ts.close();
 
-		const pr = try parseWithAllocator(self.arena, self.res.stream.received());
+		const data = try self._ts.read(self.arena);
+		const pr = try parseWithAllocator(self.arena, data.items);
 		self.parsed_response = pr;
 		return pr;
 	}
@@ -199,8 +204,7 @@ pub fn parse(data: []u8) !Testing.Response {
 pub fn parseWithAllocator(allocator: Allocator, data: []u8) !Testing.Response {
 	// data won't outlive this function, we want our Response to take ownership
 	// of the full body, since it needs to reference parts of it.
-	const raw = allocator.alloc(u8, data.len) catch unreachable;
-	@memcpy(raw, data);
+	const raw = allocator.dupe(u8, data) catch unreachable;
 
 	var status: u16 = 0;
 	var header_length: usize = 0;
