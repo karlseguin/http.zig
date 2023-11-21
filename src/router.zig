@@ -40,7 +40,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 		pub fn init(allocator: Allocator, default_dispatcher: Dispatcher, default_ctx: G) !Self {
 			const arena = try allocator.create(std.heap.ArenaAllocator);
 			arena.* = std.heap.ArenaAllocator.init(allocator);
-			var aa = arena.allocator();
+			const aa = arena.allocator();
 
 			return Self{
 				._arena = arena,
@@ -443,7 +443,7 @@ fn addRoute(comptime A: type, allocator: Allocator, root: *Part(A), url: []const
 				route_part = child;
 			}
 		} else {
-			var gop = try route_part.parts.getOrPut(part);
+			const gop = try route_part.parts.getOrPut(part);
 			if (gop.found_existing) {
 				route_part = gop.value_ptr;
 			} else {
@@ -488,8 +488,11 @@ fn getRoute(comptime A: type, root: Part(A), url: []const u8, params: *Params) ?
 	var route_part = &r;
 
 	var glob_all: ?*Part(A) = null;
-	var it = std.mem.splitScalar(u8, normalized, '/');
-	while (it.next()) |part| {
+	var pos: usize = 0;
+	while (pos < normalized.len) {
+		const index = std.mem.indexOfScalarPos(u8, normalized, pos, '/') orelse normalized.len;
+		const part = normalized[pos..index];
+
 		// the most specific "glob_all" route we find, which is the one most deeply
 		// nested, is the one we'll use in case there are no other matches.
 		if (route_part.glob_all) {
@@ -510,6 +513,7 @@ fn getRoute(comptime A: type, root: Part(A), url: []const u8, params: *Params) ?
 			}
 			return null;
 		}
+		pos = index + 1; // +1 tos skip the slash on the next iteration
 	}
 
 	if (route_part.action) |action| {
@@ -540,7 +544,7 @@ test "route: root" {
 	router.post("", testRoute3);
 	router.all("/all", testRoute4);
 
-	var urls = .{"/", "/other", "/all"};
+	const urls = .{"/", "/other", "/all"};
 	try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, "", &params).?.action);
 	try t.expectEqual(&testRoute2, router.route(httpz.Method.PUT, "", &params).?.action);
 	try t.expectEqual(&testRoute3, router.route(httpz.Method.POST, "", &params).?.action);

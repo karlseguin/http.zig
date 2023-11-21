@@ -669,8 +669,8 @@ fn testFail(_: u32, _: *Request, _: *Response) !void {
 }
 
 fn testParams(_: u32, req: *Request, res: *Response) !void {
-	var args = .{req.param("version").?, req.param("UserId").?};
-	var out = try std.fmt.allocPrint(req.arena, "version={s},user={s}", args);
+	const args = .{req.param("version").?, req.param("UserId").?};
+	const out = try std.fmt.allocPrint(req.arena, "version={s},user={s}", args);
 	res.body = out;
 }
 
@@ -777,6 +777,6 @@ fn testReadAll(stream: std.net.Stream, buf: []u8) []u8 {
 
 fn testReadParsed(stream: std.net.Stream) testing.Testing.Response {
 	var buf: [1024]u8 = undefined;
-	var data = testReadAll(stream, &buf);
+	const data = testReadAll(stream, &buf);
 	return testing.parse(data) catch unreachable;
 }

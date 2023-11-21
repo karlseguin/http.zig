@@ -222,10 +222,10 @@ pub fn Worker(comptime S: type) type {
 
 			const max_conns = config.pool.worker_max_conn orelse 512;
 
-			var conns = try httpz_allocator.alloc(KeepaliveConn, max_conns);
+			const conns = try httpz_allocator.alloc(KeepaliveConn, max_conns);
 			errdefer httpz_allocator.free(conns);
 
-			var poll_fds = try httpz_allocator.alloc(os.pollfd, max_conns);
+			const poll_fds = try httpz_allocator.alloc(os.pollfd, max_conns);
 			errdefer httpz_allocator.free(poll_fds);
 
 			return .{
@@ -379,7 +379,7 @@ pub fn Worker(comptime S: type) type {
 
 			defer _ = arena.reset(.free_all);
 
-			var aa = arena.allocator();
+			const aa = arena.allocator();
 			var res = Response.init(aa, res_state, stream);
 
 			var req = Request.parse(aa, req_state, conn) catch |err| {

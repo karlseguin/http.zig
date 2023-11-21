@@ -385,7 +385,7 @@ pub const Response = struct {
 		}
 
 		pub fn truncate(self: Writer, n: usize) void {
-			var pos = self.res.pos;
+			const pos = self.res.pos;
 			const to_truncate = if (pos > n) n else pos;
 			self.res.pos = pos - to_truncate;
 		}
@@ -399,7 +399,7 @@ pub const Response = struct {
 
 		pub fn writeByteNTimes(self: Writer, b: u8, n: usize) !void {
 			try self.ensureSpace(n);
-			var pos = self.res.pos;
+			const pos = self.res.pos;
 			const buffer = self.res.writer_buffer;
 			for (0..n) |offset| {
 				buffer[pos+offset] = b;

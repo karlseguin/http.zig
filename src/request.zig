@@ -257,7 +257,7 @@ pub const Request = struct {
 		const stream = self.stream;
 
 		if (self.header("content-length")) |cl| {
-			var length = atoi(cl) orelse return error.InvalidContentLength;
+			const length = atoi(cl) orelse return error.InvalidContentLength;
 			if (length == 0) {
 				self.bd = null;
 				return null;
@@ -354,7 +354,7 @@ pub const Request = struct {
 
 		var qs = &self.qs;
 		var pos = self.pos;
-		var allocator = self.arena;
+		const allocator = self.arena;
 		var buffer = self.static[pos..];
 
 		var it = std.mem.splitScalar(u8, raw, '&');
@@ -414,7 +414,7 @@ pub const Request = struct {
 
 			length -= header_overread;
 			while (length > 0) {
-				var n = if (buffer.len > length) buffer[0..length] else buffer;
+				const n = if (buffer.len > length) buffer[0..length] else buffer;
 				length -= try stream.read(n);
 			}
 		} else {
@@ -612,7 +612,7 @@ fn atoi(str: []const u8) ?usize {
 
 	var n: usize = 0;
 	for (str) |b| {
-		var d = b - '0';
+		const d = b - '0';
 		if (d > 9) {
 			return null;
 		}
@@ -740,43 +740,43 @@ test "request: parse method" {
 	}
 
 	{
-		var r = testParse("GET / HTTP/1.1\r\n\r\n", .{});
+		const r = testParse("GET / HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		try t.expectEqual(http.Method.GET, r.method);
 	}
 
 	{
-		var r = testParse("PUT / HTTP/1.1\r\n\r\n", .{});
+		const r = testParse("PUT / HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		try t.expectEqual(http.Method.PUT, r.method);
 	}
 
 	{
-		var r = testParse("POST / HTTP/1.1\r\n\r\n", .{});
+		const r = testParse("POST / HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		try t.expectEqual(http.Method.POST, r.method);
 	}
 
 	{
-		var r = testParse("HEAD / HTTP/1.1\r\n\r\n", .{});
+		const r = testParse("HEAD / HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		try t.expectEqual(http.Method.HEAD, r.method);
 	}
 
 	{
-		var r = testParse("PATCH / HTTP/1.1\r\n\r\n", .{});
+		const r = testParse("PATCH / HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		try t.expectEqual(http.Method.PATCH, r.method);
 	}
 
 	{
-		var r = testParse("DELETE / HTTP/1.1\r\n\r\n", .{});
+		const r = testParse("DELETE / HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		try t.expectEqual(http.Method.DELETE, r.method);
 	}
 
 	{
-		var r = testParse("OPTIONS / HTTP/1.1\r\n\r\n", .{});
+		const r = testParse("OPTIONS / HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		try t.expectEqual(http.Method.OPTIONS, r.method);
 	}
@@ -793,25 +793,25 @@ test "request: parse request target" {
 	}
 
 	{
-		var r = testParse("PUT / HTTP/1.1\r\n\r\n", .{});
+		const r = testParse("PUT / HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		try t.expectString("/", r.url.raw);
 	}
 
 	{
-		var r = testParse("PUT /api/v2 HTTP/1.1\r\n\r\n", .{});
+		const r = testParse("PUT /api/v2 HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		try t.expectString("/api/v2", r.url.raw);
 	}
 
 	{
-		var r = testParse("DELETE /API/v2?hack=true&over=9000%20!! HTTP/1.1\r\n\r\n", .{});
+		const r = testParse("DELETE /API/v2?hack=true&over=9000%20!! HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		try t.expectString("/API/v2?hack=true&over=9000%20!!", r.url.raw);
 	}
 
 	{
-		var r = testParse("PUT * HTTP/1.1\r\n\r\n", .{});
+		const r = testParse("PUT * HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		try t.expectString("*", r.url.raw);
 	}
@@ -827,13 +827,13 @@ test "request: parse protocol" {
 	}
 
 	{
-		var r = testParse("PUT / HTTP/1.0\r\n\r\n", .{});
+		const r = testParse("PUT / HTTP/1.0\r\n\r\n", .{});
 		defer testCleanup(r);
 		try t.expectEqual(http.Protocol.HTTP10, r.protocol);
 	}
 
 	{
-		var r = testParse("PUT / HTTP/1.1\r\n\r\n", .{});
+		const r = testParse("PUT / HTTP/1.1\r\n\r\n", .{});
 		defer testCleanup(r);
 		try t.expectEqual(http.Protocol.HTTP11, r.protocol);
 	}
@@ -848,7 +848,7 @@ test "request: parse headers" {
 	}
 
 	{
-		var r = testParse("PUT / HTTP/1.0\r\n\r\n", .{});
+		const r = testParse("PUT / HTTP/1.0\r\n\r\n", .{});
 		defer testCleanup(r);
 		try t.expectEqual(0, r.headers.len);
 	}
@@ -1198,7 +1198,7 @@ test "request: fuzz" {
 			// isn't read, we still need to drain the bytes from the socket for when
 			// the socket is reused.
 			if (random.uintAtMost(u8, 4) != 0) {
-				var actual = request.body() catch unreachable;
+				const actual = request.body() catch unreachable;
 				if (body) |b| {
 					try t.expectString(b, actual.?);
 				} else {

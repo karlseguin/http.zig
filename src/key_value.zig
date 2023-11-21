@@ -54,7 +54,7 @@ pub const KeyValue = struct {
 
 const t = @import("t.zig");
 test "key_value: get" {
-	var allocator = t.allocator;
+	const allocator = t.allocator;
 	var kv = try KeyValue.init(allocator, 2);
 	var key = "content-type".*;
 	kv.add(&key, "application/json");

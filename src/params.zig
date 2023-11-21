@@ -71,7 +71,7 @@ pub const Params = struct {
 
 const t = @import("t.zig");
 test "params: get" {
-	var allocator = t.allocator;
+	const allocator = t.allocator;
 	var params = try Params.init(allocator, 10);
 	var names = [_][]const u8{"over", "duncan"};
 	params.addValue("9000");

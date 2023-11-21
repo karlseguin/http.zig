@@ -12,13 +12,13 @@ pub fn init(config: httpz.Config) Testing {
 	var arena = t.allocator.create(std.heap.ArenaAllocator) catch unreachable;
 	arena.* = std.heap.ArenaAllocator.init(t.allocator);
 
-	var ts = t.Stream.init();
+	const ts = t.Stream.init();
 
-	var aa = arena.allocator();
-	var req_state = aa.create(httpz.Request.State) catch unreachable;
+	const aa = arena.allocator();
+	const req_state = aa.create(httpz.Request.State) catch unreachable;
 	req_state.* = httpz.Request.State.init(aa, config.request) catch unreachable;
 
-	var req = aa.create(httpz.Request) catch unreachable;
+	const req = aa.create(httpz.Request) catch unreachable;
 	req.* = .{
 		.pos = 0,
 		.arena = aa,
@@ -36,10 +36,10 @@ pub fn init(config: httpz.Config) Testing {
 		.max_body_size = req_state.max_body_size,
 	};
 
-	var res_state = aa.create(httpz.Response.State) catch unreachable;
+	const res_state = aa.create(httpz.Response.State) catch unreachable;
 	res_state.* = httpz.Response.State.init(aa, config.response) catch unreachable;
 
-	var res = aa.create(httpz.Response) catch unreachable;
+	const res = aa.create(httpz.Response) catch unreachable;
 	res.* = httpz.Response.init(aa, res_state, ts.stream);
 
 	return Testing{
@@ -181,7 +181,7 @@ pub const Testing = struct {
 	}
 
 	pub fn getJson(self: *Testing) !std.json.Value {
-		var pr = try self.parseResponse();
+		const pr = try self.parseResponse();
 		return try std.json.parseFromSliceLeaky(std.json.Value, self.arena, pr.body, .{});
 	}
 
@@ -251,7 +251,7 @@ fn decodeChunkedEncoding(full_dest: []u8, full_src: []u8) usize {
 	var length: usize = 0;
 
 	while (true) {
-		var nl = std.mem.indexOfScalar(u8, src, '\r') orelse unreachable;
+		const nl = std.mem.indexOfScalar(u8, src, '\r') orelse unreachable;
 		const chunk_length = std.fmt.parseInt(u32, src[0..nl], 16) catch unreachable;
 		if (chunk_length == 0) {
 			if (src[1] == '\r' and src[2] == '\n' and src[3] == '\r' and src[4] == '\n') {
@@ -311,8 +311,8 @@ const JsonComparer = struct {
 			b_bytes = b;
 		}
 
-		var a_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, a_bytes, .{});
-		var b_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, b_bytes, .{});
+		const a_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, a_bytes, .{});
+		const b_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, b_bytes, .{});
 
 		var diffs = ArrayList(Diff).init(allocator);
 		var path = ArrayList([]const u8).init(allocator);
