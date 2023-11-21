@@ -116,15 +116,15 @@ test "pool: acquires & release" {
 	var p = try Pool(*TestEntry, i32).init(t.allocator, .{.min = 2}, TestEntry.init, 5);
 	defer p.deinit();
 
-	var e1 = try p.acquire();
+	const e1 = try p.acquire();
 	try t.expectEqual(@as(i32, 10), e1.id);
 	try t.expectEqual(false, e1.deinited);
 
-	var e2 = try p.acquire();
+	const e2 = try p.acquire();
 	try t.expectEqual(@as(i32, 5), e2.id);
 	try t.expectEqual(false, e2.deinited);
 
-	var e3 = try p.acquire();
+	const e3 = try p.acquire();
 	try t.expectEqual(@as(i32, 15), e3.id);
 	try t.expectEqual(false, e3.deinited);
 

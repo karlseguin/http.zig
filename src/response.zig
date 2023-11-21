@@ -357,7 +357,7 @@ pub const Response = struct {
 		}
 
 		pub fn truncate(self: Writer, n: usize) void {
-			var pos = self.res.pos;
+			const pos = self.res.pos;
 			const to_truncate = if (pos > n) n else pos;
 			self.res.pos = pos - to_truncate;
 		}
@@ -371,7 +371,7 @@ pub const Response = struct {
 
 		pub fn writeByteNTimes(self: Writer, b: u8, n: usize) !void {
 			try self.ensureSpace(n);
-			var pos = self.res.pos;
+			const pos = self.res.pos;
 			const buffer = self.res.writer_buffer;
 			for (0..n) |offset| {
 				buffer[pos+offset] = b;
@@ -513,7 +513,7 @@ test "response: write" {
 }
 
 test "response: content_type" {
-	var s = t.Stream.init();
+	const s = t.Stream.init();
 	var res = testResponse(s, .{});
 	defer testCleanup(res, s);
 
@@ -529,7 +529,7 @@ test "response: write header_buffer_size" {
 		// no header or bodys
 		// 19 is the length of our longest header line
 		for (19..40) |i| {
-			var s = t.Stream.init();
+			const s = t.Stream.init();
 			var res = testResponse(s, .{.header_buffer_size = i});
 			defer testCleanup(res, s);
 
@@ -543,7 +543,7 @@ test "response: write header_buffer_size" {
 		// no body
 		// 19 is the length of our longest header line
 		for (19..110) |i| {
-			var s = t.Stream.init();
+			const s = t.Stream.init();
 			var res = testResponse(s, .{.header_buffer_size = i});
 			defer testCleanup(res, s);
 
@@ -559,7 +559,7 @@ test "response: write header_buffer_size" {
 	{
 		// 22 is the length of our longest header line (the content-length)
 		for (22..110) |i| {
-			var s = t.Stream.init();
+			const s = t.Stream.init();
 			var res = testResponse(s, .{.header_buffer_size = i});
 			defer testCleanup(res, s);
 
@@ -584,7 +584,7 @@ test "response: json fuzz" {
 		const expected_encoded_length = body.len + 2; // wrapped in double quotes
 
 		for (0..100) |i| {
-			var s = t.Stream.init();
+			const s = t.Stream.init();
 			var res = testResponse(s, .{.body_buffer_size = i});
 			defer testCleanup(res, s);
 
@@ -608,7 +608,7 @@ test "response: writer fuzz" {
 		const expected_encoded_length = body.len + 2; // wrapped in double quotes
 
 		for (0..100) |i| {
-			var s = t.Stream.init();
+			const s = t.Stream.init();
 			var res = testResponse(s, .{.body_buffer_size = i});
 			defer testCleanup(res, s);
 
@@ -623,7 +623,7 @@ test "response: writer fuzz" {
 }
 
 test "response: direct writer" {
-	var s = t.Stream.init();
+	const s = t.Stream.init();
 	var res = testResponse(s, .{});
 	defer testCleanup(res, s);
 

@@ -172,7 +172,7 @@ pub fn initReqRes(c: RequestResponsePairConfig) !*RequestResponsePair {
 	var res = try httpz_allocator.create(httpz.Response);
 	try res.init(httpz_allocator, app_allocator, c.config.response);
 
-	var pair = try httpz_allocator.create(RequestResponsePair);
+	const pair = try httpz_allocator.create(RequestResponsePair);
 	pair.* = .{
 		.arena = arena,
 		.request = req,

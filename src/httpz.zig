@@ -729,8 +729,8 @@ fn testFail(_: u32, _: *Request, _: *Response) !void {
 }
 
 fn testParams(_: u32, req: *Request, res: *Response) !void {
-	var args = .{req.param("version").?, req.param("UserId").?};
-	var out = try std.fmt.allocPrint(req.arena, "version={s},user={s}", args);
+	const args = .{req.param("version").?, req.param("UserId").?};
+	const out = try std.fmt.allocPrint(req.arena, "version={s},user={s}", args);
 	res.body = out;
 }
 
