@@ -21,12 +21,12 @@ const RequestContext = struct {
 		if (self.user_id == null) return notAuthorized(res);
 
 		self.global.l.lock();
-		var hits = self.global.hits + 1;
+		const hits = self.global.hits + 1;
 		self.global.hits = hits;
 		self.global.l.unlock();
 
 		res.content_type = httpz.ContentType.TEXT;
-		var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
+		const out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
 		res.body = out;
 	}
 };
