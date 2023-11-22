@@ -28,16 +28,28 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 	});
 	defer socket.deinit();
 
-	const listen_port = config.port.?;
-	const listen_address = config.address.?;
-	try socket.listen(net.Address.parseIp(listen_address, listen_port) catch unreachable);
+	var no_delay = true;
+	const address = blk: {
+		if (config.unix_path) |unix_path| {
+			no_delay = false;
+			std.fs.deleteFileAbsolute(unix_path) catch {};
+			break :blk try net.Address.initUnix(unix_path);
+		} else {
+			const listen_port = config.port.?;
+			const listen_address = config.address.?;
+			break :blk try net.Address.parseIp(listen_address, listen_port);
+		}
+	};
+	try socket.listen(address);
 
-	// TODO: Broken on darwin:
-	// https://github.com/ziglang/zig/issues/17260
-	// if (@hasDecl(os.TCP, "NODELAY")) {
-	// 	try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, os.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
-	// }
-	try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
+	if (no_delay) {
+		// TODO: Broken on darwin:
+		// https://github.com/ziglang/zig/issues/17260
+		// if (@hasDecl(os.TCP, "NODELAY")) {
+		//  try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, os.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
+		// }
+		try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
+	}
 
 	while (true) {
 		if (socket.accept()) |conn| {

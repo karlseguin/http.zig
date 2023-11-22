@@ -535,6 +535,9 @@ try httpz.listen(allocator, &router, .{
     // Interface address to bind to
     .address = "127.0.0.1",
 
+    // unix socket to listen on (mutually exlusive with host&port)
+    .unix_path = null,
+
     // configure the pool of request/response object pairs
     .pool = .{
         // Number of worker threads
