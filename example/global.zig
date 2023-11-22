@@ -11,12 +11,12 @@ const GlobalContext = struct {
 
 	pub fn increment(self: *Self, _: *httpz.Request, res: *httpz.Response) !void {
 		self.l.lock();
-		var hits = self.hits + 1;
+		const hits = self.hits + 1;
 		self.hits = hits;
 		self.l.unlock();
 
 		res.content_type = httpz.ContentType.TEXT;
-		var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
+		const out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
 		res.body = out;
 	}
 };
