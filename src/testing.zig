@@ -161,7 +161,7 @@ pub const Testing = struct {
 	}
 
 	pub fn getJson(self: *Self) !std.json.Value {
-		var pr = try self.parseResponse();
+		const pr = try self.parseResponse();
 		return try std.json.parseFromSliceLeaky(std.json.Value, self.arena, pr.body, .{});
 	}
 
@@ -230,7 +230,7 @@ fn decodeChunkedEncoding(full_dest: []u8, full_src: []u8) usize {
 	var length: usize = 0;
 
 	while (true) {
-		var nl = std.mem.indexOfScalar(u8, src, '\r') orelse unreachable;
+		const nl = std.mem.indexOfScalar(u8, src, '\r') orelse unreachable;
 		const chunk_length = std.fmt.parseInt(u32, src[0..nl], 16) catch unreachable;
 		if (chunk_length == 0) {
 			if (src[1] == '\r' and src[2] == '\n' and src[3] == '\r' and src[4] == '\n') {
@@ -292,8 +292,8 @@ const JsonComparer = struct {
 			b_bytes = b;
 		}
 
-		var a_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, a_bytes, .{});
-		var b_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, b_bytes, .{});
+		const a_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, a_bytes, .{});
+		const b_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, b_bytes, .{});
 
 		var diffs = ArrayList(Diff).init(allocator);
 		var path = ArrayList([]const u8).init(allocator);

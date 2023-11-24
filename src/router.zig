@@ -40,7 +40,7 @@ pub fn Router(comptime G: type, comptime R: type) type {
 		pub fn init(allocator: Allocator, default_dispatcher: Dispatcher, default_ctx: G) !Self {
 			const arena = try allocator.create(std.heap.ArenaAllocator);
 			arena.* = std.heap.ArenaAllocator.init(allocator);
-			var aa = arena.allocator();
+			const aa = arena.allocator();
 
 			return Self{
 				._arena = arena,
@@ -443,7 +443,7 @@ fn addRoute(comptime A: type, allocator: Allocator, root: *Part(A), url: []const
 				route_part = child;
 			}
 		} else {
-			var gop = try route_part.parts.getOrPut(part);
+			const gop = try route_part.parts.getOrPut(part);
 			if (gop.found_existing) {
 				route_part = gop.value_ptr;
 			} else {
@@ -540,7 +540,7 @@ test "route: root" {
 	router.post("", testRoute3);
 	router.all("/all", testRoute4);
 
-	var urls = .{"/", "/other", "/all"};
+	const urls = .{"/", "/other", "/all"};
 	try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, "", &params).?.action);
 	try t.expectEqual(&testRoute2, router.route(httpz.Method.PUT, "", &params).?.action);
 	try t.expectEqual(&testRoute3, router.route(httpz.Method.POST, "", &params).?.action);

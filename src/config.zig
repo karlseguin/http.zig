@@ -11,6 +11,7 @@ pub const Config = struct {
 
 	port: ?u16 = null,
 	address: ?[]const u8 = null,
+	unix_path: ?[]const u8 = null,
 	pool: Pool = Pool{},
 	thread_pool: u32 = 0,
 	request: Request = Request{},

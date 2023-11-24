@@ -195,7 +195,7 @@ pub const Request = struct {
 		const stream = self.stream;
 
 		if (self.header("content-length")) |cl| {
-			var length = atoi(cl) orelse return error.InvalidContentLength;
+			const length = atoi(cl) orelse return error.InvalidContentLength;
 			if (length == 0) {
 				self.bd = null;
 				return null;
@@ -452,7 +452,7 @@ pub const Request = struct {
 
 		var qs = &self.qs;
 		var pos = self.pos;
-		var allocator = self.arena;
+		const allocator = self.arena;
 		var buffer = self.static[pos..];
 
 		var it = std.mem.split(u8, raw, "&");
@@ -512,7 +512,7 @@ pub const Request = struct {
 
 			length -= header_overread;
 			while (length > 0) {
-				var n = if (buffer.len > length) buffer[0..length] else buffer;
+				const n = if (buffer.len > length) buffer[0..length] else buffer;
 				length -= try stream.read(n);
 			}
 		} else {
@@ -566,7 +566,7 @@ fn atoi(str: []const u8) ?usize {
 
 	var n: usize = 0;
 	for (str) |b| {
-		var d = b - '0';
+		const d = b - '0';
 		if (d > 9) {
 			return null;
 		}
@@ -1172,7 +1172,7 @@ test "request: fuzz" {
 			// isn't read, we still need to drain the bytes from the socket for when
 			// the socket is reused.
 			if (random.uintAtMost(u8, 4) != 0) {
-				var actual = request.body() catch unreachable;
+				const actual = request.body() catch unreachable;
 				if (body) |b| {
 					try t.expectString(b, actual.?);
 				} else {
