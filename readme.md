@@ -422,13 +422,21 @@ try ws.endObject();
 See the `json` function for an explanation on how this writer behaves.
 
 ## Header Value
-Set header values using the `res.header(NAME, VALUE) function`:
+Set header values using the `res.header(NAME, VALUE)` function:
 
 ```zig
 res.header("Location", "/");
 ```
 
-The header name and value are sent as provided.
+The header name and value are sent as provided. Both the name and value must remain valid until the response is sent, which will happen outside of the action. Dynamic names and/or values should be created and or dupe'd with `res.arena`. 
+
+`res.headerOpts(NAME, VALUE, OPTS)` can be used to dupe the name and/or value:
+
+```zig
+try res.headerOpts("Location", location, .{.dupe_value = true});
+```
+
+`HeaderOpts` currently supports `dupe_name: bool` and `dupe_value: bool`, both default to `false`.
 
 ## Explicit Write
 Internally, when the dispatcher returns (whether it be an internal/default dispatcher or an application-specific dispatcher), `res.write()` is called to

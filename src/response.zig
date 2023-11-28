@@ -98,6 +98,17 @@ pub const Response = struct {
 		self.headers.add(name, value);
 	}
 
+	pub const HeaderOpts = struct {
+		dupe_name: bool = false,
+		dupe_value: bool = false,
+	};
+
+	pub fn headerOpts(self: *Self, name: []const u8, value: []const u8, opts: HeaderOpts) !void {
+		const n = if (opts.dupe_name) try self.arena.dupe(u8, name) else name;
+		const v = if (opts.dupe_name) try self.arena.dupe(u8, value) else name;
+		self.headers.add(n, v);
+	}
+
 	pub fn startEventStream(self: *Self) !Stream {
 		self.content_type = .EVENTS;
 		self.headers.add("Cache-Control", "no-cache");
@@ -521,6 +532,30 @@ test "response: content_type" {
 		res.content_type = httpz.ContentType.WEBP;
 		try res.write();
 		try t.expectString("HTTP/1.1 200\r\nContent-Type: image/webp\r\nContent-Length: 0\r\n\r\n", s.received.items);
+	}
+}
+
+test "response: header" {
+	const s = t.Stream.init();
+	var res = testResponse(s, .{});
+	defer testCleanup(res, s);
+
+	{
+		res.header("Key1", "Value1");
+		try res.write();
+		try t.expectString("HTTP/1.1 200\r\nKey1: Value1\r\nContent-Length: 0\r\n\r\n", s.received.items);
+	}
+
+	{
+		s.reset(); res.reset();
+
+		const k = try t.allocator.dupe(u8, "Key2");
+		const v = try t.allocator.dupe(u8, "Value2");
+		try res.headerOpts(k, v, .{.dupe_name = true, .dupe_value = true});
+		t.allocator.free(k);
+		t.allocator.free(v);
+		try res.write();
+		try t.expectString("HTTP/1.1 200\r\nKey2: Value2\r\nContent-Length: 0\r\n\r\n", s.received.items);
 	}
 }
 
