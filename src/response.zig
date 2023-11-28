@@ -119,6 +119,17 @@ pub const Response = struct {
 		self.headers.add(name, value);
 	}
 
+	pub const HeaderOpts = struct {
+		dupe_name: bool = false,
+		dupe_value: bool = false,
+	};
+
+	pub fn headerOpts(self: *Response, name: []const u8, value: []const u8, opts: HeaderOpts) !void {
+		const n = if (opts.dupe_name) try self.arena.dupe(u8, name) else name;
+		const v = if (opts.dupe_name) try self.arena.dupe(u8, value) else name;
+		self.headers.add(n, v);
+	}
+
 	pub fn startEventStream(self: *Response) !Stream {
 		self.content_type = .EVENTS;
 		self.headers.add("Cache-Control", "no-cache");
@@ -606,6 +617,33 @@ test "response: write header_buffer_size" {
 			try res.write();
 			try s.expect("HTTP/1.1 8\r\na-header: a-value\r\nb-hdr: b-val\r\nc-header11: cv\r\nContent-Length: 12\r\n\r\nhello world!");
 		}
+	}
+}
+
+ test "response: header" {
+	var s = t.Stream.init();
+	defer s.deinit();
+
+	{
+		var res = testResponse(s, .{});
+		defer testCleanup(res);
+
+		res.header("Key1", "Value1");
+		try res.write();
+		try s.expect("HTTP/1.1 200\r\nKey1: Value1\r\nContent-Length: 0\r\n\r\n");
+	}
+
+	{
+		var res = testResponse(s, .{});
+		defer testCleanup(res);
+
+		const k = try t.allocator.dupe(u8, "Key2");
+		const v = try t.allocator.dupe(u8, "Value2");
+		try res.headerOpts(k, v, .{.dupe_name = true, .dupe_value = true});
+		t.allocator.free(k);
+		t.allocator.free(v);
+		try res.write();
+		try s.expect("HTTP/1.1 200\r\nKey2: Value2\r\nContent-Length: 0\r\n\r\n");
 	}
 }
 
