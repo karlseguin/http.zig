@@ -1,10 +1,10 @@
 const std = @import("std");
 
+const Thread = std.Thread;
 pub const testing = @import("testing.zig");
 
 pub const routing = @import("router.zig");
 pub const request = @import("request.zig");
-pub const listener = @import("listener.zig");
 pub const response = @import("response.zig");
 
 pub const Router = routing.Router;
@@ -193,14 +193,18 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 	return struct {
 		ctx: G,
 		config: Config,
-		app_allocator: Allocator,
-		httpz_allocator: Allocator,
+		allocator: Allocator,
 		_cors_origin: ?[]const u8,
 		_router: Router(G, R),
 		_errorHandler: ErrorHandlerAction(G),
 		_notFoundHandler: Action(G),
+		_cond: Thread.Condition,
+		_mutex: Thread.Mutex,
+		_threads: []Thread,
+		_workers: []Worker,
 
 		const Self = @This();
+		const Worker = @import("worker.zig").Worker(*Self);
 
 		pub fn init(allocator: Allocator, config: Config, ctx: G) !Self {
 			const nfh = if (comptime G == void) defaultNotFound else defaultNotFoundWithContext;
@@ -215,11 +219,22 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 				var_config.address = "127.0.0.1";
 			}
 
+			const worker_count = config.pool.count orelse 2;
+
+			const threads = try allocator.alloc(Thread, worker_count);
+			errdefer allocator.free(threads);
+
+			const workers = try allocator.alloc(Worker, worker_count);
+			errdefer allocator.free(workers);
+
 			return .{
 				.ctx = ctx,
 				.config = var_config,
-				.app_allocator = allocator,
-				.httpz_allocator = allocator,
+				.allocator = allocator,
+				._cond = .{},
+				._mutex = .{},
+				._threads = threads,
+				._workers = workers,
 				._errorHandler = erh,
 				._notFoundHandler = nfh,
 				._router = try Router(G, R).init(allocator, dd, ctx),
@@ -228,11 +243,81 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 		}
 
 		pub fn deinit(self: *Self) void {
-			self._router.deinit(self.httpz_allocator);
+			const allocator = self.allocator;
+			for (self._threads) |thrd| {
+				thrd.detach();
+			}
+			allocator.free(self._threads);
+
+			// this isn't right, but we'll deal with proper shutdown in the future
+			// since we have other things blocking this from working correctly.
+			for (self._workers) |*wrk| {
+				wrk.deinit();
+			}
+			allocator.free(self._workers);
+
+			self._router.deinit(allocator);
 		}
 
 		pub fn listen(self: *Self) !void {
-			try listener.listen(*ServerCtx(G, R), self.httpz_allocator, self.app_allocator, self, self.config);
+			const os = std.os;
+			const net = std.net;
+
+			const config = self.config;
+
+			var socket = net.StreamServer.init(.{
+				.reuse_address = true,
+				.kernel_backlog = 1024,
+				.force_nonblocking = true,
+			});
+			errdefer socket.deinit();
+
+			var no_delay = true;
+			const address = blk: {
+				if (config.unix_path) |unix_path| {
+					no_delay = false;
+					std.fs.deleteFileAbsolute(unix_path) catch {};
+					break :blk try net.Address.initUnix(unix_path);
+				} else {
+					const listen_port = config.port.?;
+					const listen_address = config.address.?;
+					break :blk try net.Address.parseIp(listen_address, listen_port);
+				}
+			};
+			try socket.listen(address);
+
+			if (no_delay) {
+				// TODO: Broken on darwin:
+				// https://github.com/ziglang/zig/issues/17260
+				// if (@hasDecl(os.TCP, "NODELAY")) {
+				//  try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, os.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
+				// }
+				try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
+			}
+
+			var started: usize = 0;
+			var workers = self._workers;
+			var threads = self._threads;
+
+			errdefer {
+				socket.close();
+				for (0..started) |i| {
+					workers[i].deinit();
+					threads[i].detach();
+				}
+			}
+
+			const allocator = self.allocator;
+			for (0..workers.len) |i| {
+				workers[i] = try Worker.init(allocator, allocator, self, &config);
+				threads[i] = try Thread.spawn(.{}, Worker.run, .{&workers[i], &socket});
+				started += 1;
+			}
+
+			// TODO: figure out how to unblock this
+			// poll won't trigger if we close the listening socket
+			self._mutex.lock();
+			self._cond.wait(&self._mutex);
 		}
 
 		pub fn listenInNewThread(self: *Self) !std.Thread {

@@ -596,7 +596,7 @@ try httpz.listen(allocator, &router, .{
         .read_header_timeout = null,
 
         // Time in millisecond to wait for reading the body
-        .read_header_timeout = null,
+        .read_body_timeout = null,
     },
 
     // various options for tweaking response object
