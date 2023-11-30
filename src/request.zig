@@ -1243,12 +1243,12 @@ fn expectParseError(expected: anyerror, input: []const u8, config: Config) !void
 	s.write(input);
 
 	const req_state = Request.State.init(t.arena, config) catch unreachable;
-	try t.expectError(expected, Request.parse(t.allocator, &req_state, s.conn));
+	try t.expectError(expected, Request.parse(t.allocator, &req_state, s.conn.stream, s.conn.address));
 }
 
 fn testRequest(config: Config, stream: t.Stream) !Request {
 	const req_state = Request.State.init(t.arena, config) catch unreachable;
-	return Request.parse(t.arena, &req_state, stream.conn);
+	return Request.parse(t.arena, &req_state, stream, stream.address);
 }
 
 fn testCleanup(r: Request) void {

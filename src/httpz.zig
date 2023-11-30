@@ -14,6 +14,7 @@ pub const Url = @import("url.zig").Url;
 pub const Config = @import("config.zig").Config;
 
 const Allocator = std.mem.Allocator;
+const Conn = @import("conn.zig").Conn;
 
 pub const Protocol = enum {
 	HTTP10,
@@ -199,9 +200,6 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 		_errorHandler: ErrorHandlerAction(G),
 		_notFoundHandler: Action(G),
 		_cond: Thread.Condition,
-		_mutex: Thread.Mutex,
-		_threads: []Thread,
-		_workers: []Worker,
 
 		const Self = @This();
 		const Worker = @import("worker.zig").Worker(*Self);
@@ -219,22 +217,11 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 				var_config.address = "127.0.0.1";
 			}
 
-			const worker_count = config.pool.count orelse 2;
-
-			const threads = try allocator.alloc(Thread, worker_count);
-			errdefer allocator.free(threads);
-
-			const workers = try allocator.alloc(Worker, worker_count);
-			errdefer allocator.free(workers);
-
 			return .{
 				.ctx = ctx,
 				.config = var_config,
 				.allocator = allocator,
 				._cond = .{},
-				._mutex = .{},
-				._threads = threads,
-				._workers = workers,
 				._errorHandler = erh,
 				._notFoundHandler = nfh,
 				._router = try Router(G, R).init(allocator, dd, ctx),
@@ -243,20 +230,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 		}
 
 		pub fn deinit(self: *Self) void {
-			const allocator = self.allocator;
-			for (self._threads) |thrd| {
-				thrd.detach();
-			}
-			allocator.free(self._threads);
-
-			// this isn't right, but we'll deal with proper shutdown in the future
-			// since we have other things blocking this from working correctly.
-			for (self._workers) |*wrk| {
-				wrk.deinit();
-			}
-			allocator.free(self._workers);
-
-			self._router.deinit(allocator);
+			self._router.deinit(self.allocator);
 		}
 
 		pub fn listen(self: *Self) !void {
@@ -270,7 +244,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 				.kernel_backlog = 1024,
 				.force_nonblocking = true,
 			});
-			errdefer socket.deinit();
+			defer socket.deinit();
 
 			var no_delay = true;
 			const address = blk: {
@@ -295,33 +269,46 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 				try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
 			}
 
-			var started: usize = 0;
-			var workers = self._workers;
-			var threads = self._threads;
+			const allocator = self.allocator;
+			const signal = try os.pipe();
 
-			errdefer {
+			const worker_count = config.pool.count orelse 2;
+			const workers = try allocator.alloc(Worker, worker_count);
+			const threads = try allocator.alloc(Thread, worker_count);
+
+			var started: usize = 0;
+
+			defer {
 				socket.close();
+				os.close(signal[1]);
 				for (0..started) |i| {
+					threads[i].join();
 					workers[i].deinit();
-					threads[i].detach();
 				}
+				allocator.free(workers);
+				allocator.free(threads);
 			}
 
-			const allocator = self.allocator;
+
 			for (0..workers.len) |i| {
 				workers[i] = try Worker.init(allocator, allocator, self, &config);
-				threads[i] = try Thread.spawn(.{}, Worker.run, .{&workers[i], &socket});
+				threads[i] = try Thread.spawn(.{}, Worker.run, .{&workers[i], &socket, signal[0]});
 				started += 1;
 			}
 
-			// TODO: figure out how to unblock this
-			// poll won't trigger if we close the listening socket
-			self._mutex.lock();
-			self._cond.wait(&self._mutex);
+			// is this really the best way?
+			var mutex = Thread.Mutex{};
+			mutex.lock();
+			self._cond.wait(&mutex);
+			mutex.unlock();
 		}
 
 		pub fn listenInNewThread(self: *Self) !std.Thread {
 			return try std.Thread.spawn(.{}, listen, .{self});
+		}
+
+		pub fn stop(self: *Self) void {
+			self._cond.signal();
 		}
 
 		pub fn notFound(self: *Self, nfa: Action(G)) void {

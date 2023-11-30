@@ -1,11 +1,12 @@
 const std = @import("std");
-const t = @import("t.zig");
-const httpz = @import("httpz.zig");
+const builtin = @import("builtin");
 
-const response = @import("response.zig");
-const Config = @import("config.zig").Config;
-const Request = @import("request.zig").Request;
+const httpz = @import("httpz.zig");
+const Config = httpz.Config;
+const Request = httpz.Request;
 const Response = httpz.Response;
+
+const Conn = @import("conn.zig").Conn;
 
 const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
@@ -18,14 +19,12 @@ const os = std.os;
 const net = std.net;
 const log = std.log.scoped(.httpz);
 
-const KeepaliveConn = struct {
-	conn: NetConn,
-	last_request: i64,
-};
-
 pub fn Worker(comptime S: type) type {
 	return struct {
 		server: S,
+
+		// KQueue or Epoll, depending on the platform
+		loop: Loop,
 
 		// all data we can allocate upfront and re-use from request to request
 		req_state: Request.State,
@@ -39,19 +38,24 @@ pub fn Worker(comptime S: type) type {
 		// allocator for httpz internal allocations
 		httpz_allocator: Allocator,
 
-		// the number of connections this worker is currently monitoring
-		len: usize,
+		// an linked list of Conn objects that we're currently monitoring
+		conn_list: Conn.List,
 
-		// an array of Conn objects that we're currently monitoring
-		conns: []KeepaliveConn,
+		// the maximum connection a worker should manage, we won't accept more than this
+		max_conn: usize,
 
-		// an array of pollfd objects, corresponding to `connections`.
-		// separate array so we can pass this as-is to os.poll
-		poll_fds: []os.pollfd,
+		// pool for creating Conn
+		conn_pool: std.heap.MemoryPool(Conn),
 
 		keepalive_timeout: u32,
 
 		const Self = @This();
+
+		const Loop = switch (builtin.os.tag) {
+			.macos, .ios, .tvos, .watchos, .freebsd, .netbsd, .dragonfly, .openbsd => KQueue,
+			.linux => EPoll,
+			else => @compileError("not supported"),
+		};
 
 		pub fn init(httpz_allocator: Allocator, app_allocator: Allocator, server: S, config: *const Config) !Self {
 			const arena = try httpz_allocator.create(ArenaAllocator);
@@ -64,20 +68,16 @@ pub fn Worker(comptime S: type) type {
 			var res_state = try Response.State.init(httpz_allocator, config.response);
 			errdefer res_state.deinit(httpz_allocator);
 
-			const max_conns = config.pool.worker_max_conn orelse 512;
-
-			const conns = try httpz_allocator.alloc(KeepaliveConn, max_conns);
-			errdefer httpz_allocator.free(conns);
-
-			const poll_fds = try httpz_allocator.alloc(os.pollfd, max_conns);
-			errdefer httpz_allocator.free(poll_fds);
+			const loop = try Loop.init();
+			errdefer loop.deinit();
 
 			return .{
-				.len = 0,
 				.arena = arena,
-				.conns = conns,
+				.loop = loop,
+				.max_conn = config.pool.worker_max_conn orelse 512,
+				.conn_list = .{},
+				.conn_pool = std.heap.MemoryPool(Conn).init(httpz_allocator),
 				.server = server,
-				.poll_fds = poll_fds,
 				.req_state = req_state,
 				.res_state = res_state,
 				.httpz_allocator = httpz_allocator,
@@ -88,101 +88,102 @@ pub fn Worker(comptime S: type) type {
 		pub fn deinit(self: *Self) void {
 			const httpz_allocator = self.httpz_allocator;
 
-			// 0 is the listener socket, we aren't responsible for that
-			for (self.conns[1..self.len]) |ka_conn| {
-				ka_conn.conn.stream.close();
+			var conn = self.conn_list.head;
+			while (conn) |c| {
+				c.stream.close();
+				conn = c.next;
 			}
-			httpz_allocator.free(self.conns);
-			httpz_allocator.free(self.poll_fds);
 
 			self.req_state.deinit(httpz_allocator);
 			self.res_state.deinit(httpz_allocator);
 
 			self.arena.deinit();
+			self.conn_pool.deinit();
 			httpz_allocator.destroy(self.arena);
+
+			self.loop.deinit();
 		}
 
-		pub fn run(self: *Self, listener: *net.StreamServer) void {
+		pub fn run(self: *Self, listener: *net.StreamServer, signal: os.fd_t) void {
 			std.os.maybeIgnoreSigpipe();
 
-			const conns = self.conns;
-			const max_len = conns.len;
-			const poll_fds = self.poll_fds;
-			const keepalive_timeout = self.keepalive_timeout;
-
-			poll_fds[0] = .{
-				.revents = 0,
-				.fd = listener.sockfd.?,
-				.events = os.POLL.IN,
+			self.loop.add(listener.sockfd.?, 0) catch |err| {
+				log.err("Failed to add monitor to listening socket: {}", .{err});
+				return;
 			};
 
-			const listener_poll = &poll_fds[0];
+			self.loop.add(signal, 1) catch |err| {
+				log.err("Failed to add monitor to signal pipe: {}", .{err});
+				return;
+			};
 
-			var len : usize = 1;
+			const keepalive_timeout = self.keepalive_timeout;
+
 			while (true) {
-				_ = os.poll(poll_fds[0..len], -1) catch |err| {
-					log.err("failed to poll sockets: {any}", .{err});
+				var it = self.loop.wait() catch |err| {
+					log.err("Failed to wait on events: {}", .{err});
 					std.time.sleep(std.time.ns_per_s);
 					continue;
 				};
-
 				const now = std.time.microTimestamp();
 
-				// our special socketpair is always at index 0, if we have data here, it
-				// means the pool is trying to tell us something
-				if (listener_poll.revents != 0) accept: {
-					while (len < max_len) {
-						if (listener.accept()) |conn| {
-							poll_fds[len] = .{
-								.revents = 0,
-								.events = os.POLL.IN,
-								.fd = conn.stream.handle,
-							};
-							conns[len] = .{.conn = conn, .last_request = now};
-							len += 1;
-						} else |err| {
-							if (err != error.WouldBlock) {
-								log.err("accept error: {any}", .{err});
-							}
-							break: accept;
-						}
+				while (it.next()) |data| {
+					if (data == 0) {
+						self.accept(listener, now) catch |err| {
+							log.err("Failed to accept connection: {}", .{err});
+							std.time.sleep(std.time.ns_per_s);
+						};
+						continue;
 					}
-				}
 
+					if (data == 1) {
+						// our control signal, we're being told to stop,
+						return;
+					}
 
-				// skip 1, since we just handled it above
-				var i: usize = 1;
-				while (i < len) {
-					const kconn = &conns[i];
-					var will_close = (now - kconn.last_request) > keepalive_timeout;
-					if (poll_fds[i].revents != 0) {
-						if (self.handleRequest(kconn.conn, will_close)) {
-							kconn.last_request = now;
-						} else {
-							will_close = true;
-						}
+					const managed: *align(8) Conn = @ptrFromInt(data);
+					var will_close = (now - managed.last_request) > keepalive_timeout;
+
+					if (self.handleRequest(managed, will_close)) {
+						managed.last_request = now;
+					} else {
+						// handle request had an error
+						will_close = true;
 					}
 
 					if (will_close) {
-						kconn.conn.stream.close();
-						// we "remove" this item from our list by swaping the last item in its place
-						len -= 1;
-						self.len = len;
-						if (i != len) {
-							conns[i] = conns[len];
-							poll_fds[i] = poll_fds[len];
-						}
-						// don't increment i, since it now contains the previous last
-					} else {
-						i += 1;
+						managed.stream.close();
+						self.conn_list.remove(managed);
+						self.conn_pool.destroy(managed);
 					}
 				}
 			}
 		}
 
-		pub fn handleRequest(self: *Self, conn: NetConn, will_close: bool) bool {
-			const stream = conn.stream;
+		fn accept(self: *Self, listener: *net.StreamServer, now: i64) !void {
+			var conn_list = &self.conn_list;
+			var len = conn_list.len;
 
+			const max_conn = self.max_conn;
+
+			while (len < max_conn) {
+				const conn = listener.accept() catch |err| {
+					return if (err == error.WouldBlock) {} else err;
+				};
+
+				const managed = try self.conn_pool.create();
+				managed.* = .{
+					.last_request = now,
+					.stream = conn.stream,
+					.address = conn.address,
+				};
+				try self.loop.add(conn.stream.handle, @intFromPtr(managed));
+				conn_list.insert(managed);
+				len += 1;
+			}
+		}
+
+		pub fn handleRequest(self: *Self, conn: *Conn, will_close: bool) bool {
 			const arena = self.arena;
 			const server = self.server;
 
@@ -195,7 +196,7 @@ pub fn Worker(comptime S: type) type {
 			defer _ = arena.reset(.free_all);
 
 			const aa = arena.allocator();
-			var res = Response.init(aa, res_state, stream);
+			var res = Response.init(aa, res_state, conn.stream);
 
 			var req = Request.parse(aa, req_state, conn) catch |err| {
 				switch (err) {
@@ -222,3 +223,125 @@ pub fn Worker(comptime S: type) type {
 		}
 	};
 }
+
+const KQueue = struct {
+	q: i32,
+	change_count: usize,
+	change_buffer: [8]Kevent,
+	event_list: [32]Kevent,
+
+	const Kevent = std.os.Kevent;
+
+	fn init() !KQueue {
+		return .{
+			.q = try std.os.kqueue(),
+			.change_count = 0,
+			.change_buffer = undefined,
+			.event_list = undefined,
+		};
+	}
+
+	fn deinit(self: KQueue) void {
+		std.os.close(self.q);
+	}
+
+	fn add(self: *KQueue, fd: os.fd_t, data: usize) !void {
+		return self.change(.{
+			.ident = @intCast(fd),
+			.filter = os.system.EVFILT_READ,
+			.flags = os.system.EV_ADD | os.system.EV_ENABLE,
+			.fflags = 0,
+			.data = 0,
+			.udata = data,
+		});
+	}
+
+	fn change(self: *KQueue, event: Kevent) !void {
+		var change_count = self.change_count;
+		var change_buffer = &self.change_buffer;
+
+		if (change_count == change_buffer.len) {
+			// calling this with an empty event_list will return immediate
+			_ = try std.os.kevent(self.q, change_buffer, &[_]Kevent{}, null);
+			change_count = 0;
+		}
+		change_buffer[change_count] = event ;
+		self.change_count = change_count + 1;
+	}
+
+	fn wait(self: *KQueue) !Iterator {
+		const event_list = &self.event_list;
+		const event_count = try std.os.kevent(self.q, self.change_buffer[0..self.change_count], event_list, null);
+		self.change_count = 0;
+
+		return .{
+			.index = 0,
+			.events = event_list[0..event_count],
+		};
+	}
+
+	const Iterator = struct {
+		index: usize,
+		events: []Kevent,
+
+		fn next(self: *Iterator) ?usize{
+			const index = self.index;
+			const events = self.events;
+			if (index == events.len) {
+				return null;
+			}
+			self.index = index + 1;
+			return self.events[index].udata;
+		}
+	};
+};
+
+const EPoll = struct {
+	q: i32,
+	event_list: [32]EpollEvent,
+
+	const EpollEvent = std.os.linux.epoll_event;
+
+	fn init() !EPoll {
+		return .{
+			.event_list = undefined,
+			.q = try std.os.epoll_create1(0),
+		};
+	}
+
+	fn deinit(self: EPoll) void {
+		std.os.close(self.q);
+	}
+
+	fn add(self: *EPoll, fd: os.fd_t, user_data: usize) !void {
+		var event = os.linux.epoll_event{
+			.events = os.linux.EPOLL.IN,
+			.data = .{.ptr = user_data}
+		};
+		return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_ADD, fd, &event);
+	}
+
+	fn wait(self: *EPoll) !Iterator {
+		const event_list = &self.event_list;
+		const event_count = std.os.epoll_wait(self.q, event_list, -1);
+		return .{
+			.index = 0,
+			.events = event_list[0..event_count],
+		};
+	}
+
+	const Iterator = struct {
+		index: usize,
+		events: []EpollEvent,
+
+		fn next(self: *Iterator) ?usize{
+			const index = self.index;
+			const events = self.events;
+			if (index == events.len) {
+				return null;
+			}
+			self.index = index + 1;
+			return self.events[index].data.ptr;
+		}
+	};
+};
