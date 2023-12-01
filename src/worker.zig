@@ -450,10 +450,12 @@ const RequestStatePool = struct {
 
 
 	fn deinit(self: *RequestStatePool) void {
+		const allocator = self.allocator;
 		for (self.states) |state| {
-			state.deinit(self.allocator);
+			state.deinit(allocator);
 			self.state_pool.destroy(state);
 		}
+		allocator.free(self.states);
 		self.state_pool.deinit();
 	}
 
@@ -483,3 +485,32 @@ const RequestStatePool = struct {
 		self.available = available + 1;
 	}
 };
+
+// The bulk of Worker is tested in httpz.zig
+const t = @import("t.zig");
+test "RequestStatePool" {
+	var bp = try BufferPool.init(t.allocator, 2, 64);
+	defer bp.deinit();
+
+	var sp = try RequestStatePool.init(t.allocator, &bp, &.{
+		.workers = .{.min_conn = 2},
+		.request = .{.buffer_size = 64},
+	});
+	defer sp.deinit();
+
+	const s1 = try sp.acquire();
+	const s2 = try sp.acquire();
+	const s3 = try sp.acquire();
+
+	try t.expectEqual(true, s1.buf.ptr != s2.buf.ptr);
+	try t.expectEqual(true, s1.buf.ptr != s3.buf.ptr);
+	try t.expectEqual(true, s2.buf.ptr != s3.buf.ptr);
+
+	sp.release(s2);
+	const s4 = try sp.acquire();
+	try t.expectEqual(true, s4.buf.ptr == s2.buf.ptr);
+
+	sp.release(s1);
+	sp.release(s3);
+	sp.release(s4);
+}
