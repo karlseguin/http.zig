@@ -292,17 +292,16 @@ pub const Response = struct {
 				try stream.writeAll(header_buffer[0..header_pos]);
 				header_pos = 0;
 			}
-			const end_pos = header_pos + 16;
+			var end_pos = header_pos + 16;
 			@memcpy(header_buffer[header_pos..end_pos], "Content-Length: ");
 			header_pos = end_pos;
 			const pos = self.pos;
 			const len = if (pos > 0) pos else body.len;
 			header_pos += writeInt(header_buffer[header_pos..], @intCast(len));
-			header_buffer[header_pos] = '\r';
-			header_buffer[header_pos+1] = '\n';
-			header_buffer[header_pos+2] = '\r';
-			header_buffer[header_pos+3] = '\n';
-			try stream.writeAll(header_buffer[0..(header_pos+4)]);
+
+			end_pos = header_pos + 4;
+			@memcpy(header_buffer[header_pos..end_pos], "\r\n\r\n");
+			try stream.writeAll(header_buffer[0..end_pos]);
 		} else {
 			const fin = blk: {
 				// for chunked encoding, we only terminate with a single \r\n
@@ -476,46 +475,41 @@ pub const State = struct {
 
 // adapted from std.fmt
 fn writeInt(into: []u8, value: u32) usize {
-	var buf = into[0..numberOfDigits(value)];
+	const small_strings = "00010203040506070809" ++
+		"10111213141516171819" ++
+		"20212223242526272829" ++
+		"30313233343536373839" ++
+		"40414243444546474849" ++
+		"50515253545556575859" ++
+		"60616263646566676869" ++
+		"70717273747576777879" ++
+		"80818283848586878889" ++
+		"90919293949596979899";
 
-	var a = value;
-	var index = buf.len;
-	while (a >= 100) : (a = @divTrunc(a, 100)) {
-		index -= 2;
-		buf[index..][0..2].* = digits2(@as(usize, @intCast(a % 100)));
-	}
-
-	if (a < 10) {
-		index -= 1;
-		buf[index] = '0' + @as(u8, @intCast(a));
-	} else {
-		index -= 2;
-		buf[index..][0..2].* = digits2(@as(usize, @intCast(a)));
-	}
-	return buf.len;
-}
-
-fn digits2(value: usize) [2]u8 {
-	return ("0001020304050607080910111213141516171819" ++
-		"2021222324252627282930313233343536373839" ++
-		"4041424344454647484950515253545556575859" ++
-		"6061626364656667686970717273747576777879" ++
-		"8081828384858687888990919293949596979899")[value * 2 ..][0..2].*;
-}
-
-fn numberOfDigits(value: u32) usize {
 	var v = value;
-	var count: usize = 1;
-	while (true) {
-		if (v < 10) return count;
-		if (v < 100) return count + 1;
-		if (v < 1000) return count + 2;
-		if (v < 10000) return count + 3;
-		if (v < 100000) return count + 4;
-		if (v < 1000000) return count + 5;
-		v = v / 1000000;
-		count += 6;
+	var i: usize = 10;
+	var buf: [10]u8 = undefined;
+	while (v >= 100) {
+		const digits = v % 100 * 2;
+		v /= 100;
+		i -= 2;
+		buf[i+1] = small_strings[digits+1];
+		buf[i] = small_strings[digits];
 	}
+
+	{
+		const digits = v * 2;
+		i -= 1;
+		buf[i] = small_strings[digits+1];
+		if (v >= 10) {
+			i -= 1;
+			buf[i] = small_strings[digits];
+		}
+	}
+
+	const l = buf.len - i;
+	@memcpy(into[0..l], buf[i..]);
+	return l;
 }
 
 const t = @import("t.zig");

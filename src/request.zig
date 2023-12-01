@@ -446,20 +446,17 @@ pub const Reader = struct {
 
 		var buf = full;
 		while (true) {
-			const buf_len = buf.len;
-			const header_end = std.mem.indexOfScalar(u8, buf, '\r') orelse return false;
-
-			const next = header_end + 1;
-			if (next == buf_len) return false;
-			if (buf[next] != '\n') return error.InvalidHeaderLine;
+			const trailer_end = std.mem.indexOfScalar(u8, buf, '\n') orelse return false;
+			if (trailer_end == 0 or buf[trailer_end - 1] != '\r') return error.InvalidHeaderLine;
 
 			// means this follows the last \r\n, which means it's the end of our headers
-			if (header_end == 0) {
+			if (trailer_end == 1) {
 				self.pos += 2;
 				return try self.prepareForBody();
 			}
 
 			var valid = false;
+			const header_end = trailer_end - 1;
 			for (buf[0..header_end], 0..) |b, i| {
 				// find the colon and lowercase the header while we're iterating
 				if ('A' <= b and b <= 'Z') {
@@ -480,8 +477,7 @@ pub const Reader = struct {
 				return error.InvalidHeaderLine;
 			}
 
-			// skip \n
-			pos = next + 1;
+			pos = trailer_end + 1;
 			self.pos += pos;
 			buf = buf[pos..];
 		}
