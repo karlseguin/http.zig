@@ -1,11 +1,15 @@
 const std = @import("std");
 
+const request = @import("request.zig");
+
 const Self = @This();
 
 pub const Conn = struct {
 	stream: std.net.Stream,
 	last_request: i64,
 	address: std.net.Address,
+	reader: request.Reader,
+	request_state: *request.State,
 	next: ?*Conn = null,
 	prev: ?*Conn = null,
 

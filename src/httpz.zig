@@ -280,7 +280,9 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
 			defer {
 				socket.close();
+				// should cause the workers to unblock
 				os.close(signal[1]);
+
 				for (0..started) |i| {
 					threads[i].join();
 					workers[i].deinit();

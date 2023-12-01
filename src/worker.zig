@@ -26,9 +26,6 @@ pub fn Worker(comptime S: type) type {
 		// KQueue or Epoll, depending on the platform
 		loop: Loop,
 
-		// all data we can allocate upfront and re-use from request to request
-		req_state: Request.State,
-
 		// all data we can allocate upfront and re-use from request ot request (for the response)
 		res_state: Response.State,
 
@@ -47,7 +44,11 @@ pub fn Worker(comptime S: type) type {
 		// pool for creating Conn
 		conn_pool: std.heap.MemoryPool(Conn),
 
+		request_state_pool: std.heap.MemoryPool(Request.State),
+
 		keepalive_timeout: u32,
+
+		config: *const Config,
 
 		const Self = @This();
 
@@ -62,9 +63,6 @@ pub fn Worker(comptime S: type) type {
 			arena.* = ArenaAllocator.init(app_allocator);
 			errdefer httpz_allocator.destroy(arena);
 
-			var req_state = try Request.State.init(httpz_allocator, config.request);
-			errdefer req_state.deinit(httpz_allocator);
-
 			var res_state = try Response.State.init(httpz_allocator, config.response);
 			errdefer res_state.deinit(httpz_allocator);
 
@@ -72,13 +70,14 @@ pub fn Worker(comptime S: type) type {
 			errdefer loop.deinit();
 
 			return .{
-				.arena = arena,
 				.loop = loop,
+				.arena = arena,
+				.config = config,
 				.max_conn = config.pool.worker_max_conn orelse 512,
 				.conn_list = .{},
 				.conn_pool = std.heap.MemoryPool(Conn).init(httpz_allocator),
+				.request_state_pool = std.heap.MemoryPool(Request.State).init(httpz_allocator),
 				.server = server,
-				.req_state = req_state,
 				.res_state = res_state,
 				.httpz_allocator = httpz_allocator,
 				.keepalive_timeout = config.keepalive.timeout orelse 4294967295,
@@ -94,11 +93,12 @@ pub fn Worker(comptime S: type) type {
 				conn = c.next;
 			}
 
-			self.req_state.deinit(httpz_allocator);
 			self.res_state.deinit(httpz_allocator);
 
 			self.arena.deinit();
 			self.conn_pool.deinit();
+			self.request_state_pool.deinit();
+
 			httpz_allocator.destroy(self.arena);
 
 			self.loop.deinit();
@@ -144,16 +144,23 @@ pub fn Worker(comptime S: type) type {
 					const managed: *align(8) Conn = @ptrFromInt(data);
 					var will_close = (now - managed.last_request) > keepalive_timeout;
 
-					if (self.handleRequest(managed, will_close)) {
-						managed.last_request = now;
-					} else {
-						// handle request had an error
-						will_close = true;
+					switch (self.handleRequest(managed, will_close)) {
+						.need_more_data => {},
+						.failure => will_close = true,
+						.success => {
+							managed.reader.reset();
+							managed.request_state.reset();
+							managed.last_request = now;
+						},
 					}
 
 					if (will_close) {
 						managed.stream.close();
 						self.conn_list.remove(managed);
+
+						managed.request_state.deinit(self.httpz_allocator);
+						self.request_state_pool.destroy(managed.request_state);
+
 						self.conn_pool.destroy(managed);
 					}
 				}
@@ -171,11 +178,30 @@ pub fn Worker(comptime S: type) type {
 					return if (err == error.WouldBlock) {} else err;
 				};
 
+				errdefer conn.stream.close();
+
+				const stream = conn.stream;
+				{
+					// set non blocking
+					const socket = stream.handle;
+					const flags = try os.fcntl(socket, os.F.GETFL, 0);
+					_ = try os.fcntl(socket, os.F.SETFL, flags | os.SOCK.NONBLOCK);
+				}
+
 				const managed = try self.conn_pool.create();
+				errdefer self.conn_pool.destroy(managed);
+
+				const req_state = try self.request_state_pool.create();
+				errdefer self.request_state_pool.destroy(req_state);
+
+				req_state.* = try Request.State.init(self.httpz_allocator, self.config.request);
+
 				managed.* = .{
+					.stream = stream,
 					.last_request = now,
-					.stream = conn.stream,
 					.address = conn.address,
+					.request_state = req_state,
+					.reader = Request.Reader.init(req_state),
 				};
 				try self.loop.add(conn.stream.handle, @intFromPtr(managed));
 				conn_list.insert(managed);
@@ -183,45 +209,58 @@ pub fn Worker(comptime S: type) type {
 			}
 		}
 
-		pub fn handleRequest(self: *Self, conn: *Conn, will_close: bool) bool {
+		const HandleResult = enum {
+			need_more_data,
+			success,
+			failure,
+		};
+
+		pub fn handleRequest(self: *Self, conn: *Conn, will_close: bool) HandleResult {
+			const stream = conn.stream;
+			const done = conn.reader.parse(conn.stream) catch |err| switch (err) {
+				error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
+					stream.writeAll(errorResponse(400, "Invalid Request")) catch {};
+					return .failure;
+				},
+				error.HeaderTooBig => {
+					stream.writeAll(errorResponse(431, "Request header is too big")) catch {};
+					return .failure;
+				},
+				else => return .failure,
+			};
+
+			if (done == false) {
+				return .need_more_data;
+			}
+
+
 			const arena = self.arena;
 			const server = self.server;
-
-			var req_state = &self.req_state;
 			var res_state = &self.res_state;
 
-			req_state.reset();
 			res_state.reset();
 
 			defer _ = arena.reset(.free_all);
 
 			const aa = arena.allocator();
+
+			var req = Request.init(aa, conn, will_close);
 			var res = Response.init(aa, res_state, conn.stream);
 
-			var req = Request.parse(aa, req_state, conn) catch |err| {
-				switch (err) {
-					error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
-						res.status = 400;
-						res.body = "Invalid Request";
-					},
-					error.HeaderTooBig => {
-						res.status = 431;
-						res.body = "Request header is too big";
-					},
-					else => return false,
-				}
-				res.write() catch {};
-				return false;
-			};
-
-			req.keepalive = !will_close;
 			if (!server.handle(&req, &res)) {
-				return false;
+				return .failure;
 			}
-			req.drain() catch return false;
-			return true;
+			req.drain() catch return .failure;
+			return .success;
 		}
 	};
+}
+
+fn errorResponse(comptime status: u16, comptime body: []const u8) []const u8 {
+	return std.fmt.comptimePrint(
+		"HTTP/1.1 {d}\r\nConnection: Close\r\nContent-Length: {d}\r\n\r\n{s}",
+		.{status, body.len, body}
+	);
 }
 
 const KQueue = struct {
