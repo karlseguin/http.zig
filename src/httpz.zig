@@ -755,8 +755,7 @@ fn testHeaders(ctx: u32, req: *Request, res: *Response) !void {
 }
 
 fn testCLBody(_: u32, req: *Request, res: *Response) !void {
-	const body = try req.body();
-	res.header("Echo-Body", body.?);
+	res.header("Echo-Body", req.body().?);
 }
 
 fn testJsonRes(_: *Request, res: *Response) !void {

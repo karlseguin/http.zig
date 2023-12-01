@@ -15,25 +15,23 @@ pub fn init(config: httpz.Config) Testing {
 	const ts = t.Stream.init();
 
 	const aa = arena.allocator();
-	const req_state = aa.create(httpz.Request.State) catch unreachable;
-	req_state.* = httpz.Request.State.init(aa, config.request) catch unreachable;
+	const state = aa.create(httpz.Request.State) catch unreachable;
+
+	state.* = httpz.Request.State.init(aa, undefined, &config.request) catch unreachable;
 
 	const req = aa.create(httpz.Request) catch unreachable;
 	req.* = .{
-		.pos = 0,
 		.arena = aa,
 		.stream = ts.stream,
 		.keepalive = true,
-		.qs = req_state.qs,
-		.header_overread = 0,
-		.static = req_state.buf,
-		.params = req_state.params,
-		.headers = req_state.headers,
+		.qs = state.qs,
+		.spare = state.buf,
+		.params = state.params,
+		.headers = state.headers,
 		.url = httpz.Url.parse("/"),
 		.method = httpz.Method.GET,
 		.protocol = httpz.Protocol.HTTP11,
 		.address = std.net.Address.initIp4([_]u8{0, 0, 0, 0}, 0),
-		.max_body_size = req_state.max_body_size,
 	};
 
 	const res_state = aa.create(httpz.Response.State) catch unreachable;
@@ -142,7 +140,9 @@ pub const Testing = struct {
 	}
 
 	pub fn body(self: *Testing, bd: []const u8) void {
-		self.req.bd = bd;
+		const mutable = self.arena.dupe(u8, bd) catch unreachable;
+		self.req.body_buffer = .{.type = .static, .data = mutable};
+		self.req.body_len = bd.len;
 	}
 
 	pub fn json(self: *Testing, value: anytype) void {
@@ -462,7 +462,7 @@ test "testing: body" {
 	defer ht.deinit();
 
 	ht.body("the body");
-	try t.expectString("the body", (try ht.req.body()).?);
+	try t.expectString("the body", ht.req.body().?);
 }
 
 test "testing: json" {
@@ -470,7 +470,7 @@ test "testing: json" {
 	defer ht.deinit();
 
 	ht.json(.{.over = 9000});
-	try t.expectString("{\"over\":9000}", (try ht.req.body()).?);
+	try t.expectString("{\"over\":9000}", ht.req.body().?);
 }
 
 test "testing: expectBody empty" {

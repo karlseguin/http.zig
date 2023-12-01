@@ -326,15 +326,7 @@ On first call, the `query` function attempts to parse the querystring. This requ
 The original casing of both the key and the name are preserved.
 
 ### Body
-The body works like the querystring. It isn't automatically read from the socket and thus the initial call to `body()` can fail:
-
-```zig
-if (try req.body()) |body| {
-
-}
-```
-
-Like `query`, the body is internally cached and subsequent calls are fast and cannot fail. If there is no body, `body()` returns null.
+The body of the request, if any, can be accessed using `req.body()`. This returns a `?[]const u8`.
 
 #### Json Body
 The `req.json(TYPE)` function is a wrapper around the `body()` function which will call `std.json.parse` on the body. This function does not consider the content-type of the request and will try to parse any body.
@@ -547,12 +539,23 @@ try httpz.listen(allocator, &router, .{
     .unix_path = null,
 
     // configure the pool of request/response object pairs
-    .pool = .{
+    .workers = .{
         // Number of worker threads
         .count = 2,
 
         // Maximum number of concurrent connection each worker can handle
-        .worker_max_conn = 500,
+        // At the worst case, the memory usage of the system will be:
+        //    config.workers.max_conn * config.request.max_body_size
+        //    + some pointer overhead.
+        // But that's an extreme case where _every_ request is sending a large body.
+        // Using config.request.buffer_size would probably be more realistic.
+        .max_conn = 500,
+
+        // Minimum number of connection states each worker should maintain
+        // At minimum, the memory requirement will be:
+        //    config.workers.min_conn * config.request.buffer_size
+        // but that doesn't include internal data structures / pointers / etc.
+        .min_conn = 32,
     },
 
     // defaults to null

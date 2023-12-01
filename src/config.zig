@@ -2,11 +2,6 @@ const request = @import("request.zig");
 const response = @import("response.zig");
 
 pub const Config = struct {
-	// done like this so that an external app can access it as
-	// httpz.Config.Request or httpz.Config.Response
-	pub const Request = request.Config;
-	pub const Response = response.Config;
-
 	port: ?u16 = null,
 	address: ?[]const u8 = null,
 	unix_path: ?[]const u8 = null,
@@ -16,20 +11,38 @@ pub const Config = struct {
 	keepalive: Keepalive = .{},
 	cors: ?CORS = null,
 
+	pub const Worker = struct {
+		count: ?u16 = null,
+		max_conn: ?u16 = null,
+		min_conn: ?u16 = null,
+		large_buffer_count: ?u16 = null,
+		large_buffer_size: ?u32 = null,
+	};
+
+	pub const Request = struct {
+		max_body_size: ?usize = null,
+		buffer_size: ?usize = null,
+		max_header_count: ?usize = null,
+		max_param_count: ?usize = null,
+		max_query_count: ?usize = null,
+		read_header_timeout: ?u32 = null,
+		read_body_timeout: ?u32 = null,
+	};
+
+	pub const Response = struct {
+		max_header_count: ?usize = null,
+		body_buffer_size: ?usize = null,
+		header_buffer_size: ?usize = null,
+	};
+
+	pub const Keepalive = struct {
+		timeout: ?u32 = null,
+	};
+
 	pub const CORS = struct {
 		origin: []const u8,
 		headers: ?[]const u8 = null,
 		methods: ?[]const u8 = null,
 		max_age: ?[]const u8 = null,
-	};
-
-	pub const Worker = struct {
-		count: ?usize = null,
-		max_conn: ?u16 = null,
-		min_conn: ?u16 = null,
-	};
-
-	pub const Keepalive = struct {
-		timeout: ?u32 = null,
 	};
 };

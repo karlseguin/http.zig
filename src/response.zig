@@ -3,16 +3,13 @@ const builtin = @import("builtin");
 
 const httpz = @import("httpz.zig");
 const KeyValue = @import("key_value.zig").KeyValue;
+const Config = @import("config.zig").Config.Response;
 
 const mem = std.mem;
 const Stream = std.net.Stream;
 const Allocator = mem.Allocator;
 
-pub const Config = struct {
-	max_header_count: ?usize = null,
-	body_buffer_size: ?usize = null,
-	header_buffer_size: ?usize = null,
-};
+const Self = @This();
 
 pub const Response = struct {
 	// The stream to write the response to
@@ -65,34 +62,10 @@ pub const Response = struct {
 	// directly, rather set req.keepalive = false.
 	keepalive: bool,
 
-	// All the upfront memory allocation that we can do. Gets re-used from request
-	// to request.
-	pub const State = struct {
-		buf: []u8,
-		headers: KeyValue,
-		header_buffer: []u8,
-
-		pub fn init(allocator: Allocator, config: Config) !Response.State {
-			return .{
-				.buf = try allocator.alloc(u8, config.body_buffer_size orelse 32_768),
-				.headers = try KeyValue.init(allocator, config.max_header_count orelse 16),
-				.header_buffer = try allocator.alloc(u8, config.header_buffer_size orelse 4096),
-			};
-		}
-
-		pub fn deinit(self: *State, allocator: Allocator) void {
-			self.headers.deinit(allocator);
-			allocator.free(self.buf);
-			allocator.free(self.header_buffer);
-		}
-
-		pub fn reset(self: *State) void {
-			self.headers.reset();
-		}
-	};
+	pub const State = Self.State;
 
 	// Should not be called directly, but initialized through a pool
-	pub fn init(arena: Allocator, state: *const State, stream: Stream) Response {
+	pub fn init(arena: Allocator, state: *const Self.State, stream: Stream) Response {
 		return .{
 			.pos = 0,
 			.body = null,
@@ -473,6 +446,32 @@ pub const Response = struct {
 			}
 		}
 	};
+};
+
+// All the upfront memory allocation that we can do. Gets re-used from request
+// to request.
+pub const State = struct {
+	buf: []u8,
+	headers: KeyValue,
+	header_buffer: []u8,
+
+	pub fn init(allocator: Allocator, config: Config) !Response.State {
+		return .{
+			.buf = try allocator.alloc(u8, config.body_buffer_size orelse 32_768),
+			.headers = try KeyValue.init(allocator, config.max_header_count orelse 16),
+			.header_buffer = try allocator.alloc(u8, config.header_buffer_size orelse 4096),
+		};
+	}
+
+	pub fn deinit(self: *State, allocator: Allocator) void {
+		self.headers.deinit(allocator);
+		allocator.free(self.buf);
+		allocator.free(self.header_buffer);
+	}
+
+	pub fn reset(self: *State) void {
+		self.headers.reset();
+	}
 };
 
 // adapted from std.fmt

@@ -7,6 +7,7 @@ const Request = httpz.Request;
 const Response = httpz.Response;
 
 const Conn = @import("conn.zig").Conn;
+const BufferPool = @import("buffer.zig").Pool;
 
 const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
@@ -26,9 +27,13 @@ pub fn Worker(comptime S: type) type {
 		// KQueue or Epoll, depending on the platform
 		loop: Loop,
 
+		// For reading large bodies
+		buffer_pool: *BufferPool,
+
 		// all data we can allocate upfront and re-use from request ot request (for the response)
 		res_state: Response.State,
 
+		// every connection gets a state, which are pooled.
 		req_state_pool: RequestStatePool,
 
 		// every request and response will be given an allocator from this arena
@@ -37,7 +42,7 @@ pub fn Worker(comptime S: type) type {
 		// allocator for httpz internal allocations
 		httpz_allocator: Allocator,
 
-		// an linked list of Conn objects that we're currently monitoring
+		// a linked list of Conn objects that we're currently monitoring
 		conn_list: Conn.List,
 
 		// the maximum connection a worker should manage, we won't accept more than this
@@ -69,19 +74,30 @@ pub fn Worker(comptime S: type) type {
 			const loop = try Loop.init();
 			errdefer loop.deinit();
 
-			const req_state_pool = try RequestStatePool.init(httpz_allocator, config);
+			const worker_config = config.workers;
+
+			const buffer_pool = try httpz_allocator.create(BufferPool);
+			errdefer httpz_allocator.destroy(buffer_pool);
+
+			const large_buffer_count = worker_config.large_buffer_count orelse 8;
+			const large_buffer_size = worker_config.large_buffer_size orelse config.request.max_body_size orelse 65536;
+			buffer_pool.* = try BufferPool.init(httpz_allocator, large_buffer_count, large_buffer_size);
+			errdefer buffer_pool.deinit();
+
+			const req_state_pool = try RequestStatePool.init(httpz_allocator, buffer_pool, config);
 			errdefer req_state_pool.deinit();
 
 			return .{
 				.loop = loop,
 				.arena = arena,
 				.config = config,
-				.max_conn = config.workers.max_conn orelse 512,
 				.conn_list = .{},
+				.max_conn = worker_config.max_conn orelse 512,
 				.conn_pool = std.heap.MemoryPool(Conn).init(httpz_allocator),
 				.server = server,
 				.res_state = res_state,
 				.req_state_pool = req_state_pool,
+				.buffer_pool = buffer_pool,
 				.httpz_allocator = httpz_allocator,
 				.keepalive_timeout = config.keepalive.timeout orelse 4294967295,
 			};
@@ -101,6 +117,9 @@ pub fn Worker(comptime S: type) type {
 			self.arena.deinit();
 			self.conn_pool.deinit();
 			self.req_state_pool.deinit();
+
+			self.buffer_pool.deinit();
+			httpz_allocator.destroy(self.buffer_pool);
 
 			httpz_allocator.destroy(self.arena);
 
@@ -160,7 +179,9 @@ pub fn Worker(comptime S: type) type {
 					if (will_close) {
 						conn.stream.close();
 						self.conn_list.remove(conn);
-
+						if (conn.reader.body) |buf| {
+							self.buffer_pool.release(buf);
+						}
 						self.req_state_pool.release(conn.req_state);
 						self.conn_pool.destroy(conn);
 					}
@@ -176,9 +197,9 @@ pub fn Worker(comptime S: type) type {
 
 			while (len < max_conn) {
 				const conn = listener.accept() catch |err| {
+					// Wouldblock is normal here, as another thread might have accepted
 					return if (err == error.WouldBlock) {} else err;
 				};
-
 				errdefer conn.stream.close();
 
 				const stream = conn.stream;
@@ -249,7 +270,6 @@ pub fn Worker(comptime S: type) type {
 			if (!server.handle(&req, &res)) {
 				return .failure;
 			}
-			req.drain() catch return .failure;
 			return .success;
 		}
 	};
@@ -389,30 +409,31 @@ const RequestStatePool = struct {
 	states: []*Request.State,
 	available: usize,
 	allocator: Allocator,
+	buffer_pool: *BufferPool,
 	req_config: *const Request.Config,
-	mem_pool: std.heap.MemoryPool(Request.State),
+	state_pool: std.heap.MemoryPool(Request.State),
 
-	fn init(allocator: Allocator, config: *const Config) !RequestStatePool {
+	fn init(allocator: Allocator, buffer_pool: *BufferPool, config: *const Config) !RequestStatePool {
 		const min = config.workers.min_conn orelse config.workers.max_conn orelse 32;
 
 		var states = try allocator.alloc(*Request.State, min);
 		errdefer allocator.free(states);
 
-		var mem_pool = std.heap.MemoryPool(Request.State).init(allocator);
+		var state_pool = std.heap.MemoryPool(Request.State).init(allocator);
 
 		var initialized: usize = 0;
 		errdefer {
 			for (0..initialized) |i| {
 				states[i].deinit(allocator);
-				mem_pool.destroy(states[i]);
+				state_pool.destroy(states[i]);
 			}
 		}
 
 		for (0..min) |i| {
-			const state = try mem_pool.create();
-			errdefer mem_pool.destroy(state);
+			const state = try state_pool.create();
+			errdefer state_pool.destroy(state);
 
-			state.* = try Request.State.init(allocator, &config.request);
+			state.* = try Request.State.init(allocator, buffer_pool, &config.request);
 			states[i] = state;
 			initialized += 1;
 		}
@@ -421,7 +442,8 @@ const RequestStatePool = struct {
 			.states = states,
 			.available = min,
 			.allocator = allocator,
-			.mem_pool = mem_pool,
+			.state_pool = state_pool,
+			.buffer_pool = buffer_pool,
 			.req_config = &config.request,
 		};
 	}
@@ -430,21 +452,21 @@ const RequestStatePool = struct {
 	fn deinit(self: *RequestStatePool) void {
 		for (self.states) |state| {
 			state.deinit(self.allocator);
-			self.mem_pool.destroy(state);
+			self.state_pool.destroy(state);
 		}
-		self.mem_pool.deinit();
+		self.state_pool.deinit();
 	}
 
 	fn acquire(self: *RequestStatePool) !*Request.State {
 		const available = self.available;
 		if (available > 0) {
-			const new_available = available - 1;
-			self.available = new_available;
-			return self.states[new_available];
+			const index = available - 1;
+			self.available = index;
+			return self.states[index];
 		}
 
-		const state = try self.mem_pool.create();
-		state.* = try Request.State.init(self.allocator, self.req_config);
+		const state = try self.state_pool.create();
+		state.* = try Request.State.init(self.allocator, self.buffer_pool, self.req_config);
 		return state;
 	}
 
@@ -453,7 +475,7 @@ const RequestStatePool = struct {
 		const available = self.available;
 		if (available == states.len) {
 			state.deinit(self.allocator);
-			self.mem_pool.destroy(state);
+			self.state_pool.destroy(state);
 			return;
 		}
 
