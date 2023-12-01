@@ -10,8 +10,7 @@ pub const Config = struct {
 	port: ?u16 = null,
 	address: ?[]const u8 = null,
 	unix_path: ?[]const u8 = null,
-	pool: Pool = .{},
-	thread_pool: u32 = 0,
+	workers: Worker = .{},
 	request: Request = .{},
 	response: Response = .{},
 	keepalive: Keepalive = .{},
@@ -24,9 +23,10 @@ pub const Config = struct {
 		max_age: ?[]const u8 = null,
 	};
 
-	pub const Pool = struct {
+	pub const Worker = struct {
 		count: ?usize = null,
-		worker_max_conn: ?u16 = null,
+		max_conn: ?u16 = null,
+		min_conn: ?u16 = null,
 	};
 
 	pub const Keepalive = struct {

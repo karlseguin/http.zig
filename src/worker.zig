@@ -29,6 +29,8 @@ pub fn Worker(comptime S: type) type {
 		// all data we can allocate upfront and re-use from request ot request (for the response)
 		res_state: Response.State,
 
+		req_state_pool: RequestStatePool,
+
 		// every request and response will be given an allocator from this arena
 		arena: *ArenaAllocator,
 
@@ -43,8 +45,6 @@ pub fn Worker(comptime S: type) type {
 
 		// pool for creating Conn
 		conn_pool: std.heap.MemoryPool(Conn),
-
-		request_state_pool: std.heap.MemoryPool(Request.State),
 
 		keepalive_timeout: u32,
 
@@ -69,16 +69,19 @@ pub fn Worker(comptime S: type) type {
 			const loop = try Loop.init();
 			errdefer loop.deinit();
 
+			const req_state_pool = try RequestStatePool.init(httpz_allocator, config);
+			errdefer req_state_pool.deinit();
+
 			return .{
 				.loop = loop,
 				.arena = arena,
 				.config = config,
-				.max_conn = config.pool.worker_max_conn orelse 512,
+				.max_conn = config.workers.max_conn orelse 512,
 				.conn_list = .{},
 				.conn_pool = std.heap.MemoryPool(Conn).init(httpz_allocator),
-				.request_state_pool = std.heap.MemoryPool(Request.State).init(httpz_allocator),
 				.server = server,
 				.res_state = res_state,
+				.req_state_pool = req_state_pool,
 				.httpz_allocator = httpz_allocator,
 				.keepalive_timeout = config.keepalive.timeout orelse 4294967295,
 			};
@@ -97,7 +100,7 @@ pub fn Worker(comptime S: type) type {
 
 			self.arena.deinit();
 			self.conn_pool.deinit();
-			self.request_state_pool.deinit();
+			self.req_state_pool.deinit();
 
 			httpz_allocator.destroy(self.arena);
 
@@ -141,27 +144,25 @@ pub fn Worker(comptime S: type) type {
 						return;
 					}
 
-					const managed: *align(8) Conn = @ptrFromInt(data);
-					var will_close = (now - managed.last_request) > keepalive_timeout;
+					const conn: *align(8) Conn = @ptrFromInt(data);
+					var will_close = (now - conn.last_request) > keepalive_timeout;
 
-					switch (self.handleRequest(managed, will_close)) {
+					switch (self.handleRequest(conn, will_close)) {
 						.need_more_data => {},
 						.failure => will_close = true,
 						.success => {
-							managed.reader.reset();
-							managed.request_state.reset();
-							managed.last_request = now;
+							conn.reader.reset();
+							conn.req_state.reset();
+							conn.last_request = now;
 						},
 					}
 
 					if (will_close) {
-						managed.stream.close();
-						self.conn_list.remove(managed);
+						conn.stream.close();
+						self.conn_list.remove(conn);
 
-						managed.request_state.deinit(self.httpz_allocator);
-						self.request_state_pool.destroy(managed.request_state);
-
-						self.conn_pool.destroy(managed);
+						self.req_state_pool.release(conn.req_state);
+						self.conn_pool.destroy(conn);
 					}
 				}
 			}
@@ -191,16 +192,14 @@ pub fn Worker(comptime S: type) type {
 				const managed = try self.conn_pool.create();
 				errdefer self.conn_pool.destroy(managed);
 
-				const req_state = try self.request_state_pool.create();
-				errdefer self.request_state_pool.destroy(req_state);
-
-				req_state.* = try Request.State.init(self.httpz_allocator, self.config.request);
+				const req_state = try self.req_state_pool.acquire();
+				errdefer self.req_state_pool.release(req_state);
 
 				managed.* = .{
 					.stream = stream,
 					.last_request = now,
 					.address = conn.address,
-					.request_state = req_state,
+					.req_state = req_state,
 					.reader = Request.Reader.init(req_state),
 				};
 				try self.loop.add(conn.stream.handle, @intFromPtr(managed));
@@ -383,4 +382,82 @@ const EPoll = struct {
 			return self.events[index].data.ptr;
 		}
 	};
+};
+
+// 1 per worker
+const RequestStatePool = struct {
+	states: []*Request.State,
+	available: usize,
+	allocator: Allocator,
+	req_config: *const Request.Config,
+	mem_pool: std.heap.MemoryPool(Request.State),
+
+	fn init(allocator: Allocator, config: *const Config) !RequestStatePool {
+		const min = config.workers.min_conn orelse config.workers.max_conn orelse 32;
+
+		var states = try allocator.alloc(*Request.State, min);
+		errdefer allocator.free(states);
+
+		var mem_pool = std.heap.MemoryPool(Request.State).init(allocator);
+
+		var initialized: usize = 0;
+		errdefer {
+			for (0..initialized) |i| {
+				states[i].deinit(allocator);
+				mem_pool.destroy(states[i]);
+			}
+		}
+
+		for (0..min) |i| {
+			const state = try mem_pool.create();
+			errdefer mem_pool.destroy(state);
+
+			state.* = try Request.State.init(allocator, &config.request);
+			states[i] = state;
+			initialized += 1;
+		}
+
+		return .{
+			.states = states,
+			.available = min,
+			.allocator = allocator,
+			.mem_pool = mem_pool,
+			.req_config = &config.request,
+		};
+	}
+
+
+	fn deinit(self: *RequestStatePool) void {
+		for (self.states) |state| {
+			state.deinit(self.allocator);
+			self.mem_pool.destroy(state);
+		}
+		self.mem_pool.deinit();
+	}
+
+	fn acquire(self: *RequestStatePool) !*Request.State {
+		const available = self.available;
+		if (available > 0) {
+			const new_available = available - 1;
+			self.available = new_available;
+			return self.states[new_available];
+		}
+
+		const state = try self.mem_pool.create();
+		state.* = try Request.State.init(self.allocator, self.req_config);
+		return state;
+	}
+
+	fn release(self: *RequestStatePool, state: *Request.State) void {
+		const states = self.states;
+		const available = self.available;
+		if (available == states.len) {
+			state.deinit(self.allocator);
+			self.mem_pool.destroy(state);
+			return;
+		}
+
+		states[available] = state;
+		self.available = available + 1;
+	}
 };

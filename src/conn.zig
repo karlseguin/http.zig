@@ -9,7 +9,7 @@ pub const Conn = struct {
 	last_request: i64,
 	address: std.net.Address,
 	reader: request.Reader,
-	request_state: *request.State,
+	req_state: *request.State,
 	next: ?*Conn = null,
 	prev: ?*Conn = null,
 

@@ -272,7 +272,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 			const allocator = self.allocator;
 			const signal = try os.pipe();
 
-			const worker_count = config.pool.count orelse 2;
+			const worker_count = config.workers.count orelse 2;
 			const workers = try allocator.alloc(Worker, worker_count);
 			const threads = try allocator.alloc(Thread, worker_count);
 
@@ -500,7 +500,7 @@ test "httpz: invalid request" {
 	try stream.writeAll("TEA / HTTP/1.1\r\n\r\n");
 
 	var buf: [100]u8 = undefined;
-	try t.expectString("HTTP/1.1 400\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
+	try t.expectString("HTTP/1.1 400\r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
 }
 
 test "httpz: no route" {
