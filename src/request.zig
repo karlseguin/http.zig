@@ -143,12 +143,12 @@ pub const Request = struct {
 	}
 
 	pub fn json(self: *Request, comptime T: type) !?T {
-		const b = self.body orelse return null;
+		const b = self.body() orelse return null;
 		return try std.json.parseFromSliceLeaky(T, self.arena, b, .{});
 	}
 
 	pub fn jsonValue(self: *Request) !?std.json.Value {
-		const b = self.body orelse return null;
+		const b = self.body() orelse return null;
 		return try std.json.parseFromSliceLeaky(std.json.Value, self.arena, b, .{});
 	}
 
@@ -178,7 +178,7 @@ pub const Request = struct {
 
 		var it = std.mem.splitScalar(u8, raw, '&');
 		while (it.next()) |pair| {
-			if (std.mem.indexOfScalar(u8, pair, '=')) |sep| {
+			if (std.mem.indexOfScalarPos(u8, pair, 0, '=')) |sep| {
 				const key_res = try Url.unescape(allocator, buf, pair[0..sep]);
 				if (key_res.buffered) {
 					buf = buf[key_res.value.len..];
@@ -336,7 +336,7 @@ pub const Reader = struct {
 			if (try self.parseHeaders(buf[self.pos..len])) return true;
 		}
 
-		if (len == buf.len) {
+		if (self.body == null and len == buf.len) {
 			return error.HeaderTooBig;
 		}
 		return false;
@@ -398,7 +398,7 @@ pub const Reader = struct {
 		var len: usize = 0;
 		switch (buf[0]) {
 			'/' => {
-				const end_index = std.mem.indexOfScalar(u8, buf[1..buf_len], ' ') orelse return false;
+				const end_index = std.mem.indexOfScalarPos(u8, buf[1..buf_len], 0, ' ') orelse return false;
 				// +1 since we skipped the leading / in our indexOfScalar and +1 to consume the space
 				len = end_index + 2;
 				self.url = buf[0..end_index+1];
@@ -495,6 +495,10 @@ pub const Reader = struct {
 		self.body_len = cl;
 		if (cl == 0) return true;
 
+		if (cl > self.state.max_body_size) {
+			return error.BodyTooBig;
+		}
+
 		const pos = self.pos;
 		const len = self.len;
 		const buf = self.state.buf;
@@ -505,11 +509,8 @@ pub const Reader = struct {
 		if (read == cl) {
 			// we've read the entire body into buf, point to that.
 			self.body = .{.type = .static, .data = buf[pos..len]};
+			self.pos = len;
 			return true;
-		}
-
-		if (cl > self.state.max_body_size) {
-			return error.BodyTooBig;
 		}
 
 		// how much fo the body are we missing
@@ -521,6 +522,7 @@ pub const Reader = struct {
 			// we don't have the [full] body, but we have enough space in our static
 			// buffer for it
 			self.body = .{.type = .static, .data = buf[pos..len]};
+			self.pos = len;
 		} else {
 			// We don't have the [full] body, and our static buffer is too small
 			const body_buf = try self.state.buffer_pool.acquire(cl);
@@ -796,288 +798,248 @@ test "request: query" {
 	}
 }
 
-// test "request: body content-length" {
-// 	{
-// 		// too big
-// 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{.max_body_size = 9});
-// 		defer testCleanup(r);
-// 		try t.expectError(error.BodyTooBig, r.body());
-// 	}
+test "request: body content-length" {
+	{
+		// too big
+		try expectParseError(error.BodyTooBig, "POST / HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{.max_body_size = 9});
+	}
 
-// 	{
-// 		// no body
-// 		var r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
-// 		defer testCleanup(r);
-// 		try t.expectEqual(null, try r.body());
-// 		try t.expectEqual(null, try r.body());
-// 	}
+	{
+		// no body
+		var r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
+		defer testCleanup(r);
+		try t.expectEqual(null, r.body());
+		try t.expectEqual(null, r.body());
+	}
 
-// 	{
-// 		// fits into static buffer
-// 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{});
-// 		defer testCleanup(r);
-// 		try t.expectString("Over 9000!", (try r.body()).?);
-// 		try t.expectString("Over 9000!", (try r.body()).?);
-// 	}
+	{
+		// fits into static buffer
+		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{});
+		defer testCleanup(r);
+		try t.expectString("Over 9000!", r.body().?);
+		try t.expectString("Over 9000!", r.body().?);
+	}
 
-// 	{
-// 		// Requires dynamic buffer
-// 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 11\r\n\r\nOver 9001!!", .{.buffer_size = 40 });
-// 		defer testCleanup(r);
-// 		try t.expectString("Over 9001!!", (try r.body()).?);
-// 		try t.expectString("Over 9001!!", (try r.body()).?);
-// 	}
-// }
+	{
+		// Requires dynamic buffer
+		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 11\r\n\r\nOver 9001!!", .{.buffer_size = 40 });
+		defer testCleanup(r);
+		try t.expectString("Over 9001!!", r.body().?);
+		try t.expectString("Over 9001!!", r.body().?);
+	}
+}
 
-// // the query and body both (can) occupy space in our static buffer, so we want
-// // to make sure they both work regardless of the order they're useds
-// test "request: query & body" {
-// 	{
-// 		// query then body
-// 		var r = testParse("POST /?search=keemun%20tea HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{});
-// 		defer testCleanup(r);
-// 		try t.expectString("keemun tea", (try r.query()).get("search").?);
-// 		try t.expectString("Over 9000!", (try r.body()).?);
+// the query and body both (can) occupy space in our static buffer
+test "request: query & body" {
+	// query then body
+	var r = testParse("POST /?search=keemun%20tea HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{});
+	defer testCleanup(r);
+	try t.expectString("keemun tea", (try r.query()).get("search").?);
+	try t.expectString("Over 9000!", r.body().?);
 
-// 		// results should be cached internally, but let's double check
-// 		try t.expectString("keemun tea", (try r.query()).get("search").?);
-// 		try t.expectString("Over 9000!", (try r.body()).?);
-// 	}
+	// results should be cached internally, but let's double check
+	try t.expectString("keemun tea", (try r.query()).get("search").?);
+}
 
-// 	{
-// 		// body then query
-// 		var r = testParse("POST /?search=keemun%20tea HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{});
-// 		defer testCleanup(r);
-// 		try t.expectString("Over 9000!", (try r.body()).?);
-// 		try t.expectString("keemun tea", (try r.query()).get("search").?);
+test "body: json" {
+	const Tea = struct {
+		type: []const u8,
+	};
 
-// 		// results should be cached internally, but let's double check
-// 		try t.expectString("Over 9000!", (try r.body()).?);
-// 		try t.expectString("keemun tea", (try r.query()).get("search").?);
-// 	}
-// }
+	{
+		// too big
+		try expectParseError(error.BodyTooBig, "POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{.max_body_size = 16});
+	}
 
-// test "body: json" {
-// 	const Tea = struct {
-// 		type: []const u8,
-// 	};
+	{
+		// no body
+		var r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
+		defer testCleanup(r);
+		try t.expectEqual(null, try r.json(Tea));
+		try t.expectEqual(null, try r.json(Tea));
+	}
 
-// 	{
-// 		// too big
-// 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{.max_body_size = 16});
-// 		defer testCleanup(r);
-// 		try t.expectError(error.BodyTooBig, r.json(Tea));
-// 	}
+	{
+		// parses json
+		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
+		defer testCleanup(r);
+		try t.expectString("keemun", (try r.json(Tea)).?.type);
+		try t.expectString("keemun", (try r.json(Tea)).?.type);
+	}
+}
 
-// 	{
-// 		// no body
-// 		var r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
-// 		defer testCleanup(r);
-// 		try t.expectEqual(null, try r.json(Tea));
-// 		try t.expectEqual(null, try r.json(Tea));
-// 	}
+test "body: jsonValue" {
+	{
+		// too big
+		try expectParseError(error.BodyTooBig, "POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{.max_body_size = 16});
+	}
 
-// 	{
-// 		// parses json
-// 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
-// 		defer testCleanup(r);
-// 		try t.expectString("keemun", (try r.json(Tea)).?.type);
-// 		try t.expectString("keemun", (try r.json(Tea)).?.type);
-// 	}
-// }
+	{
+		// no body
+		var r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
+		defer testCleanup(r);
+		try t.expectEqual(null, try r.jsonValue());
+		try t.expectEqual(null, try r.jsonValue());
+	}
 
-// test "body: jsonValue" {
-// 	{
-// 		// too big
-// 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{.max_body_size = 16});
-// 		defer testCleanup(r);
-// 		try t.expectError(error.BodyTooBig, r.jsonValue());
-// 	}
+	{
+		// parses json
+		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
+		defer testCleanup(r);
+		try t.expectString("keemun", (try r.jsonValue()).?.object.get("type").?.string);
+		try t.expectString("keemun", (try r.jsonValue()).?.object.get("type").?.string);
+	}
+}
 
-// 	{
-// 		// no body
-// 		var r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
-// 		defer testCleanup(r);
-// 		try t.expectEqual(null, try r.jsonValue());
-// 		try t.expectEqual(null, try r.jsonValue());
-// 	}
+test "body: jsonObject" {
+	{
+		// too big
+		try expectParseError(error.BodyTooBig, "POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{.max_body_size = 16});
+	}
 
-// 	{
-// 		// parses json
-// 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
-// 		defer testCleanup(r);
-// 		try t.expectString("keemun", (try r.jsonValue()).?.object.get("type").?.string);
-// 		try t.expectString("keemun", (try r.jsonValue()).?.object.get("type").?.string);
-// 	}
-// }
+	{
+		// no body
+		var r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
+		defer testCleanup(r);
+		try t.expectEqual(null, try r.jsonObject());
+		try t.expectEqual(null, try r.jsonObject());
+	}
 
-// test "body: jsonObject" {
-// 	{
-// 		// too big
-// 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{.max_body_size = 16});
-// 		defer testCleanup(r);
-// 		try t.expectError(error.BodyTooBig, r.jsonObject());
-// 	}
+	{
+		// not an object
+		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 7\r\n\r\n\"hello\"", .{});
+		defer testCleanup(r);
+		try t.expectEqual(null, try r.jsonObject());
+		try t.expectEqual(null, try r.jsonObject());
+	}
 
-// 	{
-// 		// no body
-// 		var r = testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{.max_body_size = 10});
-// 		defer testCleanup(r);
-// 		try t.expectEqual(null, try r.jsonObject());
-// 		try t.expectEqual(null, try r.jsonObject());
-// 	}
+	{
+		// parses json
+		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
+		defer testCleanup(r);
+		try t.expectString("keemun", (try r.jsonObject()).?.get("type").?.string);
+		try t.expectString("keemun", (try r.jsonObject()).?.get("type").?.string);
+	}
+}
 
-// 	{
-// 		// not an object
-// 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 7\r\n\r\n\"hello\"", .{});
-// 		defer testCleanup(r);
-// 		try t.expectEqual(null, try r.jsonObject());
-// 		try t.expectEqual(null, try r.jsonObject());
-// 	}
+// our t.Stream already simulates random TCP fragmentation.
+test "request: fuzz" {
+	// We have a bunch of data to allocate for testing, like header names and
+	// values. Easier to use this arena and reset it after each test run.
+	var arena = std.heap.ArenaAllocator.init(t.allocator);
+	const aa = arena.allocator();
+	defer arena.deinit();
 
-// 	{
-// 		// parses json
-// 		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
-// 		defer testCleanup(r);
-// 		try t.expectString("keemun", (try r.jsonObject()).?.get("type").?.string);
-// 		try t.expectString("keemun", (try r.jsonObject()).?.get("type").?.string);
-// 	}
-// }
+	var r = t.getRandom();
+	const random = r.random();
+	for (0..100) |_| {
 
-// // our t.Stream already simulates random TCP fragmentation.
-// test "request: fuzz" {
-// 	// We have a bunch of data to allocate for testing, like header names and
-// 	// values. Easier to use this arena and reset it after each test run.
-// 	var arena = std.heap.ArenaAllocator.init(t.allocator);
-// 	const aa = arena.allocator();
-// 	defer arena.deinit();
+		var s = t.Stream.init();
+		defer s.deinit();
 
-// 	var r = t.getRandom();
-// 	const random = r.random();
-// 	for (0..100) |_| {
+		// important to test with different buffer sizes, since there's a lot of
+		// special handling for different cases (e.g the buffer is full and has
+		// some of the body in it, so we need to copy that to a dynamically allocated
+		// buffer)
+		const buffer_size = random.uintAtMost(u16, 1024) + 1024;
 
-// 		var s = t.Stream.init();
-// 		defer s.deinit();
+		// how many requests should we make on this 1 individual socket (simulating
+		// keepalive AND the request pool)
+		const number_of_requests = random.uintAtMost(u8, 10) + 1;
 
-// 		// important to test with different buffer sizes, since there's a lot of
-// 		// special handling for different cases (e.g the buffer is full and has
-// 		// some of the body in it, so we need to copy that to a dynamically allocated
-// 		// buffer)
-// 		const buffer_size = random.uintAtMost(u16, 1024) + 1024;
+		for (0..number_of_requests) |_| {
+			defer _ = arena.reset(.free_all);
 
-// 		// how many requests should we make on this 1 individual socket (simulating
-// 		// keepalive AND the request pool)
-// 		const number_of_requests = random.uintAtMost(u8, 10) + 1;
+			const method = randomMethod(random);
+			const url = t.randomString(random, aa, 20);
 
-// 		for (0..number_of_requests) |_| {
-// 			defer _ = arena.reset(.free_all);
+			s.write(method);
+			s.write(" /");
+			s.write(url);
 
-// 			const method = randomMethod(random);
-// 			const url = t.randomString(random, aa, 20);
+			const number_of_qs = random.uintAtMost(u8, 4);
+			if (number_of_qs != 0) {
+				s.write("?");
+			}
+			var query = std.StringHashMap([]const u8).init(aa);
+			for (0..number_of_qs) |_| {
+				const key = t.randomString(random, aa, 20);
+				const value = t.randomString(random, aa, 20);
+				if (!query.contains(key)) {
+					// TODO: figure out how we want to handle duplicate query values
+					// (the spec doesn't specifiy what to do)
+					query.put(key, value) catch unreachable;
+					s.write(key);
+					s.write("=");
+					s.write(value);
+					s.write("&");
+				}
+			}
 
-// 			s.write(method);
-// 			s.write(" /");
-// 			s.write(url);
+			_ = s.write(" HTTP/1.1\r\n");
 
-// 			const number_of_qs = random.uintAtMost(u8, 4);
-// 			if (number_of_qs != 0) {
-// 				s.write("?");
-// 			}
-// 			var query = std.StringHashMap([]const u8).init(aa);
-// 			for (0..number_of_qs) |_| {
-// 				const key = t.randomString(random, aa, 20);
-// 				const value = t.randomString(random, aa, 20);
-// 				if (!query.contains(key)) {
-// 					// TODO: figure out how we want to handle duplicate query values
-// 					// (the spec doesn't specifiy what to do)
-// 					query.put(key, value) catch unreachable;
-// 					s.write(key);
-// 					s.write("=");
-// 					s.write(value);
-// 					s.write("&");
-// 				}
-// 			}
+			var headers = std.StringHashMap([]const u8).init(aa);
+			for (0..random.uintAtMost(u8, 4)) |_| {
+				const name = t.randomString(random, aa, 20);
+				const value = t.randomString(random, aa, 20);
+				if (!headers.contains(name)) {
+					// TODO: figure out how we want to handle duplicate query values
+					// Note, the spec says we should merge these!
+					headers.put(name, value) catch unreachable;
+					s.write(name);
+					s.write(": ");
+					s.write(value);
+					s.write("\r\n");
+				}
+			}
 
-// 			_ = s.write(" HTTP/1.1\r\n");
+			var body: ?[]u8 = null;
+			if (random.uintAtMost(u8, 4) == 0) {
+				s.write("\r\n"); // no body
+			} else {
+				body = t.randomString(random, aa, 8000);
+				const cl = std.fmt.allocPrint(aa, "{d}", .{body.?.len}) catch unreachable;
+				headers.put("content-length", cl) catch unreachable;
+				s.write("content-length: ");
+				s.write(cl);
+				s.write("\r\n\r\n");
+				s.write(body.?);
+			}
 
-// 			var headers = std.StringHashMap([]const u8).init(aa);
-// 			for (0..random.uintAtMost(u8, 4)) |_| {
-// 				const name = t.randomString(random, aa, 20);
-// 				const value = t.randomString(random, aa, 20);
-// 				if (!headers.contains(name)) {
-// 					// TODO: figure out how we want to handle duplicate query values
-// 					// Note, the spec says we should merge these!
-// 					headers.put(name, value) catch unreachable;
-// 					s.write(name);
-// 					s.write(": ");
-// 					s.write(value);
-// 					s.write("\r\n");
-// 				}
-// 			}
+			var request = testRequest(.{.buffer_size = buffer_size}, s) catch |err| {
+				std.debug.print("\nParse Error: {}", .{err});
+				unreachable;
+			};
+			defer _ = t.aa.reset(.free_all);
 
-// 			var body: ?[]u8 = null;
-// 			if (random.uintAtMost(u8, 4) == 0) {
-// 				s.write("\r\n"); // no body
-// 			} else {
-// 				body = t.randomString(random, aa, 8000);
-// 				const cl = std.fmt.allocPrint(aa, "{d}", .{body.?.len}) catch unreachable;
-// 				headers.put("content-length", cl) catch unreachable;
-// 				s.write("content-length: ");
-// 				s.write(cl);
-// 				s.write("\r\n\r\n");
-// 				s.write(body.?);
-// 			}
+			// assert the headers
+			var it = headers.iterator();
+			while (it.next()) |entry| {
+				try t.expectString(entry.value_ptr.*, request.header(entry.key_ptr.*).?);
+			}
 
-// 			var request = testRequest(.{.buffer_size = buffer_size}, s) catch |err| {
-// 				std.debug.print("\nParse Error: {}", .{err});
-// 				unreachable;
-// 			};
-// 			defer _ = t.aa.reset(.free_all);
+			// assert the querystring
+			var actualQuery = request.query() catch unreachable;
+			it = query.iterator();
+			while (it.next()) |entry| {
+				try t.expectString(entry.value_ptr.*, actualQuery.get(entry.key_ptr.*).?);
+			}
 
-// 			// assert the headers
-// 			var it = headers.iterator();
-// 			while (it.next()) |entry| {
-// 				try t.expectString(entry.value_ptr.*, request.header(entry.key_ptr.*).?);
-// 			}
-
-// 			// assert the querystring
-// 			var actualQuery = request.query() catch unreachable;
-// 			it = query.iterator();
-// 			while (it.next()) |entry| {
-// 				try t.expectString(entry.value_ptr.*, actualQuery.get(entry.key_ptr.*).?);
-// 			}
-
-// 			// We dont' read the body by defalt. We donly read the body when the app
-// 			// calls req.body(). It's important that we test both cases. When the body
-// 			// isn't read, we still need to drain the bytes from the socket for when
-// 			// the socket is reused.
-// 			if (random.uintAtMost(u8, 4) != 0) {
-// 				const actual = request.body() catch unreachable;
-// 				if (body) |b| {
-// 					try t.expectString(b, actual.?);
-// 				} else {
-// 					try t.expectEqual(null, actual);
-// 				}
-// 			}
-
-// 			request.drain() catch unreachable;
-// 		}
-// 	}
-// }
-
-// test "request: extra socket data" {
-// 	var s = t.Stream.init();
-
-// 	s.write("GET / HTTP/1.1\r\nContent-Length: 5\r\n\r\nHello!");
-
-// 	var request = testRequest(.{.buffer_size = 50}, s) catch |err| {
-// 		std.debug.print("\nParse Error: {}", .{err});
-// 		unreachable;
-// 	};
-// 	defer testCleanup(request);
-
-// 	try t.expectError(error.TooMuchData, request.drain());
-// }
+			// We dont' read the body by defalt. We donly read the body when the app
+			// calls req.body(). It's important that we test both cases. When the body
+			// isn't read, we still need to drain the bytes from the socket for when
+			// the socket is reused.
+			if (random.uintAtMost(u8, 4) != 0) {
+				const actual = request.body();
+				if (body) |b| {
+					try t.expectString(b, actual.?);
+				} else {
+					try t.expectEqual(null, actual);
+				}
+			}
+		}
+	}
+}
 
 fn testParse(input: []const u8, config: Config) Request {
 	var s = t.Stream.init();
