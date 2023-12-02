@@ -301,7 +301,6 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 				allocator.free(threads);
 			}
 
-
 			for (0..workers.len) |i| {
 				workers[i] = try Worker.init(allocator, allocator, self, &config);
 				threads[i] = try Thread.spawn(.{}, Worker.run, .{&workers[i], socket, signal[0]});

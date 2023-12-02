@@ -2,10 +2,9 @@ const std = @import("std");
 const request = @import("request.zig");
 
 pub const Conn = struct {
-	stream: std.net.Stream,
 	last_request: i64,
+	stream: std.net.Stream,
 	address: std.net.Address,
-	reader: request.Reader,
 	req_state: *request.State,
 	next: ?*Conn = null,
 	prev: ?*Conn = null,

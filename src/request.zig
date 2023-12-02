@@ -28,28 +28,6 @@ const HTTP = @as(u32, @bitCast([4]u8{'H', 'T', 'T', 'P'}));
 const V1P0 = @as(u32, @bitCast([4]u8{'/', '1', '.', '0'}));
 const V1P1 = @as(u32, @bitCast([4]u8{'/', '1', '.', '1'}));
 
-// Each parsing step (method, target, protocol, headers, body)
-// return (a) how much data they've read from the socket and
-// (b) how much data they've consumed. This informs the next step
-// about what's available and where to start.
-fn ParseResult(comptime R: type) type {
-	return struct {
-		// the value that we parsed
-		value: R,
-
-		// how much the step used of the buffer
-		used: usize,
-
-		// total data read from the socket (by a particular step)
-		read: usize,
-	};
-}
-
-const zero_timeval = std.mem.toBytes(os.timeval{
-	.tv_sec = 0,
-	.tv_usec = 0,
-});
-
 pub const Request = struct {
 	// The URL of the request
 	url: Url,
@@ -102,23 +80,22 @@ pub const Request = struct {
 	pub const Reader = Self.Reader;
 
 	pub fn init(arena: Allocator, conn: *Conn, will_close: bool) Request {
-		const reader = &conn.reader;
 		const state = conn.req_state;
 
 		return .{
-			.url = Url.parse(reader.url.?),
+			.url = Url.parse(state.url.?),
 			.arena = arena,
 			.stream = conn.stream,
-			.method = reader.method.?,
+			.method = state.method.?,
 			.keepalive = !will_close,
-			.protocol = reader.protocol.?,
+			.protocol = state.protocol.?,
 			.address = conn.address,
 			.qs = state.qs,
 			.params = state.params,
 			.headers = state.headers,
-			.body_buffer = reader.body,
-			.body_len = reader.body_len,
-			.spare = state.buf[reader.pos..],
+			.body_buffer = state.body,
+			.body_len = state.body_len,
+			.spare = state.buf[state.pos..],
 		};
 	}
 
@@ -224,15 +201,66 @@ pub const Request = struct {
 // All the upfront memory allocation that we can do. Each worker keeps a pool
 // of these to re-use.
 pub const State = struct {
+	// Header must fit in here. Extra space can be used to fit the body or decode
+	// URL parameters.
 	buf: []u8,
+
+	// position in buf that we've parsed up to
+	pos: usize,
+
+	// length of buffer for which we have valid data
+	len: usize,
+
+	// Lazy-loaded in request.query();
 	qs: KeyValue,
-	headers: KeyValue,
+
+	// Populated after we've parsed the request, once we're matching the request
+	// to a route.
 	params: Params,
+
+	// constant config, but it's the only field we need,
 	max_body_size: usize,
+
+	// For reading the body, we might need more than `buf`.
 	buffer_pool: *buffer.Pool,
+
+	// URL, if we've parsed it
+	url: ?[]u8,
+
+	// Method, if we've parsed it
+	method: ?http.Method,
+
+	// Protocol, if we've parsed it
+	protocol: ?http.Protocol,
+
+	// The headers, might be partially parsed. From the outside, there's no way
+	// to know if this is fully parsed or not. There doesn't have to be. This
+	// is because once we finish parsing the headers, if there's no body, we'll
+	// signal the worker that we have a complete request and it can proceed to
+	// handle it. Thus, body == null or body_len == 0 doesn't mean anything.
+	headers: KeyValue,
+
+	// Our body. This be a slice pointing to` buf`, or be from the buffer_pool or
+	// be dynamically allocated.
+	body: ?buffer.Buffer,
+
+	// position in body.data that we have valid data for
+	body_pos: usize,
+
+	// the full length of the body, we might not have that much data yet, but we
+	// know what it is from the content-length header
+	body_len: usize,
 
 	pub fn init(allocator: Allocator, buffer_pool: *buffer.Pool, config: *const Config) !Request.State {
 		return .{
+			.pos = 0,
+			.len = 0,
+			.url = null,
+			.method = null,
+			.protocol = null,
+			.body = null,
+			.body_pos = 0,
+			.body_len = 0,
 			.buffer_pool = buffer_pool,
 			.max_body_size = config.max_body_size orelse 1_048_576,
 			.qs = try KeyValue.init(allocator, config.max_query_count orelse 32),
@@ -243,6 +271,9 @@ pub const State = struct {
 	}
 
 	pub fn deinit(self: *State, allocator: Allocator) void {
+		if (self.body) |buf| {
+			self.buffer_pool.release(buf);
+		}
 		allocator.free(self.buf);
 		self.qs.deinit(allocator);
 		self.params.deinit(allocator);
@@ -250,51 +281,6 @@ pub const State = struct {
 	}
 
 	pub fn reset(self: *State) void {
-		self.qs.reset();
-		self.params.reset();
-		self.headers.reset();
-	}
-};
-
-pub const Reader = struct {
-	// position in state.buf that we've parsed up to
-	pos: usize,
-
-	// length of state.buffer for which we have valid data
-	len: usize,
-
-	state: *Request.State,
-
-	url: ?[]u8,
-	method: ?http.Method,
-	protocol: ?http.Protocol,
-
-	// Our body. This can point to state.buffer, or be from the buffer_pool or
-	// be dynamically allocated.
-	body: ?buffer.Buffer,
-
-	// the full length of the body, we might not have that much data yet, but we
-	// know what it is from the content-length header
-	body_len: usize,
-
-	// position in body.data that we have valid data for
-	body_pos: usize,
-
-	pub fn init(state: *State) Reader {
-		return .{
-			.pos = 0,
-			.len = 0,
-			.url = null,
-			.method = null,
-			.protocol = null,
-			.state = state,
-			.body = null,
-			.body_pos = 0,
-			.body_len = 0,
-		};
-	}
-
-	pub fn reset(self: *Reader) void {
 		self.pos = 0;
 		self.len = 0;
 		self.url = null;
@@ -304,21 +290,25 @@ pub const Reader = struct {
 		self.body_pos = 0;
 		self.body_len = 0;
 		if (self.body) |buf| {
-			self.state.buffer_pool.release(buf);
+			self.buffer_pool.release(buf);
 			self.body = null;
 		}
+
+		self.qs.reset();
+		self.params.reset();
+		self.headers.reset();
 	}
 
 	// returns true if the header has been fully parsed
-	pub fn parse(self: *Reader, stream: anytype) !bool {
+	pub fn parse(self: *State, stream: anytype) !bool {
 		if (self.body != null) {
 			// if we have a body, then we've read the header. We want to read into
-			// self.body, not self.state.buf.
+			// self.body, not self.buf.
 			return self.readBody(stream);
 		}
 
 		var len = self.len;
-		const buf = self.state.buf;
+		const buf = self.buf;
 		const n = try stream.read(buf[len..]);
 		if (n == 0) {
 			return error.ConnectionClosed;
@@ -342,7 +332,7 @@ pub const Reader = struct {
 		return false;
 	}
 
-	fn parseMethod(self: *Reader, buf: []u8) !bool {
+	fn parseMethod(self: *State, buf: []u8) !bool {
 		const buf_len = buf.len;
 		if (buf_len < 4) return false;
 
@@ -391,7 +381,7 @@ pub const Reader = struct {
 		return try self.parseUrl(buf[self.pos..]);
 	}
 
-	fn parseUrl(self: *Reader, buf: []u8) !bool {
+	fn parseUrl(self: *State, buf: []u8) !bool {
 		const buf_len = buf.len;
 		if (buf_len == 0) return false;
 
@@ -418,7 +408,7 @@ pub const Reader = struct {
 		return self.parseProtocol(buf[len..]);
 	}
 
-	fn parseProtocol(self: *Reader, buf: []u8) !bool {
+	fn parseProtocol(self: *State, buf: []u8) !bool {
 		const buf_len = buf.len;
 		if (buf_len < 10) return false;
 
@@ -440,9 +430,9 @@ pub const Reader = struct {
 		return try self.parseHeaders(buf[10..]);
 	}
 
-	fn parseHeaders(self: *Reader, full: []u8) !bool {
+	fn parseHeaders(self: *State, full: []u8) !bool {
 		var pos = self.pos;
-		var headers = &self.state.headers;
+		var headers = &self.headers;
 
 		var buf = full;
 		while (true) {
@@ -484,20 +474,20 @@ pub const Reader = struct {
 	}
 
 	// we've finished reading the header
-	fn prepareForBody(self: *Reader) !bool {
-		const str = self.state.headers.get("content-length") orelse return true;
+	fn prepareForBody(self: *State) !bool {
+		const str = self.headers.get("content-length") orelse return true;
 		const cl = atoi(str) orelse return error.InvalidContentLength;
 
 		self.body_len = cl;
 		if (cl == 0) return true;
 
-		if (cl > self.state.max_body_size) {
+		if (cl > self.max_body_size) {
 			return error.BodyTooBig;
 		}
 
 		const pos = self.pos;
 		const len = self.len;
-		const buf = self.state.buf;
+		const buf = self.buf;
 
 		// how much (if any) of the body we've already read
 		const read = len - pos ;
@@ -521,7 +511,7 @@ pub const Reader = struct {
 			self.pos = len;
 		} else {
 			// We don't have the [full] body, and our static buffer is too small
-			const body_buf = try self.state.buffer_pool.acquire(cl);
+			const body_buf = try self.buffer_pool.acquire(cl);
 			@memcpy(body_buf.data[0..read], buf[pos..pos + read]);
 			self.body = body_buf;
 		}
@@ -529,7 +519,7 @@ pub const Reader = struct {
 		return false;
 	}
 
-	fn readBody(self: *Reader, stream: anytype) !bool {
+	fn readBody(self: *State, stream: anytype) !bool {
 		var pos = self.body_pos;
 		const buf = self.body.?.data;
 
@@ -1055,8 +1045,7 @@ fn expectParseError(expected: anyerror, input: []const u8, config: Config) !void
 	s.write(input);
 
 	var state = State.init(t.arena, undefined, &config) catch unreachable;
-	var reader = Reader.init(&state);
-	try t.expectError(expected, reader.parse(s.stream));
+	try t.expectError(expected, state.parse(s.stream));
 }
 
 fn testRequest(config: Config, stream: t.Stream) !Request {
@@ -1066,15 +1055,13 @@ fn testRequest(config: Config, stream: t.Stream) !Request {
 	const state = t.arena.create(State) catch unreachable;
 	state.* = State.init(t.arena, buffer_pool, &config) catch unreachable;
 
-	var reader = Reader.init(state);
 	while (true) {
-		if (try reader.parse(stream.stream)) break;
+		if (try state.parse(stream.stream)) break;
 	}
 
 	const conn = t.arena.create(Conn) catch unreachable;
 	conn.* = .{
 		.last_request = 0,
-		.reader = reader,
 		.req_state = state,
 		.stream = stream.stream,
 		.address = stream.conn.address,

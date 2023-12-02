@@ -170,7 +170,6 @@ pub fn Worker(comptime S: type) type {
 						.need_more_data => {},
 						.failure => will_close = true,
 						.success => {
-							conn.reader.reset();
 							conn.req_state.reset();
 							conn.last_request = now;
 						},
@@ -179,10 +178,10 @@ pub fn Worker(comptime S: type) type {
 					if (will_close) {
 						conn.stream.close();
 						self.conn_list.remove(conn);
-						if (conn.reader.body) |buf| {
-							self.buffer_pool.release(buf);
-						}
+
+						conn.req_state.reset();
 						self.req_state_pool.release(conn.req_state);
+
 						self.conn_pool.destroy(conn);
 					}
 				}
@@ -222,7 +221,6 @@ pub fn Worker(comptime S: type) type {
 					.address = address,
 					.req_state = req_state,
 					.stream = .{.handle = socket},
-					.reader = Request.Reader.init(req_state),
 				};
 				try self.loop.add(socket, @intFromPtr(managed));
 				conn_list.insert(managed);
@@ -238,7 +236,7 @@ pub fn Worker(comptime S: type) type {
 
 		pub fn handleRequest(self: *Self, conn: *Conn, will_close: bool) HandleResult {
 			const stream = conn.stream;
-			const done = conn.reader.parse(conn.stream) catch |err| switch (err) {
+			const done = conn.req_state.parse(conn.stream) catch |err| switch (err) {
 				error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
 					stream.writeAll(errorResponse(400, "Invalid Request")) catch {};
 					return .failure;
@@ -253,7 +251,6 @@ pub fn Worker(comptime S: type) type {
 			if (done == false) {
 				return .need_more_data;
 			}
-
 
 			const arena = self.arena;
 			const server = self.server;
@@ -448,7 +445,6 @@ const RequestStatePool = struct {
 			.req_config = &config.request,
 		};
 	}
-
 
 	fn deinit(self: *RequestStatePool) void {
 		const allocator = self.allocator;
