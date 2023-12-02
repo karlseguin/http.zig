@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const Thread = std.Thread;
 pub const testing = @import("testing.zig");
@@ -236,15 +237,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 		pub fn listen(self: *Self) !void {
 			const os = std.os;
 			const net = std.net;
-
 			const config = self.config;
-
-			var socket = net.StreamServer.init(.{
-				.reuse_address = true,
-				.kernel_backlog = 1024,
-				.force_nonblocking = true,
-			});
-			defer socket.deinit();
 
 			var no_delay = true;
 			const address = blk: {
@@ -258,7 +251,12 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 					break :blk try net.Address.parseIp(listen_address, listen_port);
 				}
 			};
-			try socket.listen(address);
+
+			const socket = blk: {
+				const sock_flags = os.SOCK.STREAM | os.SOCK.CLOEXEC | os.SOCK.NONBLOCK;
+				const proto = if (address.any.family == os.AF.UNIX) @as(u32, 0) else os.IPPROTO.TCP;
+				break :blk try os.socket(address.any.family, sock_flags, proto);
+			};
 
 			if (no_delay) {
 				// TODO: Broken on darwin:
@@ -266,8 +264,21 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 				// if (@hasDecl(os.TCP, "NODELAY")) {
 				//  try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, os.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
 				// }
-				try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
+				try os.setsockopt(socket, os.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
 			}
+
+			if (@hasDecl(os.SO, "REUSEPORT_LB")) {
+				try os.setsockopt(socket, os.SOL.SOCKET, os.SO.REUSEPORT_LB, &std.mem.toBytes(@as(c_int, 1)));
+			} else if (@hasDecl(os.SO, "REUSEPORT")) {
+				try os.setsockopt(socket, os.SOL.SOCKET, os.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1)));
+			}
+
+			{
+				const socklen = address.getOsSockLen();
+				try os.bind(socket, &address.any, socklen);
+				try os.listen(socket, 1204); // kernel backlog
+			}
+			defer os.close(socket);
 
 			const allocator = self.allocator;
 			const signal = try os.pipe();
@@ -279,7 +290,6 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 			var started: usize = 0;
 
 			defer {
-				socket.close();
 				// should cause the workers to unblock
 				os.close(signal[1]);
 
@@ -294,7 +304,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
 			for (0..workers.len) |i| {
 				workers[i] = try Worker.init(allocator, allocator, self, &config);
-				threads[i] = try Thread.spawn(.{}, Worker.run, .{&workers[i], &socket, signal[0]});
+				threads[i] = try Thread.spawn(.{}, Worker.run, .{&workers[i], socket, signal[0]});
 				started += 1;
 			}
 

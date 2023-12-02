@@ -126,10 +126,10 @@ pub fn Worker(comptime S: type) type {
 			self.loop.deinit();
 		}
 
-		pub fn run(self: *Self, listener: *net.StreamServer, signal: os.fd_t) void {
+		pub fn run(self: *Self, listener: os.fd_t, signal: os.fd_t) void {
 			std.os.maybeIgnoreSigpipe();
 
-			self.loop.add(listener.sockfd.?, 0) catch |err| {
+			self.loop.add(listener, 0) catch |err| {
 				log.err("Failed to add monitor to listening socket: {}", .{err});
 				return;
 			};
@@ -189,23 +189,24 @@ pub fn Worker(comptime S: type) type {
 			}
 		}
 
-		fn accept(self: *Self, listener: *net.StreamServer, now: i64) !void {
+		fn accept(self: *Self, listener: os.fd_t, now: i64) !void {
 			var conn_list = &self.conn_list;
 			var len = conn_list.len;
 
 			const max_conn = self.max_conn;
 
 			while (len < max_conn) {
-				const conn = listener.accept() catch |err| {
+				var address: std.net.Address = undefined;
+				var address_len: os.socklen_t = @sizeOf(std.net.Address);
+
+				const socket = os.accept(listener, &address.any, &address_len, os.SOCK.CLOEXEC) catch |err| {
 					// Wouldblock is normal here, as another thread might have accepted
 					return if (err == error.WouldBlock) {} else err;
 				};
-				errdefer conn.stream.close();
+				errdefer os.close(socket);
 
-				const stream = conn.stream;
 				{
 					// set non blocking
-					const socket = stream.handle;
 					const flags = try os.fcntl(socket, os.F.GETFL, 0);
 					_ = try os.fcntl(socket, os.F.SETFL, flags | os.SOCK.NONBLOCK);
 				}
@@ -217,13 +218,13 @@ pub fn Worker(comptime S: type) type {
 				errdefer self.req_state_pool.release(req_state);
 
 				managed.* = .{
-					.stream = stream,
 					.last_request = now,
-					.address = conn.address,
+					.address = address,
 					.req_state = req_state,
+					.stream = .{.handle = socket},
 					.reader = Request.Reader.init(req_state),
 				};
-				try self.loop.add(conn.stream.handle, @intFromPtr(managed));
+				try self.loop.add(socket, @intFromPtr(managed));
 				conn_list.insert(managed);
 				len += 1;
 			}
