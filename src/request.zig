@@ -61,7 +61,6 @@ pub const Request = struct {
 	// The query string lookup.
 	qs: KeyValue,
 
-
 	// Spare space we still have in our static buffer after parsing the request
 	// We can use this, if needed, for example to unescape querystring parameters
 	spare: []u8,
@@ -1052,8 +1051,7 @@ fn testRequest(config: Config, stream: t.Stream) !Request {
 	const buffer_pool = t.arena.create(buffer.Pool) catch unreachable;
 	buffer_pool.* = buffer.Pool.init(t.arena, 2, 512) catch unreachable;
 
-	const state = t.arena.create(State) catch unreachable;
-	state.* = State.init(t.arena, buffer_pool, &config) catch unreachable;
+	var state = State.init(t.arena, buffer_pool, &config) catch unreachable;
 
 	while (true) {
 		if (try state.parse(stream.stream)) break;

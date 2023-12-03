@@ -27,14 +27,8 @@ pub fn Worker(comptime S: type) type {
 		// KQueue or Epoll, depending on the platform
 		loop: Loop,
 
-		// For reading large bodies
-		buffer_pool: *BufferPool,
-
 		// all data we can allocate upfront and re-use from request ot request (for the response)
 		res_state: Response.State,
-
-		// every connection gets a state, which are pooled.
-		req_state_pool: RequestStatePool,
 
 		// every request and response will be given an allocator from this arena
 		arena: *ArenaAllocator,
@@ -42,14 +36,14 @@ pub fn Worker(comptime S: type) type {
 		// allocator for httpz internal allocations
 		httpz_allocator: Allocator,
 
-		// a linked list of Conn objects that we're currently monitoring
-		conn_list: Conn.List,
+		// Manager of connections. This includes a list of active connections the
+		// worker is responsible for, as well as buffer connections can use to
+		// get larger []u8, and a pool of re-usable connection objects to reduce
+		// dynamic allocations needed for new requests.
+		manager: Manager,
 
 		// the maximum connection a worker should manage, we won't accept more than this
 		max_conn: usize,
-
-		// pool for creating Conn
-		conn_pool: std.heap.MemoryPool(Conn),
 
 		keepalive_timeout: u32,
 
@@ -74,31 +68,18 @@ pub fn Worker(comptime S: type) type {
 			const loop = try Loop.init();
 			errdefer loop.deinit();
 
-			const worker_config = config.workers;
-
-			const buffer_pool = try httpz_allocator.create(BufferPool);
-			errdefer httpz_allocator.destroy(buffer_pool);
-
-			const large_buffer_count = worker_config.large_buffer_count orelse 8;
-			const large_buffer_size = worker_config.large_buffer_size orelse config.request.max_body_size orelse 65536;
-			buffer_pool.* = try BufferPool.init(httpz_allocator, large_buffer_count, large_buffer_size);
-			errdefer buffer_pool.deinit();
-
-			const req_state_pool = try RequestStatePool.init(httpz_allocator, buffer_pool, config);
-			errdefer req_state_pool.deinit();
+			const manager = try Manager.init(httpz_allocator, config);
+			errdefer manager.deinit();
 
 			return .{
 				.loop = loop,
 				.arena = arena,
 				.config = config,
-				.conn_list = .{},
-				.max_conn = worker_config.max_conn orelse 512,
-				.conn_pool = std.heap.MemoryPool(Conn).init(httpz_allocator),
 				.server = server,
+				.manager = manager,
 				.res_state = res_state,
-				.req_state_pool = req_state_pool,
-				.buffer_pool = buffer_pool,
 				.httpz_allocator = httpz_allocator,
+				.max_conn = config.workers.max_conn orelse 512,
 				.keepalive_timeout = config.keepalive.timeout orelse 4294967295,
 			};
 		}
@@ -106,28 +87,18 @@ pub fn Worker(comptime S: type) type {
 		pub fn deinit(self: *Self) void {
 			const httpz_allocator = self.httpz_allocator;
 
-			var conn = self.conn_list.head;
-			while (conn) |c| {
-				c.stream.close();
-				conn = c.next;
-			}
-
+			self.manager.deinit();
 			self.res_state.deinit(httpz_allocator);
 
 			self.arena.deinit();
-			self.conn_pool.deinit();
-			self.req_state_pool.deinit();
-
-			self.buffer_pool.deinit();
-			httpz_allocator.destroy(self.buffer_pool);
 
 			httpz_allocator.destroy(self.arena);
-
 			self.loop.deinit();
 		}
 
 		pub fn run(self: *Self, listener: os.fd_t, signal: os.fd_t) void {
 			std.os.maybeIgnoreSigpipe();
+			const manager = &self.manager;
 
 			self.loop.add(listener, 0) catch |err| {
 				log.err("Failed to add monitor to listening socket: {}", .{err});
@@ -176,23 +147,17 @@ pub fn Worker(comptime S: type) type {
 					}
 
 					if (will_close) {
-						conn.stream.close();
-						self.conn_list.remove(conn);
-
-						conn.req_state.reset();
-						self.req_state_pool.release(conn.req_state);
-
-						self.conn_pool.destroy(conn);
+						manager.close(conn);
 					}
 				}
 			}
 		}
 
 		fn accept(self: *Self, listener: os.fd_t, now: i64) !void {
-			var conn_list = &self.conn_list;
-			var len = conn_list.len;
-
 			const max_conn = self.max_conn;
+
+			var manager = &self.manager;
+			var len = manager.len;
 
 			while (len < max_conn) {
 				var address: std.net.Address = undefined;
@@ -210,20 +175,12 @@ pub fn Worker(comptime S: type) type {
 					_ = try os.fcntl(socket, os.F.SETFL, flags | os.SOCK.NONBLOCK);
 				}
 
-				const managed = try self.conn_pool.create();
-				errdefer self.conn_pool.destroy(managed);
+				var conn = try manager.new();
+				conn.last_request = now;
+				conn.stream = .{.handle = socket};
+				conn.address = address;
 
-				const req_state = try self.req_state_pool.acquire();
-				errdefer self.req_state_pool.release(req_state);
-
-				managed.* = .{
-					.last_request = now,
-					.address = address,
-					.req_state = req_state,
-					.stream = .{.handle = socket},
-				};
-				try self.loop.add(socket, @intFromPtr(managed));
-				conn_list.insert(managed);
+				try self.loop.add(socket, @intFromPtr(conn));
 				len += 1;
 			}
 		}
@@ -236,7 +193,7 @@ pub fn Worker(comptime S: type) type {
 
 		pub fn handleRequest(self: *Self, conn: *Conn, will_close: bool) HandleResult {
 			const stream = conn.stream;
-			const done = conn.req_state.parse(conn.stream) catch |err| switch (err) {
+			const done = conn.req_state.parse(stream) catch |err| switch (err) {
 				error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
 					stream.writeAll(errorResponse(400, "Invalid Request")) catch {};
 					return .failure;
@@ -402,112 +359,302 @@ const EPoll = struct {
 	};
 };
 
-// 1 per worker
-const RequestStatePool = struct {
-	states: []*Request.State,
+const Manager = struct {
+	// Double linked list of Conn a worker is currently managing. The head of the
+	// list has the "oldest" connection. Age, e.g. "oldest", is measured by time
+	// of last request, not when the connection was first established. This is
+	// important for keepalive. We keep them in this order so that we can quickly
+	// scan for timed out connections.
+	list: List(Conn),
+
+	// # of active connections we're managing. This is the length of our list.
+	len: usize,
+
+	// A pool of Conn objects. The pool maintains a configured min # of these.
+	conn_pool: ConnPool,
+
+	// Request and response processing may require larger buffers than the static
+	// buffered of our req/res states. The BufferPool has larger pre-allocated
+	// buffers that can be used and, when empty or when a larger buffer is needed,
+	// will do dynamic allocation
+	buffer_pool: *BufferPool,
+
+	allocator: Allocator,
+
+	fn init(allocator: Allocator, config: *const Config) !Manager {
+		const buffer_pool = try allocator.create(BufferPool);
+		errdefer allocator.destroy(buffer_pool);
+
+		const large_buffer_count = config.workers.large_buffer_count orelse 8;
+		const large_buffer_size = config.workers.large_buffer_size orelse config.request.max_body_size orelse 65536;
+		buffer_pool.* = try BufferPool.init(allocator, large_buffer_count, large_buffer_size);
+		errdefer buffer_pool.deinit();
+
+		const conn_pool = try ConnPool.init(allocator, buffer_pool, config);
+
+		return .{
+			.len = 0,
+			.list = .{},
+			.conn_pool = conn_pool,
+			.allocator = allocator,
+			.buffer_pool = buffer_pool,
+		};
+	}
+
+	pub fn deinit(self: *Manager) void {
+		const allocator = self.allocator;
+
+		var conn = self.list.head;
+		while (conn) |c| {
+			c.stream.close();
+			conn = c.next;
+
+			c.deinit(allocator);
+			self.conn_pool.mem_pool.destroy(c);
+		}
+
+		self.conn_pool.deinit();
+
+		self.buffer_pool.deinit();
+		allocator.destroy(self.buffer_pool);
+	}
+
+	pub fn new(self: *Manager) !*Conn {
+		const conn = try self.conn_pool.acquire();
+		self.list.insert(conn);
+		self.len += 1;
+		return conn;
+	}
+
+	pub fn close(self: *Manager, conn: *Conn) void {
+		conn.stream.close();
+		self.list.remove(conn);
+		self.conn_pool.release(conn);
+		self.len -= 1;
+	}
+};
+
+const ConnPool = struct {
+	conns: []*Conn,
 	available: usize,
 	allocator: Allocator,
+	config: *const Config,
 	buffer_pool: *BufferPool,
-	req_config: *const Request.Config,
-	state_pool: std.heap.MemoryPool(Request.State),
+	mem_pool: std.heap.MemoryPool(Conn),
 
-	fn init(allocator: Allocator, buffer_pool: *BufferPool, config: *const Config) !RequestStatePool {
+	fn init(allocator: Allocator, buffer_pool: *BufferPool, config: *const Config) !ConnPool {
 		const min = config.workers.min_conn orelse config.workers.max_conn orelse 32;
 
-		var states = try allocator.alloc(*Request.State, min);
-		errdefer allocator.free(states);
+		var conns = try allocator.alloc(*Conn, min);
+		errdefer allocator.free(conns);
 
-		var state_pool = std.heap.MemoryPool(Request.State).init(allocator);
+		var mem_pool = std.heap.MemoryPool(Conn).init(allocator);
 
 		var initialized: usize = 0;
 		errdefer {
 			for (0..initialized) |i| {
-				states[i].deinit(allocator);
-				state_pool.destroy(states[i]);
+				conns[i].deinit(allocator);
+				mem_pool.destroy(conns[i]);
 			}
 		}
 
 		for (0..min) |i| {
-			const state = try state_pool.create();
-			errdefer state_pool.destroy(state);
+			const conn = try mem_pool.create();
+			errdefer mem_pool.destroy(conn);
 
-			state.* = try Request.State.init(allocator, buffer_pool, &config.request);
-			states[i] = state;
+			conn.* = .{
+				.last_request = 0,
+				.stream = undefined,
+				.address = undefined,
+				.req_state = try Request.State.init(allocator, buffer_pool, &config.request),
+			};
+			conns[i] = conn;
 			initialized += 1;
 		}
 
 		return .{
-			.states = states,
+			.conns = conns,
+			.config = config,
 			.available = min,
 			.allocator = allocator,
-			.state_pool = state_pool,
+			.mem_pool = mem_pool,
 			.buffer_pool = buffer_pool,
-			.req_config = &config.request,
 		};
 	}
 
-	fn deinit(self: *RequestStatePool) void {
+	fn deinit(self: *ConnPool) void {
 		const allocator = self.allocator;
-		for (self.states) |state| {
-			state.deinit(allocator);
-			self.state_pool.destroy(state);
+		for (self.conns) |conn| {
+			conn.deinit(allocator);
+			self.mem_pool.destroy(conn);
 		}
-		allocator.free(self.states);
-		self.state_pool.deinit();
+		allocator.free(self.conns);
+		self.mem_pool.deinit();
 	}
 
-	fn acquire(self: *RequestStatePool) !*Request.State {
+	fn acquire(self: *ConnPool) !*Conn {
 		const available = self.available;
+
 		if (available > 0) {
 			const index = available - 1;
 			self.available = index;
-			return self.states[index];
+			return self.conns[index];
 		}
 
-		const state = try self.state_pool.create();
-		state.* = try Request.State.init(self.allocator, self.buffer_pool, self.req_config);
-		return state;
+		const conn = try self.mem_pool.create();
+		errdefer self.mem_pool.destroy(conn);
+		conn.req_state = try Request.State.init(self.allocator, self.buffer_pool, &self.config.request);
+		return conn;
 	}
 
-	fn release(self: *RequestStatePool, state: *Request.State) void {
-		const states = self.states;
+	fn release(self: *ConnPool, conn: *Conn) void {
+		const conns = self.conns;
 		const available = self.available;
-		if (available == states.len) {
-			state.deinit(self.allocator);
-			self.state_pool.destroy(state);
+		if (available == conns.len) {
+			conn.deinit(self.allocator);
+			self.mem_pool.destroy(conn);
 			return;
 		}
 
-		states[available] = state;
+		conn.last_request = 0;
+		conn.req_state.reset();
+		conn.stream = undefined;
+		conn.address = undefined;
+		conns[available] = conn;
 		self.available = available + 1;
 	}
 };
 
-// The bulk of Worker is tested in httpz.zig
+pub fn List(comptime T: type) type {
+	return struct {
+		len: usize = 0,
+		head: ?*T = null,
+		tail: ?*T = null,
+
+		const Self = @This();
+
+		pub fn insert(self: *Self, node: *T) void {
+			if (self.tail) |tail| {
+				tail.next = node;
+				node.prev = tail;
+				self.tail = node;
+			} else {
+				self.head = node;
+				self.tail = node;
+			}
+			self.len += 1;
+			node.next = null;
+		}
+
+		pub fn remove(self: *Self, node: *T) void {
+			if (node.prev) |prev| {
+				prev.next = node.next;
+			} else {
+				self.head = node.next;
+			}
+
+			if (node.next) |next| {
+				next.prev = node.prev;
+			} else {
+				self.tail = node.prev;
+			}
+			self.len -= 1;
+		}
+	};
+}
+
 const t = @import("t.zig");
-test "RequestStatePool" {
+test "ConnPool" {
 	var bp = try BufferPool.init(t.allocator, 2, 64);
 	defer bp.deinit();
 
-	var sp = try RequestStatePool.init(t.allocator, &bp, &.{
+	var p = try ConnPool.init(t.allocator, &bp, &.{
 		.workers = .{.min_conn = 2},
 		.request = .{.buffer_size = 64},
 	});
-	defer sp.deinit();
+	defer p.deinit();
 
-	const s1 = try sp.acquire();
-	const s2 = try sp.acquire();
-	const s3 = try sp.acquire();
+	const s1 = try p.acquire();
+	const s2 = try p.acquire();
+	const s3 = try p.acquire();
 
-	try t.expectEqual(true, s1.buf.ptr != s2.buf.ptr);
-	try t.expectEqual(true, s1.buf.ptr != s3.buf.ptr);
-	try t.expectEqual(true, s2.buf.ptr != s3.buf.ptr);
+	try t.expectEqual(true, s1.req_state.buf.ptr != s2.req_state.buf.ptr);
+	try t.expectEqual(true, s1.req_state.buf.ptr != s3.req_state.buf.ptr);
+	try t.expectEqual(true, s2.req_state.buf.ptr != s3.req_state.buf.ptr);
 
-	sp.release(s2);
-	const s4 = try sp.acquire();
-	try t.expectEqual(true, s4.buf.ptr == s2.buf.ptr);
+	p.release(s2);
+	const s4 = try p.acquire();
+	try t.expectEqual(true, s4.req_state.buf.ptr == s2.req_state.buf.ptr);
 
-	sp.release(s1);
-	sp.release(s3);
-	sp.release(s4);
+	p.release(s1);
+	p.release(s3);
+	p.release(s4);
+}
+
+test "Conn: List" {
+	var list = List(TestNode){};
+	try expectList(&.{}, list);
+
+	var n1 = TestNode{.id = 1};
+	list.insert(&n1);
+	try expectList(&.{1}, list);
+
+	list.remove(&n1);
+	try expectList(&.{}, list);
+
+	var n2 = TestNode{.id = 2};
+	list.insert(&n2);
+	list.insert(&n1);
+	try expectList(&.{2, 1}, list);
+
+	var n3 = TestNode{.id = 3};
+	list.insert(&n3);
+	try expectList(&.{2, 1, 3}, list);
+
+	list.remove(&n1);
+	try expectList(&.{2, 3}, list);
+
+	list.insert(&n1);
+	try expectList(&.{2, 3, 1}, list);
+
+	list.remove(&n2);
+	try expectList(&.{3, 1}, list);
+
+	list.remove(&n1);
+	try expectList(&.{3}, list);
+
+	list.remove(&n3);
+	try expectList(&.{}, list);
+}
+
+const TestNode = struct {
+	id: i32,
+	next: ?*TestNode = null,
+	prev: ?*TestNode = null,
+};
+
+fn expectList(expected: []const i32, list: List(TestNode)) !void {
+	if (expected.len == 0) {
+		try t.expectEqual(null, list.head);
+		try t.expectEqual(null, list.tail);
+		return;
+	}
+
+	var i: usize = 0;
+	var next = list.head;
+	while (next) |node| {
+		try t.expectEqual(expected[i], node.id);
+		i += 1;
+		next = node.next;
+	}
+	try t.expectEqual(expected.len, i);
+
+	i = expected.len;
+	var prev = list.tail;
+	while (prev) |node| {
+		i -= 1;
+		try t.expectEqual(expected[i], node.id);
+		prev = node.prev;
+	}
+	try t.expectEqual(0, i);
 }

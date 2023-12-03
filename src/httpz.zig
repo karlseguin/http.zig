@@ -15,7 +15,6 @@ pub const Url = @import("url.zig").Url;
 pub const Config = @import("config.zig").Config;
 
 const Allocator = std.mem.Allocator;
-const Conn = @import("conn.zig").Conn;
 
 pub const Protocol = enum {
 	HTTP10,
