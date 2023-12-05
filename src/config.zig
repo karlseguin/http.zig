@@ -25,8 +25,6 @@ pub const Config = struct {
 		max_header_count: ?usize = null,
 		max_param_count: ?usize = null,
 		max_query_count: ?usize = null,
-		read_header_timeout: ?u32 = null,
-		read_body_timeout: ?u32 = null,
 	};
 
 	pub const Response = struct {

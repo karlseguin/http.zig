@@ -15,7 +15,7 @@ const GlobalContext = struct {
 
 		res.content_type = httpz.ContentType.TEXT;
 		const out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-		res.body = out;
+		return res.body(out);
 	}
 };
 

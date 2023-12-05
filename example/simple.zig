@@ -7,7 +7,9 @@ var index_file_contents: []u8 = undefined;
 // Started in main.zig which starts 3 servers, on 3 different ports, to showcase
 // small variations in using httpz.
 pub fn start(allocator: Allocator) !void {
-	var server = try httpz.Server().init(allocator, .{});
+	var server = try httpz.Server().init(allocator, .{
+		.workers = .{.max_conn = 200}
+	});
 	defer server.deinit();
 	var router = server.router();
 
@@ -22,24 +24,22 @@ pub fn start(allocator: Allocator) !void {
 	router.get("/hello", hello);
 	router.get("/json/hello/:name", json);
 	router.get("/writer/hello/:name", writer);
-	router.get("/chunked_response", chunked);
 	router.get("/static_file", staticFile);
 	router.get("/cached_static_file", cachedStaticFile);
 	try server.listen();
 }
 
 fn index(_: *httpz.Request, res: *httpz.Response) !void {
-	res.body =
+	try res.body(
 		\\<!DOCTYPE html>
 		\\ <ul>
 		\\ <li><a href="/hello?name=Teg">Querystring + text output</a>
 		\\ <li><a href="/writer/hello/Ghanima">Path parameter + serialize json object</a>
 		\\ <li><a href="/json/hello/Duncan">Path parameter + json writer</a>
-		\\ <li><a href="/chunked_response">Chunked response</a>
 		\\ <li><a href="/static_file">Static file</a>
 		\\ <li><a href="/cached_static_file">Cached static file</a>
 		\\ <li><a href="http://localhost:5883/increment">Global shared state</a>
-	;
+	);
 }
 
 fn hello(req: *httpz.Request, res: *httpz.Response) !void {
@@ -70,30 +70,18 @@ fn writer(req: *httpz.Request, res: *httpz.Response) !void {
 	try ws.endObject();
 }
 
-fn chunked(_: *httpz.Request, res: *httpz.Response) !void {
-	// status and headers (including content type) must be set
-	// before the first call to chunk
-	res.status = 200;
-	res.header("A", "Header");
-	res.content_type = httpz.ContentType.TEXT;
-
-	try res.chunk("This is a chunk");
-	try res.chunk("\r\n");
-	try res.chunk("And another one");
-}
-
 fn staticFile(req: *httpz.Request, res: *httpz.Response) !void {
 	var index_file = try std.fs.cwd().openFile("example/index.html", .{});
 	defer index_file.close();
-	res.body = try index_file.readToEndAlloc(req.arena, 100000);
+	return res.body(try index_file.readToEndAlloc(req.arena, 100000));
 }
 
 fn cachedStaticFile(req: *httpz.Request, res: *httpz.Response) !void {
 	_ = req;
-	res.body = index_file_contents;
+	return res.body(index_file_contents);
 }
 
 fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
 	res.status = 404;
-	res.body = "Not found";
+	return res.body("Not found");
 }

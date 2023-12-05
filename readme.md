@@ -9,8 +9,6 @@ This library supports native Zig module (introduced in 0.11). Add a "httpz" depe
 # Important Notice
 Please consider running http.zig behind a robust reverse proxy (e.g. NGINX). First, it doesn't support TLS termination. Second, this library was written at a time where async support was being temporarily dropped from Zig. I want http.zig to be robust, but I don't want to write a cross-platform I/O interface only to have to scrap it when async is re-added to Zig. As such, the current implementation can be considered a stopgap until async is properly supported. Of particularly note is the ability for a misbehaving client to stall legitimate requests from being processed. (essentially by feeding a single byte per timeout interval).
 
-## Thread Pool Branch
-This branch uses a custom thread-pool rather than the more naive thread-per-connection model of master. This branch only works on systems that expose poll(2), such as BSD, MacOS and Linux. This branch is more tolerant of misbehaving clients, has more stable memory usage and won't kill itself trying to serve a high number of concurrent connections.
 
 # Usage
 
@@ -59,13 +57,13 @@ fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
     // you can set the body directly to a []u8, but note that the memory
     // must be valid beyond your handler. Use the res.arena if you need to allocate
     // memory for the body.
-    res.body = "Not Found";
+    try res.body("Not Found");
 }
 
 // note that the error handler return `void` and not `!void`
 fn errorHandler(req: *httpz.Request, res: *httpz.Response, err: anyerror) void {
     res.status = 500;
-    res.body = "Internal Server Error";
+    res.body("Internal Server Error") catch {};
     std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
 }
 ```
@@ -102,7 +100,7 @@ fn increment(global: *Global, _: *httpz.Request, res: *httpz.Response) !void {
     // or, more verbosse: httpz.ContentType.TEXT
     res.content_type = .TEXT;
     var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-    res.body = out;
+    return res.body(out);
 }
 ```
 
@@ -126,7 +124,7 @@ const Global = struct {
 
         res.content_type = .TEXT;
         var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-        res.body = out;
+        return res.body(out);
     }
 };
 
@@ -187,7 +185,7 @@ fn loggedIn(action: httpz.Action(void), req: *httpz.Request, res: *httpz.Respons
         return mainDispatcher(action, req, res);
     }
     res.status = 401;
-    res.body = "Not authorized";
+    return res.body("Not authorized");
 }
 
 fn logout(req: *httpz.Request, res: *httpz.Response) !void {
@@ -364,40 +362,30 @@ The following fields are the most useful:
 
 * `status` - set the status code, by default, each response starts off with a 200 status code
 * `content_type` - an httpz.ContentType enum value. This is a convenience and optimization over using the `res.header` function.
-* `body` - set the body to an explicit []const u8. The memory address pointed to by this value must be valid beyond the action handler. The `arena` field can help for dynamic values
 * `arena` - an arena allocator that will be reset at the end of the request
 
-## JSON
+### Body
+The simplest way to set a body is to use the `res.body() !void`.
+
+### JSON
 The `json` function will set the content_type to `httpz.ContentType.JSON` and serialize the provided value using `std.json.stringify`. The 2nd argument to the json function is the `std.json.StringifyOptions` to pass to the `stringify` function.
 
 Because the final size of the serialized object cannot be known ahead of a time, a custom writer is used. Initially, this writer will use a static buffer defined by the `config.response.body_buffer_size`. However, as the object is being serialized, if this static buffer runs out of space, a dynamic buffer will be allocated and the static buffer will be copied into it (at this point, the dynamic buffer essentially behaves like an `ArrayList(u8)`.
 
 As a general rule, I'd suggest making sure `config.response.body_buffer_size` is large enough to fit 99% of your responses. As an alternative, you can always manage your own serialization and simply set the `res.content_type` and `res_body` fields.
 
-## Dynamic Content
+### Dynamic Content
 Besides helpers like `json`, you can use the `res.arena` to create dynamic content:
 
 ```zig
 const query = try req.query();
 const name = query.get("name") orelse "stranger";
 var out = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
-res.body = out;
+try res.body(out);
 ```
 
-## Chunked Response
-You can send a chunked response using `res.chunk(DATA)`. Chunked responses do not include a `Content-Length` so do need to be fully buffered in memory before sending. Multiple calls to `res.chunk` are, of course, supported. However, the response status along with any header, must be set before the first call to `chunk`:
 
-```zig
-res.status = 200;
-res.header("A", "Header");
-res.content_type = httpz.ContentType.TEXT;
-
-try res.chunk("This is a chunk");
-try res.chunk("\r\n");
-try res.chunk("And another one");
-```
-
-## io.Writer
+### io.Writer
 `res.writer()` returns an `std.io.Writer`. Various types support writing to an io.Writer. For example, the built-in JSON stream writer can use this writer:
 
 ```zig
@@ -426,16 +414,6 @@ try res.headerOpts("Location", location, .{.dupe_value = true});
 ```
 
 `HeaderOpts` currently supports `dupe_name: bool` and `dupe_value: bool`, both default to `false`.
-
-## Explicit Write
-Internally, when the dispatcher returns (whether it be an internal/default dispatcher or an application-specific dispatcher), `res.write()` is called to
-write the response to the socket. 
-
-It is safe to call `res.write()` directly from the application. This is absolutely not necessary in normal cases. One case where this could be needed is if the data for the response (say the body) only exists within the application's handler (and the `res.arena` cannot be used).
-
-`res.write()` is safe to call because of the `res.written` boolean flag. Once called, `res.written` is set to true and subsequent calls to `res.write()` are ignored. Thus, an even more advanced use case is for the application to set `res.written` directly.
-
-While explicit use of `res.write()` is uncommon, I can think of no reason to to call `res.write()` when `res.chunk([]const u8)` is used. This is not supported.
 
 ## Router
 You can use the `get`, `put`, `post`, `head`, `patch`, `trace`, `delete` or `options` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
@@ -544,18 +522,31 @@ try httpz.listen(allocator, &router, .{
         .count = 2,
 
         // Maximum number of concurrent connection each worker can handle
-        // At the worst case, the memory usage of the system will be:
-        //    config.workers.max_conn * config.request.max_body_size
-        //    + some pointer overhead.
-        // But that's an extreme case where _every_ request is sending a large body.
-        // Using config.request.buffer_size would probably be more realistic.
+        // $max_conn * (
+        //   $request.max_body_size + 
+        //   $response.header_buffer_size + (max($response.body_buffer_size, $your_largest_body)) +
+        //   $a_bit_of_overhead + ($large_buffer_count * $large_buffer_size)
+        // )
+        // is a rough estimate for the most amount of memory httpz will use
         .max_conn = 500,
 
         // Minimum number of connection states each worker should maintain
-        // At minimum, the memory requirement will be:
-        //    config.workers.min_conn * config.request.buffer_size
-        // but that doesn't include internal data structures / pointers / etc.
+        // $min_conn * (
+        //   $request.buffer_size + 
+        //   $response.header_buffer_size + $response.body_buffer_size +
+        //   $a_bit_of_overhead + ($large_buffer_count * $large_buffer_size)
+        // )
+        // is a rough estimate for the lowest amount of memory httpz will use
         .min_conn = 32,
+
+        // A pool of larger buffers that can be used for any data larger than configured
+        // static buffers. For example, if response headers don't fit in in 
+        // $response.header_buffer_size, a buffer will be pulled from here.
+        // This is per-worker. 
+        .large_buffer_count = 16,
+
+        // The size of each large buffer.
+        .large_buffer_size = 65536,
     },
 
     // defaults to null
@@ -577,11 +568,9 @@ try httpz.listen(allocator, &router, .{
         max_body_size: usize = 1_048_576,
 
         // This memory is allocated upfront. The request header _must_ fit into
-        // this space, else the request will be rejected. If possible, we'll 
-        // try to load the body in here too. The minimum amount of memory that our request
-        // pool will use is in the neighborhood of pool.count * buffer_size. It will never
-        // be smaller than this (there are other static allocations, but this is the biggest chunk.)
-        .buffer_size: usize = 65_536,
+        // this space, else the request will be rejected. If it fits, the body will
+        // also be loaded here, else the large_buffer_pool or dynamic allocation is used.
+        .buffer_size: usize = 32_768,
 
         // Maximum number of headers to accept. 
         // Additional headers will be silently ignored.
@@ -594,27 +583,17 @@ try httpz.listen(allocator, &router, .{
         // Maximum number of query string parameters to accept.
         // Additional parameters will be silently ignored.
         .max_query_count: usize = 32,
-
-        // Time in millisecond to wait for reading the header
-        .read_header_timeout = null,
-
-        // Time in millisecond to wait for reading the body
-        .read_body_timeout = null,
     },
 
     // various options for tweaking response object
     .response = .{
-        // Used to buffer the response header.
-        // This MUST be at least as big as your largest individual header+value+4
-        // (the +4 is for for the colon+space and the \r\n)
-        .header_buffer_size: usize = 4096,
+        // Used to buffer the response header. If the header is larger, a buffer will be
+        // pulled from the large buffer pool, or dynamic allocations will take place.
+        .header_buffer_size: usize = 1024,
 
-        // Used to buffer dynamic responses. If the response body is larger than this
-        // value, a dynamic buffer will be allocated. It's possible to set this to 0,
-        // but this should only be done if the overwhelming majority of responses
-        // are set directly using res.body = "VALUE"; and not a dynamic response
-        // generator like res.json(..);
-        .body_buffer_size: usize = 32_768,
+        // Used to buffer the response body. If the body is larger, a buffer will be 
+        // pulled from the large buffer pool, or dynamic allocations will take place.
+        .body_buffer_size: usize = 1024,
 
         // The maximum number of headers to accept. 
         // Additional headers will be silently ignored.

@@ -25,13 +25,13 @@ pub fn build(b: *std.Build) !void {
 	const run_step = b.step("run", "Run the app");
 	run_step.dependOn(&run_cmd.step);
 
-
 	const lib_test = b.addTest(.{
 		.root_source_file = .{ .path = "src/httpz.zig" },
 		.target = target,
 		.optimize = optimize,
 		.test_runner = "test_runner.zig",
 	});
+	lib_test.linkLibC();
 	const run_test = b.addRunArtifact(lib_test);
 	run_test.has_side_effects = true;
 

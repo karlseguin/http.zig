@@ -301,7 +301,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 			}
 
 			for (0..workers.len) |i| {
-				workers[i] = try Worker.init(allocator, allocator, self, &config);
+				workers[i] = try Worker.init(allocator, self, &config);
 				threads[i] = try Thread.spawn(.{}, Worker.run, .{&workers[i], socket, signal[0]});
 				started += 1;
 			}
@@ -343,7 +343,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
 		fn defaultNotFound(_: *Request, res: *Response) !void {
 			res.status = 404;
-			res.body = "Not Found";
+			return res.body("Not Found");
 		}
 
 		fn defaultErrorHandlerWithContext(_:G, req: *Request, res: *Response, err: anyerror) void {
@@ -352,7 +352,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
 		fn defaultErrorHandler(req: *Request, res: *Response, err: anyerror) void {
 			res.status = 500;
-			res.body = "Internal Server Error";
+			res.body("Internal Server Error") catch {};
 			std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
 		}
 
@@ -368,17 +368,23 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 			return error.CannotDispatch;
 		}
 
-		pub fn handle(self: Self, req: *Request, res: *Response) bool {
+		pub const HandleResult = enum {
+			close,
+			write_and_close,
+			write_and_keepalive,
+		};
+
+		pub fn handle(self: Self, req: *Request, res: *Response) HandleResult {
 			const dispatchable_action = self._router.route(req.method, req.url.path, &req.params);
 			self.dispatch(dispatchable_action, req, res) catch |err| switch (err) {
-				error.BodyTooBig => {
-					res.status = 431;
-					res.body = "Request body is too big";
-					res.write() catch return false;
-				},
 				error.BrokenPipe, error.ConnectionResetByPeer, error.Unexpected => {
 					// TODO: maybe allow the user to set a different errorHandler for these sort of conditions
-					return false;
+					return .close;
+				},
+				error.BodyTooBig => {
+					res.status = 431;
+					res.body("Request body is too big") catch {};
+					return .write_and_close;
 				},
 				else => {
 					if (comptime G == void) {
@@ -389,11 +395,11 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 					}
 				}
 			};
+
 			if (!req.canKeepAlive()) {
-				res.keepalive = false;
+				return .write_and_close;
 			}
-			res.write() catch return false;
-			return res.keepalive;
+			return .write_and_keepalive;
 		}
 
 		inline fn dispatch(self: Self, dispatchable_action: ?DispatchableAction(G, R), req: *Request, res: *Response) !void {
@@ -753,7 +759,7 @@ fn testFail(_: u32, _: *Request, _: *Response) !void {
 fn testParams(_: u32, req: *Request, res: *Response) !void {
 	const args = .{req.param("version").?, req.param("UserId").?};
 	const out = try std.fmt.allocPrint(req.arena, "version={s},user={s}", args);
-	res.body = out;
+	return res.body(out);
 }
 
 fn testHeaders(ctx: u32, req: *Request, res: *Response) !void {
@@ -780,19 +786,19 @@ fn testEventStream(_: *Request, res: *Response) !void {
 fn testReqQuery(req: *Request, res: *Response) !void {
 	res.status = 200;
 	const query = try req.query();
-	res.body = query.get("fav").?;
+	return res.body(query.get("fav").?);
 }
 
 fn testNotFound(ctx: u32, _: *Request, res: *Response) !void {
 	res.status = 404;
 	addContextHeader(res, ctx);
-	res.body = "where lah?";
+	return res.body("where lah?");
 }
 
 fn testErrorHandler(ctx: u32, _: *Request, res: *Response, _: anyerror) void {
 	res.status = 500;
 	addContextHeader(res, ctx);
-	res.body = "#/why/arent/tags/hierarchical";
+	res.body("#/why/arent/tags/hierarchical") catch {};
 }
 
 fn addContextHeader(res: *Response, ctx: u32) void {

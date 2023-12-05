@@ -6,7 +6,6 @@ const Config = httpz.Config;
 const Request = httpz.Request;
 const Response = httpz.Response;
 
-const Conn = @import("conn.zig").Conn;
 const BufferPool = @import("buffer.zig").Pool;
 
 const Thread = std.Thread;
@@ -27,14 +26,7 @@ pub fn Worker(comptime S: type) type {
 		// KQueue or Epoll, depending on the platform
 		loop: Loop,
 
-		// all data we can allocate upfront and re-use from request ot request (for the response)
-		res_state: Response.State,
-
-		// every request and response will be given an allocator from this arena
-		arena: *ArenaAllocator,
-
-		// allocator for httpz internal allocations
-		httpz_allocator: Allocator,
+		allocator: Allocator,
 
 		// Manager of connections. This includes a list of active connections the
 		// worker is responsible for, as well as buffer connections can use to
@@ -57,42 +49,26 @@ pub fn Worker(comptime S: type) type {
 			else => @compileError("not supported"),
 		};
 
-		pub fn init(httpz_allocator: Allocator, app_allocator: Allocator, server: S, config: *const Config) !Self {
-			const arena = try httpz_allocator.create(ArenaAllocator);
-			arena.* = ArenaAllocator.init(app_allocator);
-			errdefer httpz_allocator.destroy(arena);
-
-			var res_state = try Response.State.init(httpz_allocator, config.response);
-			errdefer res_state.deinit(httpz_allocator);
-
+		pub fn init(allocator: Allocator, server: S, config: *const Config) !Self {
 			const loop = try Loop.init();
 			errdefer loop.deinit();
 
-			const manager = try Manager.init(httpz_allocator, config);
+			const manager = try Manager.init(allocator, config);
 			errdefer manager.deinit();
 
 			return .{
 				.loop = loop,
-				.arena = arena,
 				.config = config,
 				.server = server,
 				.manager = manager,
-				.res_state = res_state,
-				.httpz_allocator = httpz_allocator,
+				.allocator = allocator,
 				.max_conn = config.workers.max_conn orelse 512,
 				.keepalive_timeout = config.keepalive.timeout orelse 4294967295,
 			};
 		}
 
 		pub fn deinit(self: *Self) void {
-			const httpz_allocator = self.httpz_allocator;
-
 			self.manager.deinit();
-			self.res_state.deinit(httpz_allocator);
-
-			self.arena.deinit();
-
-			httpz_allocator.destroy(self.arena);
 			self.loop.deinit();
 		}
 
@@ -100,17 +76,16 @@ pub fn Worker(comptime S: type) type {
 			std.os.maybeIgnoreSigpipe();
 			const manager = &self.manager;
 
-			self.loop.add(listener, 0) catch |err| {
+			self.loop.addRead(listener, 0) catch |err| {
 				log.err("Failed to add monitor to listening socket: {}", .{err});
 				return;
 			};
 
-			self.loop.add(signal, 1) catch |err| {
+			self.loop.addRead(signal, 1) catch |err| {
 				log.err("Failed to add monitor to signal pipe: {}", .{err});
 				return;
 			};
 
-			const keepalive_timeout = self.keepalive_timeout;
 
 			while (true) {
 				var it = self.loop.wait() catch |err| {
@@ -135,22 +110,136 @@ pub fn Worker(comptime S: type) type {
 					}
 
 					const conn: *align(8) Conn = @ptrFromInt(data);
-					var will_close = (now - conn.last_request) > keepalive_timeout;
+					const result = switch (conn.poll_mode) {
+						.read => self.handleRequest(conn, now),
+						.write => self.write(conn) catch .close,
+					};
 
-					switch (self.handleRequest(conn, will_close)) {
-						.need_more_data => {},
-						.failure => will_close = true,
-						.success => {
-							conn.req_state.reset();
-							conn.last_request = now;
-						},
-					}
-
-					if (will_close) {
-						manager.close(conn);
+					switch (result) {
+						.keepalive => conn.keepalive() catch manager.close(conn),
+						.close => manager.close(conn),
+						.wait_for_socket => {},
 					}
 				}
 			}
+		}
+
+		const HandleResult = enum {
+			close,
+			keepalive,
+			wait_for_socket,
+		};
+
+		pub fn handleRequest(self: *Self, conn: *Conn, now: i64) HandleResult {
+			const stream = conn.stream;
+
+			const done = conn.req_state.parse(stream) catch |err| {
+				switch (err) {
+					error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
+						// todo: write event loop
+						stream.writeAll(errorResponse(400, "Invalid Request")) catch {};
+					},
+					error.HeaderTooBig => {
+						// todo: write event loop
+						stream.writeAll(errorResponse(431, "Request header is too big")) catch {};
+					},
+					else => {}
+				}
+				return .close;
+			};
+
+			if (done == false) {
+				// we need to wait for more data
+				return .wait_for_socket;
+			}
+
+			const aa = conn.arena.allocator();
+			const res_state = &conn.res_state;
+
+			var req = Request.init(aa, conn);
+			var res = Response.init(aa, conn);
+			const result = self.server.handle(&req, &res);
+
+			if (result == .close) {
+				return .close;
+			}
+
+			if (result == .write_and_close or ((now - conn.last_request) > self.keepalive_timeout)) {
+				conn.close = true;
+				res.keepalive = false;
+			}
+
+			if (res.written) {
+				return if (conn.close) .close else .keepalive;
+			}
+
+			res_state.prepareForWrite(&res) catch return .close;
+			return self.write(conn) catch .close;
+		}
+
+		fn write(self: *Self, conn: *Conn) !HandleResult {
+			const stream = conn.stream;
+			var state = &conn.res_state;
+			var stage = state.stage;
+
+			var len: usize = 0;
+			var buf: []u8 = undefined;
+
+			if (stage == .header) {
+				len = state.header_len;
+				buf = state.header_buffer.data;
+			} else {
+				// we can only be here if there's a body
+				len = state.body_len;
+				buf = state.body_buffer.?.data;
+			}
+
+			var pos = state.pos;
+			while (pos < len) {
+				const n = stream.write(buf[pos..len]) catch |err| {
+					if (err != error.WouldBlock) {
+						return .close;
+					}
+
+					if (conn.poll_mode != .write) {
+						// first time we've hit WouldBlock trying to write this response.
+						// enable write notifications for the socket.
+						conn.poll_mode = .write;
+						try self.loop.writeMode(stream.handle, @intFromPtr(conn));
+					}
+
+					state.pos = pos;
+					state.stage = stage;
+					// we need to wait for more data
+					return .wait_for_socket;
+				};
+
+				pos += n;
+				if (pos == len) {
+					if (stage == .body) break; // done
+					const body_buffer = state.body_buffer orelse break; // no body, done
+					pos = 0;
+					stage = .body;
+					buf = body_buffer.data;
+					len = state.body_len;
+				}
+			}
+
+			if (conn.close) {
+				// This connection is going to be closed. Don't waste time putting it
+				// back in read mode.
+				return .close;
+			}
+
+			if (conn.poll_mode == .write) {
+				// We got a WouldBlock writing to the socket so we put the connection
+				// in write mode. Since we intend to keep this connection open (for
+				// keepalive), we need to put it back into read mode.
+				conn.poll_mode = .read;
+				try self.loop.readMode(stream.handle, @intFromPtr(conn));
+			}
+
+			return .keepalive;
 		}
 
 		fn accept(self: *Self, listener: os.fd_t, now: i64) !void {
@@ -164,68 +253,26 @@ pub fn Worker(comptime S: type) type {
 				var address_len: os.socklen_t = @sizeOf(std.net.Address);
 
 				const socket = os.accept(listener, &address.any, &address_len, os.SOCK.CLOEXEC) catch |err| {
-					// Wouldblock is normal here, as another thread might have accepted
+					// When available, we use SO_REUSEPORT_LB or SO_REUSEPORT, so WouldBlock
+					// should not be possible in those cases, but if it isn't available
+					// this error should be ignored as it means another thread picked it up.
 					return if (err == error.WouldBlock) {} else err;
 				};
 				errdefer os.close(socket);
 
-				{
-					// set non blocking
-					const flags = try os.fcntl(socket, os.F.GETFL, 0);
-					_ = try os.fcntl(socket, os.F.SETFL, flags | os.SOCK.NONBLOCK);
-				}
+				// set non blocking
+				const flags = (try os.fcntl(socket, os.F.GETFL, 0)) | os.SOCK.NONBLOCK;
+				_ = try os.fcntl(socket, os.F.SETFL, flags);
 
 				var conn = try manager.new();
+				conn.socket_flags = flags;
 				conn.last_request = now;
 				conn.stream = .{.handle = socket};
 				conn.address = address;
 
-				try self.loop.add(socket, @intFromPtr(conn));
+				try self.loop.addRead(socket, @intFromPtr(conn));
 				len += 1;
 			}
-		}
-
-		const HandleResult = enum {
-			need_more_data,
-			success,
-			failure,
-		};
-
-		pub fn handleRequest(self: *Self, conn: *Conn, will_close: bool) HandleResult {
-			const stream = conn.stream;
-			const done = conn.req_state.parse(stream) catch |err| switch (err) {
-				error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
-					stream.writeAll(errorResponse(400, "Invalid Request")) catch {};
-					return .failure;
-				},
-				error.HeaderTooBig => {
-					stream.writeAll(errorResponse(431, "Request header is too big")) catch {};
-					return .failure;
-				},
-				else => return .failure,
-			};
-
-			if (done == false) {
-				return .need_more_data;
-			}
-
-			const arena = self.arena;
-			const server = self.server;
-			var res_state = &self.res_state;
-
-			res_state.reset();
-
-			defer _ = arena.reset(.free_all);
-
-			const aa = arena.allocator();
-
-			var req = Request.init(aa, conn, will_close);
-			var res = Response.init(aa, res_state, conn.stream);
-
-			if (!server.handle(&req, &res)) {
-				return .failure;
-			}
-			return .success;
 		}
 	};
 }
@@ -237,126 +284,136 @@ fn errorResponse(comptime status: u16, comptime body: []const u8) []const u8 {
 	);
 }
 
-const KQueue = struct {
-	q: i32,
-	change_count: usize,
-	change_buffer: [8]Kevent,
-	event_list: [32]Kevent,
-
-	const Kevent = std.os.Kevent;
-
-	fn init() !KQueue {
-		return .{
-			.q = try std.os.kqueue(),
-			.change_count = 0,
-			.change_buffer = undefined,
-			.event_list = undefined,
-		};
-	}
-
-	fn deinit(self: KQueue) void {
-		std.os.close(self.q);
-	}
-
-	fn add(self: *KQueue, fd: os.fd_t, data: usize) !void {
-		return self.change(.{
-			.ident = @intCast(fd),
-			.filter = os.system.EVFILT_READ,
-			.flags = os.system.EV_ADD | os.system.EV_ENABLE,
-			.fflags = 0,
-			.data = 0,
-			.udata = data,
-		});
-	}
-
-	fn change(self: *KQueue, event: Kevent) !void {
-		var change_count = self.change_count;
-		var change_buffer = &self.change_buffer;
-
-		if (change_count == change_buffer.len) {
-			// calling this with an empty event_list will return immediate
-			_ = try std.os.kevent(self.q, change_buffer, &[_]Kevent{}, null);
-			change_count = 0;
-		}
-		change_buffer[change_count] = event ;
-		self.change_count = change_count + 1;
-	}
-
-	fn wait(self: *KQueue) !Iterator {
-		const event_list = &self.event_list;
-		const event_count = try std.os.kevent(self.q, self.change_buffer[0..self.change_count], event_list, null);
-		self.change_count = 0;
-
-		return .{
-			.index = 0,
-			.events = event_list[0..event_count],
-		};
-	}
-
-	const Iterator = struct {
-		index: usize,
-		events: []Kevent,
-
-		fn next(self: *Iterator) ?usize{
-			const index = self.index;
-			const events = self.events;
-			if (index == events.len) {
-				return null;
-			}
-			self.index = index + 1;
-			return self.events[index].udata;
-		}
+// Wraps a socket with a application-specific details, such as information needed
+// to manage the connection's lifecycle (e.g. timeouts). Conns are placed in a
+// linked list, hence the next/prev.
+//
+// The Conn can be re-used (as parf of a pool), either for keepalive, or for
+// completely different tcp connections. From the Conn's point of view, there's
+// no difference, just need to `reset` between each request.
+//
+// The Conn contains request and response state information necessary to operate
+// in nonblocking mode. A pointer to the conn is the userdata passed to epoll/kqueue.
+// Should only be created through the worker's ConnPool
+pub const Conn = struct {
+	// In normal operations, sockets are nonblocking. But since Zig doesn't have
+	// async, the applications using httpz have no consistent way to deal with
+	// nonblocking/async. So, if they use some of the more advanced featuresw which
+	// take over the socket directly, we'll switch to blocking.
+	const IOMode = enum {
+		blocking,
+		nonblocking,
 	};
-};
 
-const EPoll = struct {
-	q: i32,
-	event_list: [32]EpollEvent,
-
-	const EpollEvent = std.os.linux.epoll_event;
-
-	fn init() !EPoll {
-		return .{
-			.event_list = undefined,
-			.q = try std.os.epoll_create1(0),
-		};
-	}
-
-	fn deinit(self: EPoll) void {
-		std.os.close(self.q);
-	}
-
-	fn add(self: *EPoll, fd: os.fd_t, user_data: usize) !void {
-		var event = os.linux.epoll_event{
-			.events = os.linux.EPOLL.IN,
-			.data = .{.ptr = user_data}
-		};
-		return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_ADD, fd, &event);
-	}
-
-	fn wait(self: *EPoll) !Iterator {
-		const event_list = &self.event_list;
-		const event_count = std.os.epoll_wait(self.q, event_list, -1);
-		return .{
-			.index = 0,
-			.events = event_list[0..event_count],
-		};
-	}
-
-	const Iterator = struct {
-		index: usize,
-		events: []EpollEvent,
-
-		fn next(self: *Iterator) ?usize{
-			const index = self.index;
-			const events = self.events;
-			if (index == events.len) {
-				return null;
-			}
-			self.index = index + 1;
-			return self.events[index].data.ptr;
-		}
+	// This is largely done to avoid unecessry syscalls. When our response is ready
+	// we'll try to send it then and there. Only if we get a WouldBlock do we
+	// start monitoring for write/out events from our event loop. When that happens
+	// poll_mode becomes .write, and that tells us that we need to revert back to
+	// read-listening.
+	const PollMode = enum {
+		read,
+		write,
 	};
+
+	io_mode: IOMode,
+
+	poll_mode: PollMode,
+
+	// Socket flags. On connect, we get this in order to change to nonblocking.
+	// Since we have it at that point, we might as well store it for the rare cases
+	// we need to alter it. In those cases, storing it here allows us to avoid a
+	// system call to get the flag again.
+	socket_flags: usize,
+
+	// whether or not to close the connection after the resposne is sent
+	close: bool,
+
+	stream: std.net.Stream,
+	address: std.net.Address,
+
+	// Data needed to parse a request. This contains pre-allocated memory, e.g.
+	// as a read buffer and to store parsed headers. It also contains the state
+	// necessary to parse the request over successive nonblocking read calls.
+	req_state: Request.State,
+
+	// Data needed to create the response. This contains pre-allocate memory, .e.
+	// header buffer to write the buffer. It also contains the state necessary
+	// to write the response over successive nonblocking write calls.
+	res_state: Response.State,
+
+	// Memory that is needed for the lifetime of a request, specifically from the
+	// point where the request is parsed to after the response is sent, can be
+	// allocated in this arena. An allocator for this arena is available to the
+	// application as req.arena and res.arena.
+	arena: std.heap.ArenaAllocator,
+
+	// Used to enfoce the config.keepalive.timeout
+	last_request: i64,
+
+	// Workers maintain their active conns in a linked list. The link list is intrusive.
+	next: ?*Conn,
+	prev: ?*Conn,
+
+	fn init(allocator: Allocator, buffer_pool: *BufferPool, config: *const Config) !Conn {
+		var req_state = try Request.State.init(allocator, buffer_pool, &config.request);
+		errdefer req_state.deinit(allocator);
+
+		var res_state = try Response.State.init(allocator, buffer_pool, &config.response);
+		errdefer res_state.deinit(allocator);
+
+		return .{
+			.close = false,
+			.io_mode = .nonblocking,
+			.poll_mode = .read,
+			.stream = undefined,
+			.address = undefined,
+			.socket_flags = undefined,
+			.req_state = req_state,
+			.res_state = res_state,
+			.next = null,
+			.prev = null,
+			.last_request = 0,
+			.arena = std.heap.ArenaAllocator.init(allocator),
+		};
+	}
+
+	pub fn deinit(self: *Conn, allocator: Allocator) void {
+		self.arena.deinit();
+		self.req_state.deinit(allocator);
+		self.res_state.deinit(allocator);
+	}
+
+	// being kept connected to a client
+	pub fn keepalive(self: *Conn) !void {
+		if (self.io_mode == .blocking) {
+			_ = try os.fcntl(self.stream.handle, os.F.SETFL, self.socket_flags | os.SOCK.NONBLOCK);
+			self.io_mode = .nonblocking;
+		}
+		self.poll_mode = .read;
+		self.req_state.reset();
+		self.res_state.reset();
+		_ = self.arena.reset(.free_all);
+	}
+
+	// getting put back into the pool
+	fn reset(self: *Conn) void {
+		self.close = false;
+		self.next = null;
+		self.prev = null;
+		self.stream = undefined;
+		self.address = undefined;
+		self.poll_mode = .read;
+		self.io_mode = .nonblocking;
+		self.req_state.reset();
+		self.res_state.reset();
+		_ = self.arena.reset(.free_all);
+	}
+
+	pub fn blocking(self: *Conn) !void {
+		if (self.io_mode == .blocking) return;
+		_ = try os.fcntl(self.stream.handle, os.F.SETFL, self.socket_flags ^ os.SOCK.NONBLOCK);
+		self.io_mode = .blocking;
+	}
 };
 
 const Manager = struct {
@@ -385,7 +442,7 @@ const Manager = struct {
 		const buffer_pool = try allocator.create(BufferPool);
 		errdefer allocator.destroy(buffer_pool);
 
-		const large_buffer_count = config.workers.large_buffer_count orelse 8;
+		const large_buffer_count = config.workers.large_buffer_count orelse 16;
 		const large_buffer_size = config.workers.large_buffer_size orelse config.request.max_body_size orelse 65536;
 		buffer_pool.* = try BufferPool.init(allocator, large_buffer_count, large_buffer_size);
 		errdefer buffer_pool.deinit();
@@ -461,13 +518,8 @@ const ConnPool = struct {
 		for (0..min) |i| {
 			const conn = try mem_pool.create();
 			errdefer mem_pool.destroy(conn);
+			conn.* = try Conn.init(allocator, buffer_pool, config);
 
-			conn.* = .{
-				.last_request = 0,
-				.stream = undefined,
-				.address = undefined,
-				.req_state = try Request.State.init(allocator, buffer_pool, &config.request),
-			};
 			conns[i] = conn;
 			initialized += 1;
 		}
@@ -503,7 +555,7 @@ const ConnPool = struct {
 
 		const conn = try self.mem_pool.create();
 		errdefer self.mem_pool.destroy(conn);
-		conn.req_state = try Request.State.init(self.allocator, self.buffer_pool, &self.config.request);
+		conn.* = try Conn.init(self.allocator, self.buffer_pool, self.config);
 		return conn;
 	}
 
@@ -516,10 +568,7 @@ const ConnPool = struct {
 			return;
 		}
 
-		conn.last_request = 0;
-		conn.req_state.reset();
-		conn.stream = undefined;
-		conn.address = undefined;
+		conn.reset();
 		conns[available] = conn;
 		self.available = available + 1;
 	}
@@ -562,6 +611,184 @@ pub fn List(comptime T: type) type {
 		}
 	};
 }
+
+const KQueue = struct {
+	q: i32,
+	change_count: usize,
+	change_buffer: [16]Kevent,
+	event_list: [64]Kevent,
+
+	const Kevent = std.os.Kevent;
+
+	fn init() !KQueue {
+		return .{
+			.q = try std.os.kqueue(),
+			.change_count = 0,
+			.change_buffer = undefined,
+			.event_list = undefined,
+		};
+	}
+
+	fn deinit(self: KQueue) void {
+		std.os.close(self.q);
+	}
+
+	fn addRead(self: *KQueue, fd: os.fd_t, data: usize) !void {
+		try self.change(.{
+			.ident = @intCast(fd),
+			.filter = os.system.EVFILT_READ,
+			.flags = os.system.EV_ADD,
+			.fflags = 0,
+			.data = 0,
+			.udata = data,
+		});
+	}
+
+	fn writeMode(self: *KQueue, fd: os.fd_t, data: usize) !void {
+		try self.change(.{
+			.ident = @intCast(fd),
+			.filter = os.system.EVFILT_WRITE,
+			.flags = os.system.EV_ADD | os.system.EV_ENABLE,
+			.fflags = 0,
+			.data = 0,
+			.udata = data,
+		});
+
+		try self.change(.{
+			.ident = @intCast(fd),
+			.filter = os.system.EVFILT_READ,
+			.flags = os.system.EV_ADD | os.system.EV_DISABLE,
+			.fflags = 0,
+			.data = 0,
+			.udata = 0,
+		});
+	}
+
+	fn readMode(self: *KQueue, fd: os.fd_t, data: usize) !void {
+		try self.change(.{
+			.ident = @intCast(fd),
+			.filter = os.system.EVFILT_READ,
+			.flags = os.system.EV_ADD | os.system.EV_ENABLE,
+			.fflags = 0,
+			.data = 0,
+			.udata = data,
+		});
+
+		try self.change(.{
+			.ident = @intCast(fd),
+			.filter = os.system.EVFILT_WRITE,
+			.flags = os.system.EV_ADD | os.system.EV_DISABLE,
+			.fflags = 0,
+			.data = 0,
+			.udata = 0,
+		});
+	}
+
+	fn change(self: *KQueue, event: Kevent) !void {
+		var change_count = self.change_count;
+		var change_buffer = &self.change_buffer;
+
+		if (change_count == change_buffer.len) {
+			// calling this with an empty event_list will return immediate
+			_ = try std.os.kevent(self.q, change_buffer, &[_]Kevent{}, null);
+			change_count = 0;
+		}
+		change_buffer[change_count] = event ;
+		self.change_count = change_count + 1;
+	}
+
+	fn wait(self: *KQueue) !Iterator {
+		const event_list = &self.event_list;
+		const event_count = try std.os.kevent(self.q, self.change_buffer[0..self.change_count], event_list, null);
+		self.change_count = 0;
+
+		return .{
+			.index = 0,
+			.events = event_list[0..event_count],
+		};
+	}
+
+	const Iterator = struct {
+		index: usize,
+		events: []Kevent,
+
+		fn next(self: *Iterator) ?usize{
+			const index = self.index;
+			const events = self.events;
+			if (index == events.len) {
+				return null;
+			}
+			self.index = index + 1;
+			return self.events[index].udata;
+		}
+	};
+};
+
+const EPoll = struct {
+	q: i32,
+	event_list: [64]EpollEvent,
+
+	const EpollEvent = std.os.linux.epoll_event;
+
+	fn init() !EPoll {
+		return .{
+			.event_list = undefined,
+			.q = try std.os.epoll_create1(0),
+		};
+	}
+
+	fn deinit(self: EPoll) void {
+		std.os.close(self.q);
+	}
+
+	fn addRead(self: *EPoll, fd: os.fd_t, user_data: usize) !void {
+		var event = os.linux.epoll_event{
+			.events = os.linux.EPOLL.IN,
+			.data = .{.ptr = user_data}
+		};
+		return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_ADD, fd, &event);
+	}
+
+	fn writeMode(self: *EPoll, fd: os.fd_t, user_data: usize) !void {
+		var event = os.linux.epoll_event{
+			.events = os.linux.EPOLL.OUT,
+			.data = .{.ptr = user_data}
+		};
+		return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_MOD, fd, &event);
+	}
+
+	fn readMode(self: *EPoll, fd: os.fd_t, user_data: usize) !void {
+		var event = os.linux.epoll_event{
+			.events = os.linux.EPOLL.IN,
+			.data = .{.ptr = user_data}
+		};
+		return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_MOD, fd, &event);
+	}
+
+	fn wait(self: *EPoll) !Iterator {
+		const event_list = &self.event_list;
+		const event_count = std.os.epoll_wait(self.q, event_list, -1);
+		return .{
+			.index = 0,
+			.events = event_list[0..event_count],
+		};
+	}
+
+	const Iterator = struct {
+		index: usize,
+		events: []EpollEvent,
+
+		fn next(self: *Iterator) ?usize{
+			const index = self.index;
+			const events = self.events;
+			if (index == events.len) {
+				return null;
+			}
+			self.index = index + 1;
+			return self.events[index].data.ptr;
+		}
+	};
+};
 
 const t = @import("t.zig");
 test "ConnPool" {
