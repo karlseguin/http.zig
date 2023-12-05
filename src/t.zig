@@ -58,8 +58,9 @@ pub const Context = struct {
 			std.os.setsockopt(pair[1], std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &timeout) catch unreachable;
 			std.os.setsockopt(pair[1], std.os.SOL.SOCKET, std.os.SO.SNDTIMEO, &timeout) catch unreachable;
 
-			// prevents WouldBlock in our request.fuzz test
-			std.os.setsockopt(pair[1], std.os.SOL.SOCKET, std.os.SO.SNDBUF, &std.mem.toBytes(@as(c_int, 10_000))) catch unreachable;
+			// for request.fuzz, which does up to an 8K write. Not sure why this has
+			// to be so much more but on linux, even a 10K SNDBUF results in WOULD_BLOCK.
+			std.os.setsockopt(pair[1], std.os.SOL.SOCKET, std.os.SO.SNDBUF, &std.mem.toBytes(@as(c_int, 20_000))) catch unreachable;
 		}
 
 		const server = std.net.Stream{.handle = pair[0]};

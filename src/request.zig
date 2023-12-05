@@ -904,7 +904,6 @@ test "request: fuzz" {
 	var r = t.getRandom();
 	const random = r.random();
 	for (0..100) |_| {
-
 		// important to test with different buffer sizes, since there's a lot of
 		// special handling for different cases (e.g the buffer is full and has
 		// some of the body in it, so we need to copy that to a dynamically allocated
@@ -987,7 +986,6 @@ test "request: fuzz" {
 			}
 
 			var request = Request.init(conn.arena.allocator(), conn);
-			// defer _ = conn.arena.reset(.free_all);
 
 			// assert the headers
 			var it = headers.iterator();
@@ -1002,17 +1000,11 @@ test "request: fuzz" {
 				try t.expectString(entry.value_ptr.*, actualQuery.get(entry.key_ptr.*).?);
 			}
 
-			// We dont' read the body by defalt. We donly read the body when the app
-			// calls req.body(). It's important that we test both cases. When the body
-			// isn't read, we still need to drain the bytes from the socket for when
-			// the socket is reused.
-			if (random.uintAtMost(u8, 4) != 0) {
-				const actual = request.body();
-				if (body) |b| {
-					try t.expectString(b, actual.?);
-				} else {
-					try t.expectEqual(null, actual);
-				}
+			const actual_body = request.body();
+			if (body) |b| {
+				try t.expectString(b, actual_body.?);
+			} else {
+				try t.expectEqual(null, actual_body);
 			}
 		}
 	}
