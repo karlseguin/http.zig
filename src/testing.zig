@@ -468,7 +468,7 @@ test "testing: expectBody" {
 	var ht = init(.{});
 	defer ht.deinit();
 	ht.res.status = 404;
-	try ht.res.body("nope");
+	ht.res.body("nope");
 
 	try ht.expectStatus(404);
 	try ht.expectBody("nope");

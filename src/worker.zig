@@ -183,11 +183,14 @@ pub fn Worker(comptime S: type) type {
 			var stage = state.stage;
 
 			var len: usize = 0;
-			var buf: []u8 = undefined;
+			var buf: []const u8 = undefined;
 
 			if (stage == .header) {
 				len = state.header_len;
 				buf = state.header_buffer.data;
+			} else if (state.body) |b| {
+				len = b.len;
+				buf = b;
 			} else {
 				// we can only be here if there's a body
 				len = state.body_len;
@@ -217,11 +220,18 @@ pub fn Worker(comptime S: type) type {
 				pos += n;
 				if (pos == len) {
 					if (stage == .body) break; // done
-					const body_buffer = state.body_buffer orelse break; // no body, done
+
+					if (state.body) |b| {
+						buf = b;
+						len = buf.len;
+					} else if (state.body_buffer) |b| {
+						buf = b.data;
+						len = state.body_len;
+					} else {
+						break;
+					}
 					pos = 0;
 					stage = .body;
-					buf = body_buffer.data;
-					len = state.body_len;
 				}
 			}
 

@@ -81,16 +81,8 @@ pub const Response = struct {
 		self.headers.add(n, v);
 	}
 
-	pub fn body(self: *Response, data: []const u8) !void {
-		const state = &self.conn.res_state;
-		var buf = state.static_body_buffer;
-
-		if (data.len > buf.data.len) {
-			buf = try state.buffer_pool.alloc(data.len);
-		}
-		@memcpy(buf.data[0..data.len], data);
-		state.body_buffer = buf;
-		state.body_len = data.len;
+	pub fn body(self: *Response, data: []const u8) void {
+		self.conn.res_state.body = data;
 	}
 
 	pub fn startEventStream(self: *Response) !Stream {
@@ -125,7 +117,9 @@ pub const Response = struct {
 
 		const stream = conn.stream;
 		try stream.writeAll(state.header_buffer.data[0..state.header_len]);
-		if (state.body_buffer) |b| {
+		if (state.body) |b| {
+			try stream.writeAll(b);
+		}	else if (state.body_buffer) |b| {
 			try stream.writeAll(b.data[0..state.body_len]);
 		}
 	}
@@ -242,7 +236,15 @@ pub const State = struct {
 
 	// Length of header, when sending, we'll write: header_buffer.data[pos..header_len]
 	header_len: usize,
-	// Static buffer for body. Alocated upfront and what we'll use if it fits. Else
+
+	// The response body can either be given directly via res.body(...) or written
+	// through the res.writer() (which is what res.json() does). We could simplify
+	// this code by taking anything passed to res.body() to writing it to our buffers,
+	// that would involve a copy and doing an if check seems a lot cheaper than
+	// copying (and possibly allocating) a body.
+	body: ?[]const u8,
+
+	// Static buffer for body. Allocated upfront and what we'll use if it fits. Else
 	// we'll grab something larger from buffer_pool.
 	static_body_buffer: buffer.Buffer,
 
@@ -259,6 +261,7 @@ pub const State = struct {
 	// thus entering the body stage). If we're in the body stage when we're done
 	// writing buf, then we're done.
 	stage: Stage,
+
 
 	const Stage = enum {
 		header,
@@ -282,6 +285,7 @@ pub const State = struct {
 			.stage = .header,
 			.buffer_pool = buffer_pool,
 			.headers = headers,
+			.body = null,
 			.body_buffer = null,
 			.header_buffer = header_buffer,
 			.static_body_buffer = body_buffer,
@@ -309,6 +313,7 @@ pub const State = struct {
 		self.header_buffer = self.static_header_buffer;
 
 		self.pos = 0;
+		self.body = null;
 		self.body_len = 0;
 		self.headers.reset();
 	}
@@ -480,7 +485,7 @@ pub const State = struct {
 			data = buf.data;
 		}
 
-		const body_len = self.body_len;
+		const body_len = if (self.body) |b| b.len else self.body_len;
 		if (body_len > 0) {
 			const CONTENT_LENGTH = "Content-Length: ";
 			var end = pos + CONTENT_LENGTH.len;
@@ -568,7 +573,7 @@ test "response: write" {
 		// body
 		var res = ctx.response();
 		res.status = 200;
-		try res.body("hello");
+		res.body("hello");
 		try res.write();
 		try ctx.expect("HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello");
 	}
@@ -627,7 +632,7 @@ test "response: write header_buffer_size" {
 			res.header("a-header", "a-value");
 			res.header("b-hdr", "b-val");
 			res.header("c-header11", "cv");
-			try res.body("hello world!");
+			res.body("hello world!");
 			try res.write();
 			try ctx.expect("HTTP/1.1 8\r\na-header: a-value\r\nb-hdr: b-val\r\nc-header11: cv\r\nContent-Length: 12\r\n\r\nhello world!");
 		}
@@ -741,12 +746,12 @@ test "response: written" {
 
 	var res = ctx.response();
 
-	try res.body("abc");
+	res.body("abc");
 	try res.write();
 	try ctx.expect("HTTP/1.1 200\r\nContent-Length: 3\r\n\r\nabc");
 
 	// write again, without a res.reset, nothing gets written
-	try res.body("yo!");
+	res.body("yo!");
 	try res.write();
 	try ctx.expect("");
 }

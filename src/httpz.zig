@@ -343,7 +343,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
 		fn defaultNotFound(_: *Request, res: *Response) !void {
 			res.status = 404;
-			return res.body("Not Found");
+			res.body("Not Found");
 		}
 
 		fn defaultErrorHandlerWithContext(_:G, req: *Request, res: *Response, err: anyerror) void {
@@ -352,7 +352,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
 		fn defaultErrorHandler(req: *Request, res: *Response, err: anyerror) void {
 			res.status = 500;
-			res.body("Internal Server Error") catch {};
+			res.body("Internal Server Error");
 			std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
 		}
 
@@ -383,7 +383,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 				},
 				error.BodyTooBig => {
 					res.status = 431;
-					res.body("Request body is too big") catch {};
+					res.body("Request body is too big");
 					return .write_and_close;
 				},
 				else => {
@@ -798,7 +798,7 @@ fn testNotFound(ctx: u32, _: *Request, res: *Response) !void {
 fn testErrorHandler(ctx: u32, _: *Request, res: *Response, _: anyerror) void {
 	res.status = 500;
 	addContextHeader(res, ctx);
-	res.body("#/why/arent/tags/hierarchical") catch {};
+	res.body("#/why/arent/tags/hierarchical");
 }
 
 fn addContextHeader(res: *Response, ctx: u32) void {

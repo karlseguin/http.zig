@@ -57,13 +57,13 @@ fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
     // you can set the body directly to a []u8, but note that the memory
     // must be valid beyond your handler. Use the res.arena if you need to allocate
     // memory for the body.
-    try res.body("Not Found");
+    res.body("Not Found");
 }
 
 // note that the error handler return `void` and not `!void`
 fn errorHandler(req: *httpz.Request, res: *httpz.Response, err: anyerror) void {
     res.status = 500;
-    res.body("Internal Server Error") catch {};
+    res.body("Internal Server Error");
     std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
 }
 ```
@@ -100,7 +100,7 @@ fn increment(global: *Global, _: *httpz.Request, res: *httpz.Response) !void {
     // or, more verbosse: httpz.ContentType.TEXT
     res.content_type = .TEXT;
     var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-    return res.body(out);
+    res.body(out);
 }
 ```
 
@@ -124,7 +124,7 @@ const Global = struct {
 
         res.content_type = .TEXT;
         var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-        return res.body(out);
+        res.body(out);
     }
 };
 
@@ -185,7 +185,7 @@ fn loggedIn(action: httpz.Action(void), req: *httpz.Request, res: *httpz.Respons
         return mainDispatcher(action, req, res);
     }
     res.status = 401;
-    return res.body("Not authorized");
+    res.body("Not authorized");
 }
 
 fn logout(req: *httpz.Request, res: *httpz.Response) !void {
@@ -365,24 +365,23 @@ The following fields are the most useful:
 * `arena` - an arena allocator that will be reset at the end of the request
 
 ### Body
-The simplest way to set a body is to use the `res.body() !void`.
+The simplest way to set a body is to use the `res.body([]const u8) void` function. **However** the provided value must remain valid until the body is written, which happens outside of your application code.
 
-### JSON
-The `json` function will set the content_type to `httpz.ContentType.JSON` and serialize the provided value using `std.json.stringify`. The 2nd argument to the json function is the `std.json.StringifyOptions` to pass to the `stringify` function.
+Therefore, `res.body(...)` can be safely used with constant strings. It can also be used with content created with `res.arena` (explained in the next section).
 
-Because the final size of the serialized object cannot be known ahead of a time, a custom writer is used. Initially, this writer will use a static buffer defined by the `config.response.body_buffer_size`. However, as the object is being serialized, if this static buffer runs out of space, a dynamic buffer will be allocated and the static buffer will be copied into it (at this point, the dynamic buffer essentially behaves like an `ArrayList(u8)`.
-
-As a general rule, I'd suggest making sure `config.response.body_buffer_size` is large enough to fit 99% of your responses. As an alternative, you can always manage your own serialization and simply set the `res.content_type` and `res_body` fields.
+It is possible to call `res.write() !void` direclty from your code. This will put the socket into blocking mode and send the full response. This is an advanced feature. Calling `res.write()` again does nothing.
 
 ### Dynamic Content
-Besides helpers like `json`, you can use the `res.arena` to create dynamic content:
+You can use the `res.arena` allocator to create dynamic content:
 
 ```zig
 const query = try req.query();
 const name = query.get("name") orelse "stranger";
 var out = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
-try res.body(out);
+res.body(out);
 ```
+
+Memory allocated with `res.arena` will exist until the response is sent.
 
 
 ### io.Writer
@@ -396,7 +395,12 @@ try ws.emitString(req.param("name").?);
 try ws.endObject();
 ```
 
-See the `json` function for an explanation on how this writer behaves.
+Initially, writes will go to a pre-allocated buffer defined by `config.response.body_buffer_size`. If the buffer becomes full, a larger buffer will either be fetched from the large buffer pool (`config.workers.large_buffer_count`) or dynamically allocated.
+
+### JSON
+The `res.json` function will set the content_type to `httpz.ContentType.JSON` and serialize the provided value using `std.json.stringify`. The 2nd argument to the json function is the `std.json.StringifyOptions` to pass to the `stringify` function.
+
+This function uses `res.writer()` explained above.
 
 ## Header Value
 Set header values using the `res.header(NAME, VALUE)` function:
