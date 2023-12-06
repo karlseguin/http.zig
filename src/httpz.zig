@@ -343,7 +343,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
 		fn defaultNotFound(_: *Request, res: *Response) !void {
 			res.status = 404;
-			res.body("Not Found");
+			res.body = "Not Found";
 		}
 
 		fn defaultErrorHandlerWithContext(_:G, req: *Request, res: *Response, err: anyerror) void {
@@ -352,7 +352,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
 		fn defaultErrorHandler(req: *Request, res: *Response, err: anyerror) void {
 			res.status = 500;
-			res.body("Internal Server Error");
+			res.body = "Internal Server Error";
 			std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
 		}
 
@@ -383,7 +383,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 				},
 				error.BodyTooBig => {
 					res.status = 431;
-					res.body("Request body is too big");
+					res.body = "Request body is too big";
 					return .write_and_close;
 				},
 				else => {
@@ -758,8 +758,7 @@ fn testFail(_: u32, _: *Request, _: *Response) !void {
 
 fn testParams(_: u32, req: *Request, res: *Response) !void {
 	const args = .{req.param("version").?, req.param("UserId").?};
-	const out = try std.fmt.allocPrint(req.arena, "version={s},user={s}", args);
-	return res.body(out);
+	res.body =  try std.fmt.allocPrint(req.arena, "version={s},user={s}", args);
 }
 
 fn testHeaders(ctx: u32, req: *Request, res: *Response) !void {
@@ -786,19 +785,19 @@ fn testEventStream(_: *Request, res: *Response) !void {
 fn testReqQuery(req: *Request, res: *Response) !void {
 	res.status = 200;
 	const query = try req.query();
-	return res.body(query.get("fav").?);
+	res.body = query.get("fav").?;
 }
 
 fn testNotFound(ctx: u32, _: *Request, res: *Response) !void {
 	res.status = 404;
 	addContextHeader(res, ctx);
-	return res.body("where lah?");
+	res.body = "where lah?";
 }
 
 fn testErrorHandler(ctx: u32, _: *Request, res: *Response, _: anyerror) void {
 	res.status = 500;
 	addContextHeader(res, ctx);
-	res.body("#/why/arent/tags/hierarchical");
+	res.body = "#/why/arent/tags/hierarchical";
 }
 
 fn addContextHeader(res: *Response, ctx: u32) void {

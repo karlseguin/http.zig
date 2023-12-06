@@ -7,7 +7,9 @@ var index_file_contents: []u8 = undefined;
 // Started in main.zig which starts 3 servers, on 3 different ports, to showcase
 // small variations in using httpz.
 pub fn start(allocator: Allocator) !void {
-	var server = try httpz.Server().init(allocator, .{});
+	var server = try httpz.Server().init(allocator, .{
+		.workers = .{.min_conn = 200},
+	});
 	defer server.deinit();
 	var router = server.router();
 
@@ -28,7 +30,7 @@ pub fn start(allocator: Allocator) !void {
 }
 
 fn index(_: *httpz.Request, res: *httpz.Response) !void {
-	res.body(
+	res.body =
 		\\<!DOCTYPE html>
 		\\ <ul>
 		\\ <li><a href="/hello?name=Teg">Querystring + text output</a>
@@ -37,7 +39,7 @@ fn index(_: *httpz.Request, res: *httpz.Response) !void {
 		\\ <li><a href="/static_file">Static file</a>
 		\\ <li><a href="/cached_static_file">Cached static file</a>
 		\\ <li><a href="http://localhost:5883/increment">Global shared state</a>
-	);
+	;
 }
 
 fn hello(req: *httpz.Request, res: *httpz.Response) !void {
@@ -45,8 +47,7 @@ fn hello(req: *httpz.Request, res: *httpz.Response) !void {
 	const name = query.get("name") orelse "stranger";
 
 	// One solution is to use res.arena
-	// var out = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
-	// try res.body(out);
+	// res.body = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
 
 	// another is to use res.writer(), which might be more efficient in some cases
 	try std.fmt.format(res.writer(), "Hello {s}", .{name});
@@ -71,15 +72,15 @@ fn writer(req: *httpz.Request, res: *httpz.Response) !void {
 fn staticFile(_: *httpz.Request, res: *httpz.Response) !void {
 	var index_file = try std.fs.cwd().openFile("example/index.html", .{});
 	defer index_file.close();
-	return res.body(try index_file.readToEndAlloc(res.arena, 100000));
+	res.body = try index_file.readToEndAlloc(res.arena, 100000);
 }
 
 fn cachedStaticFile(req: *httpz.Request, res: *httpz.Response) !void {
 	_ = req;
-	return res.body(index_file_contents);
+	res.body = index_file_contents;
 }
 
 fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
 	res.status = 404;
-	res.body("Not found");
+	res.body = "Not found";
 }

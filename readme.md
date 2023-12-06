@@ -57,13 +57,13 @@ fn notFound(_: *httpz.Request, res: *httpz.Response) !void {
     // you can set the body directly to a []u8, but note that the memory
     // must be valid beyond your handler. Use the res.arena if you need to allocate
     // memory for the body.
-    res.body("Not Found");
+    res.body = "Not Found";
 }
 
 // note that the error handler return `void` and not `!void`
 fn errorHandler(req: *httpz.Request, res: *httpz.Response, err: anyerror) void {
     res.status = 500;
-    res.body("Internal Server Error");
+    res.body = "Internal Server Error";
     std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{req.url.raw, err});
 }
 ```
@@ -99,8 +99,7 @@ fn increment(global: *Global, _: *httpz.Request, res: *httpz.Response) !void {
 
     // or, more verbosse: httpz.ContentType.TEXT
     res.content_type = .TEXT;
-    var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-    res.body(out);
+    res.body = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
 }
 ```
 
@@ -118,13 +117,12 @@ const Global = struct {
 
     fn increment(global: *Global, _: *httpz.Request, res: *httpz.Response) !void {
         global.l.lock();
-        var hits = global.hits + 1;
+        const hits = global.hits + 1;
         global.hits = hits;
         global.l.unlock();
 
         res.content_type = .TEXT;
-        var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-        res.body(out);
+        res.body = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
     }
 };
 
@@ -185,7 +183,7 @@ fn loggedIn(action: httpz.Action(void), req: *httpz.Request, res: *httpz.Respons
         return mainDispatcher(action, req, res);
     }
     res.status = 401;
-    res.body("Not authorized");
+    res.body = "Not authorized";
 }
 
 fn logout(req: *httpz.Request, res: *httpz.Response) !void {
@@ -365,9 +363,9 @@ The following fields are the most useful:
 * `arena` - an arena allocator that will be reset at the end of the request
 
 ### Body
-The simplest way to set a body is to use the `res.body([]const u8) void` function. **However** the provided value must remain valid until the body is written, which happens outside of your application code.
+The simplest way to set a body is to set `res.body` to a `[]const u8`. **However** the provided value must remain valid until the body is written, which happens outside of your application code.
 
-Therefore, `res.body(...)` can be safely used with constant strings. It can also be used with content created with `res.arena` (explained in the next section).
+Therefore, `res.body` can be safely used with constant strings. It can also be used with content created with `res.arena` (explained in the next section).
 
 It is possible to call `res.write() !void` direclty from your code. This will put the socket into blocking mode and send the full response. This is an advanced feature. Calling `res.write()` again does nothing.
 
@@ -377,8 +375,7 @@ You can use the `res.arena` allocator to create dynamic content:
 ```zig
 const query = try req.query();
 const name = query.get("name") orelse "stranger";
-var out = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
-res.body(out);
+res.body = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
 ```
 
 Memory allocated with `res.arena` will exist until the response is sent.

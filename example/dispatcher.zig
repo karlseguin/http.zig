@@ -26,8 +26,7 @@ const RequestContext = struct {
 		self.global.l.unlock();
 
 		res.content_type = httpz.ContentType.TEXT;
-		const out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-		return res.body(out);
+		res.body = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
 	}
 };
 
@@ -43,7 +42,7 @@ pub fn start(allocator: Allocator) !void {
 
 fn notAuthorized(res: *httpz.Response) !void {
 	res.status = 401;
-	return res.body("Not authorized");
+	res.body = "Not authorized";
 }
 
 fn dispatcher(global: *GlobalContext, action: httpz.Action(*RequestContext), req: *httpz.Request, res: *httpz.Response) !void {

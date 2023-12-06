@@ -14,8 +14,7 @@ const GlobalContext = struct {
 		self.l.unlock();
 
 		res.content_type = httpz.ContentType.TEXT;
-		const out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-		return res.body(out);
+		res.body = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
 	}
 };
 

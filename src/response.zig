@@ -45,12 +45,18 @@ pub const Response = struct {
 	// directly, rather set req.keepalive = false.
 	keepalive: bool,
 
+	// The body to send. This value must remain valid until the response is sent
+	// which happens outside of the application's control. It should be a constant
+	// or created with res.arena. Use res.writer() for other cases.
+	body: ?[]const u8,
+
 	pub const State = Self.State;
 
 	// Should not be called directly, but initialized through a pool
 	pub fn init(arena: Allocator, conn: *Conn) Response {
 		return .{
 			.pos = 0,
+			.body = null,
 			.conn = conn,
 			.status = 200,
 			.arena = arena,
@@ -79,10 +85,6 @@ pub const Response = struct {
 		const n = if (opts.dupe_name) try self.arena.dupe(u8, name) else name;
 		const v = if (opts.dupe_name) try self.arena.dupe(u8, value) else name;
 		self.headers.add(n, v);
-	}
-
-	pub fn body(self: *Response, data: []const u8) void {
-		self.conn.res_state.body = data;
 	}
 
 	pub fn startEventStream(self: *Response) !Stream {
@@ -237,11 +239,10 @@ pub const State = struct {
 	// Length of header, when sending, we'll write: header_buffer.data[pos..header_len]
 	header_len: usize,
 
-	// The response body can either be given directly via res.body(...) or written
+	// The response body can either be given directly via res.body = "..." or written
 	// through the res.writer() (which is what res.json() does). We could simplify
-	// this code by taking anything passed to res.body() to writing it to our buffers,
-	// that would involve a copy and doing an if check seems a lot cheaper than
-	// copying (and possibly allocating) a body.
+	// this code by taking anything assigned to res.body and writing it to our buffers,
+	// but that would involve copying a potentially large string.
 	body: ?[]const u8,
 
 	// Static buffer for body. Allocated upfront and what we'll use if it fits. Else
@@ -320,6 +321,7 @@ pub const State = struct {
 
 	pub fn prepareForWrite(self: *State, res: *Response) !void {
 		self.stage = .header;
+		self.body = res.body;
 
 		var bp = self.buffer_pool;
 		var buf = &self.static_header_buffer;
@@ -573,7 +575,7 @@ test "response: write" {
 		// body
 		var res = ctx.response();
 		res.status = 200;
-		res.body("hello");
+		res.body = "hello";
 		try res.write();
 		try ctx.expect("HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello");
 	}
@@ -632,7 +634,7 @@ test "response: write header_buffer_size" {
 			res.header("a-header", "a-value");
 			res.header("b-hdr", "b-val");
 			res.header("c-header11", "cv");
-			res.body("hello world!");
+			res.body = "hello world!";
 			try res.write();
 			try ctx.expect("HTTP/1.1 8\r\na-header: a-value\r\nb-hdr: b-val\r\nc-header11: cv\r\nContent-Length: 12\r\n\r\nhello world!");
 		}
@@ -746,12 +748,12 @@ test "response: written" {
 
 	var res = ctx.response();
 
-	res.body("abc");
+	res.body = "abc";
 	try res.write();
 	try ctx.expect("HTTP/1.1 200\r\nContent-Length: 3\r\n\r\nabc");
 
 	// write again, without a res.reset, nothing gets written
-	res.body("yo!");
+	res.body = "yo!";
 	try res.write();
 	try ctx.expect("");
 }

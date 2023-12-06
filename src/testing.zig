@@ -447,54 +447,54 @@ test "testing: body" {
 	try t.expectString("the body", ht.req.body().?);
 }
 
-// test "testing: json" {
-// 	var ht = init(.{});
-// 	defer ht.deinit();
+test "testing: json" {
+	var ht = init(.{});
+	defer ht.deinit();
 
-// 	ht.json(.{.over = 9000});
-// 	try t.expectString("{\"over\":9000}", ht.req.body().?);
-// }
+	ht.json(.{.over = 9000});
+	try t.expectString("{\"over\":9000}", ht.req.body().?);
+}
 
-// test "testing: expectBody empty" {
-// 	var ht = init(.{});
-// 	defer ht.deinit();
-// 	try ht.expectStatus(200);
-// 	try ht.expectBody("");
-// 	try ht.expectHeaderCount(1);
-// 	try ht.expectHeader("Content-Length", "0");
-// }
+test "testing: expectBody empty" {
+	var ht = init(.{});
+	defer ht.deinit();
+	try ht.expectStatus(200);
+	try ht.expectBody("");
+	try ht.expectHeaderCount(1);
+	try ht.expectHeader("Content-Length", "0");
+}
 
 test "testing: expectBody" {
 	var ht = init(.{});
 	defer ht.deinit();
 	ht.res.status = 404;
-	ht.res.body("nope");
+	ht.res.body = "nope";
 
 	try ht.expectStatus(404);
 	try ht.expectBody("nope");
 }
 
-// test "testing: expectJson" {
-// 	var ht = init(.{});
-// 	defer ht.deinit();
-// 	ht.res.status = 201;
-// 	try ht.res.json(.{.tea = "keemun", .price = .{.amount = 4990, .discount = 0.1}}, .{});
+test "testing: expectJson" {
+	var ht = init(.{});
+	defer ht.deinit();
+	ht.res.status = 201;
+	try ht.res.json(.{.tea = "keemun", .price = .{.amount = 4990, .discount = 0.1}}, .{});
 
-// 	try ht.expectStatus(201);
-// 	try ht.expectJson(.{ .price = .{.discount = 0.1, .amount = 4990}, .tea = "keemun"});
-// }
+	try ht.expectStatus(201);
+	try ht.expectJson(.{ .price = .{.discount = 0.1, .amount = 4990}, .tea = "keemun"});
+}
 
-// test "testing: getJson" {
-// 	var ht = init(.{});
-// 	defer ht.deinit();
+test "testing: getJson" {
+	var ht = init(.{});
+	defer ht.deinit();
 
-// 	ht.res.status = 201;
-// 	try ht.res.json(.{.tea = "silver needle"}, .{});
+	ht.res.status = 201;
+	try ht.res.json(.{.tea = "silver needle"}, .{});
 
-// 	try ht.expectStatus(201);
-// 	const json = try ht.getJson();
-// 	try t.expectString("silver needle", json.object.get("tea").?.string);
-// }
+	try ht.expectStatus(201);
+	const json = try ht.getJson();
+	try t.expectString("silver needle", json.object.get("tea").?.string);
+}
 
 test "testing: parseResponse" {
 	var ht = init(.{});
