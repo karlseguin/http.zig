@@ -355,7 +355,7 @@ pub const Conn = struct {
 	// point where the request is parsed to after the response is sent, can be
 	// allocated in this arena. An allocator for this arena is available to the
 	// application as req.arena and res.arena.
-	arena: std.heap.ArenaAllocator,
+	arena: *std.heap.ArenaAllocator,
 
 	// Used to enfoce the config.keepalive.timeout
 	last_request: i64,
@@ -365,13 +365,19 @@ pub const Conn = struct {
 	prev: ?*Conn,
 
 	fn init(allocator: Allocator, buffer_pool: *BufferPool, config: *const Config) !Conn {
-		var req_state = try Request.State.init(allocator, buffer_pool, &config.request);
+		const arena = try allocator.create(std.heap.ArenaAllocator);
+		errdefer allocator.destroy(arena);
+
+		arena.* = std.heap.ArenaAllocator.init(allocator);
+
+		var req_state = try Request.State.init(allocator, arena, buffer_pool, &config.request);
 		errdefer req_state.deinit(allocator);
 
-		var res_state = try Response.State.init(allocator, buffer_pool, &config.response);
+		var res_state = try Response.State.init(allocator, arena, buffer_pool, &config.response);
 		errdefer res_state.deinit(allocator);
 
 		return .{
+			.arena = arena,
 			.close = false,
 			.io_mode = .nonblocking,
 			.poll_mode = .read,
@@ -383,12 +389,12 @@ pub const Conn = struct {
 			.next = null,
 			.prev = null,
 			.last_request = 0,
-			.arena = std.heap.ArenaAllocator.init(allocator),
 		};
 	}
 
 	pub fn deinit(self: *Conn, allocator: Allocator) void {
 		self.arena.deinit();
+		allocator.destroy(self.arena);
 		self.req_state.deinit(allocator);
 		self.res_state.deinit(allocator);
 	}

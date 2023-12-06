@@ -7,6 +7,7 @@ pub const Buffer = struct {
 	type: Type,
 
 	const Type = enum {
+		arena,
 		static,
 		pooled,
 		dynamic,
@@ -45,12 +46,12 @@ pub const Pool = struct {
 		allocator.free(self.buffers);
 	}
 
-	pub fn grow(self: *Pool, buffer: *Buffer, current_size: usize, new_size: usize) !Buffer {
-		if (buffer.type == .dynamic and self.allocator.resize(buffer.data, new_size)) {
+	pub fn grow(self: *Pool, arena: Allocator, buffer: *Buffer, current_size: usize, new_size: usize) !Buffer {
+		if (buffer.type == .dynamic and arena.resize(buffer.data, new_size)) {
 			buffer.data = buffer.data.ptr[0..new_size];
 			return buffer.*;
 		}
-		const new_buffer = try self.alloc(new_size);
+		const new_buffer = try self.arenaAlloc(arena, new_size);
 		@memcpy(new_buffer.data[0..current_size], buffer.data[0..current_size]);
 		self.free(buffer.*);
 		return new_buffer;
@@ -64,18 +65,19 @@ pub const Pool = struct {
 	}
 
 	pub fn alloc(self: *Pool, size: usize) !Buffer {
-		if (size > self.buffer_size) {
-			return .{
-				.type = .dynamic,
-				.data = try self.allocator.alloc(u8, size),
-			};
-		}
+		return self.allocType(self.allocator, .dynamic, size);
+	}
 
+	pub fn arenaAlloc(self: *Pool, arena: Allocator, size: usize) !Buffer {
+		return self.allocType(arena, .arena, size);
+	}
+
+	fn allocType(self: *Pool, allocator: Allocator, buffer_type: Buffer.Type, size: usize) !Buffer {
 		const available = self.available;
-		if (available == 0) {
+		if (size > self.buffer_size or available == 0) {
 			return .{
-				.type = .dynamic,
-				.data = try self.allocator.alloc(u8, size),
+				.type = buffer_type,
+				.data = try allocator.alloc(u8, size),
 			};
 		}
 
@@ -87,6 +89,7 @@ pub const Pool = struct {
 
 	pub fn free(self: *Pool, buffer: Buffer) void {
 		switch (buffer.type) {
+			.arena => {},
 			.pooled => self.release(buffer),
 			.static => self.allocator.free(buffer.data),
 			.dynamic => self.allocator.free(buffer.data),
@@ -95,7 +98,7 @@ pub const Pool = struct {
 
 	pub fn release(self: *Pool, buffer: Buffer) void {
 		switch (buffer.type) {
-			.static => {},
+			.static, .arena => {},
 			.dynamic => self.allocator.free(buffer.data),
 			.pooled => {
 				const available = self.available;
@@ -150,6 +153,8 @@ test "BufferPool" {
 }
 
 test "BufferPool: grow" {
+	defer t.reset();
+
 	var pool = try Pool.init(t.allocator, 1, 10);
 	defer pool.deinit();
 
@@ -157,7 +162,7 @@ test "BufferPool: grow" {
 		// grow a dynamic buffer
 		var buf1 = try pool.alloc(15);
 		@memcpy(buf1.data[0..5], "hello");
-		const buf2 = try pool.grow(&buf1, 5, 20);
+		const buf2 = try pool.grow(t.arena.allocator(), &buf1, 5, 20);
 		defer pool.free(buf2);
 		try t.expectEqual(20, buf2.data.len);
 		try t.expectString("hello", buf2.data[0..5]);
@@ -167,7 +172,7 @@ test "BufferPool: grow" {
 		// grow a static buffer
 		var buf1 = try pool.static(15);
 		@memcpy(buf1.data[0..6], "hello2");
-		const buf2 = try pool.grow(&buf1, 6, 21);
+		const buf2 = try pool.grow(t.arena.allocator(), &buf1, 6, 21);
 		defer pool.free(buf2);
 		try t.expectEqual(21, buf2.data.len);
 		try t.expectString("hello2", buf2.data[0..6]);
@@ -177,7 +182,7 @@ test "BufferPool: grow" {
 		// grow a pooled buffer
 		var buf1 = try pool.alloc(8);
 		@memcpy(buf1.data[0..7], "hello2a");
-		const buf2 = try pool.grow(&buf1, 7, 14);
+		const buf2 = try pool.grow(t.arena.allocator(), &buf1, 7, 14);
 		defer pool.free(buf2);
 		try t.expectEqual(14, buf2.data.len);
 		try t.expectString("hello2a", buf2.data[0..7]);

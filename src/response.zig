@@ -11,6 +11,7 @@ const Config = @import("config.zig").Config.Response;
 const mem = std.mem;
 const Stream = std.net.Stream;
 const Allocator = mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
 
 const Self = @This();
 
@@ -210,7 +211,7 @@ pub const Response = struct {
 			}
 
 			//  state.body_buffer _has_ to have been set (in the Writer.init call)
-			state.body_buffer = try state.buffer_pool.grow(&state.body_buffer.?, pos, new_capacity);
+			state.body_buffer = try state.buffer_pool.grow(state.arena.allocator(), &state.body_buffer.?, pos, new_capacity);
 		}
 	};
 };
@@ -263,13 +264,14 @@ pub const State = struct {
 	// writing buf, then we're done.
 	stage: Stage,
 
+	arena: *ArenaAllocator,
 
 	const Stage = enum {
 		header,
 		body,
 	};
 
-	pub fn init(allocator: Allocator, buffer_pool: *buffer.Pool, config: *const Config) !Response.State {
+	pub fn init(allocator: Allocator, arena: *ArenaAllocator, buffer_pool: *buffer.Pool, config: *const Config) !Response.State {
 		var headers = try KeyValue.init(allocator, config.max_header_count orelse 16);
 		errdefer headers.deinit(allocator);
 
@@ -284,6 +286,7 @@ pub const State = struct {
 			.body_len = 0,
 			.header_len = 0,
 			.stage = .header,
+			.arena = arena,
 			.buffer_pool = buffer_pool,
 			.headers = headers,
 			.body = null,
@@ -295,6 +298,7 @@ pub const State = struct {
 	}
 
 	pub fn deinit(self: *State, allocator: Allocator) void {
+		// not our job to clear the arena!
 		if (self.body_buffer) |buf| {
 			self.buffer_pool.release(buf);
 		}
@@ -307,6 +311,7 @@ pub const State = struct {
 	}
 
 	pub fn reset(self: *State) void {
+		// not our job to clear the arena!
 		if (self.body_buffer) |buf| {
 			self.buffer_pool.release(buf);
 		}
@@ -453,7 +458,7 @@ pub const State = struct {
 				// +4 for the colon, space and trailer
 				const header_line_length = name.len + value.len + 4;
 				if (data.len < pos + header_line_length) {
-					self.header_buffer = try bp.grow(buf, pos, data.len * 2);
+					self.header_buffer = try bp.grow(self.arena.allocator(), buf, pos, data.len * 2);
 					buf = &self.header_buffer;
 					data = buf.data;
 				}
@@ -482,7 +487,7 @@ pub const State = struct {
 
 		// This is for our last header. 60 should be more than enough.
 		if (data.len - pos < 60) {
-			self.header_buffer = try bp.grow(buf, pos, data.len + 60);
+			self.header_buffer = try bp.grow(self.arena.allocator(), buf, pos, data.len + 60);
 			buf = &self.header_buffer;
 			data = buf.data;
 		}

@@ -68,8 +68,9 @@ pub const Context = struct {
 
 		var ctx_arena = ctx_allocator.create(std.heap.ArenaAllocator) catch unreachable;
 		ctx_arena.* = std.heap.ArenaAllocator.init(ctx_allocator);
-
 		const aa = ctx_arena.allocator();
+
+
 		const bp = aa.create(BufferPool) catch unreachable;
 		bp.* = BufferPool.init(aa, 2, 256) catch unreachable;
 
@@ -85,8 +86,14 @@ pub const Context = struct {
 			if (cw.large_buffer_size == null) config.workers.large_buffer_size = 256;
 		}
 
-		const req_state = httpz.Request.State.init(aa, bp, &config.request) catch unreachable;
-		const res_state = httpz.Response.State.init(aa, bp, &config.response) catch unreachable;
+			// a bit over the top..we could use ctx_arena here, but this better mimics
+		// the actual code where the conn has a distinct arena (whereas ctx_arena is
+		// something specific to this test context)
+		const conn_arena = aa.create(std.heap.ArenaAllocator) catch unreachable;
+		conn_arena.* = std.heap.ArenaAllocator.init(aa);
+
+		const req_state = httpz.Request.State.init(aa, conn_arena, bp, &config.request) catch unreachable;
+		const res_state = httpz.Response.State.init(aa, conn_arena, bp, &config.response) catch unreachable;
 
 		const conn = aa.create(Conn) catch unreachable;
 		conn.* = .{
@@ -101,7 +108,7 @@ pub const Context = struct {
 			.io_mode = .nonblocking,
 			.poll_mode = .read,
 			.socket_flags = 0,
-			.arena = std.heap.ArenaAllocator.init(aa),
+			.arena = conn_arena,
 		};
 
 		return .{

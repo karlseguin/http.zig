@@ -15,6 +15,7 @@ const Config = @import("config.zig").Config.Request;
 const Stream = std.net.Stream;
 const Address = std.net.Address;
 const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
 
 // this approach to matching method name comes from zhp
 const GET_ = @as(u32, @bitCast([4]u8{'G', 'E', 'T', ' '}));
@@ -236,7 +237,9 @@ pub const State = struct {
 	// know what it is from the content-length header
 	body_len: usize,
 
-	pub fn init(allocator: Allocator, buffer_pool: *buffer.Pool, config: *const Config) !Request.State {
+	arena: *ArenaAllocator,
+
+	pub fn init(allocator: Allocator, arena: *ArenaAllocator, buffer_pool: *buffer.Pool, config: *const Config) !Request.State {
 		return .{
 			.pos = 0,
 			.len = 0,
@@ -246,6 +249,7 @@ pub const State = struct {
 			.body = null,
 			.body_pos = 0,
 			.body_len = 0,
+			.arena = arena,
 			.buffer_pool = buffer_pool,
 			.max_body_size = config.max_body_size orelse 1_048_576,
 			.qs = try KeyValue.init(allocator, config.max_query_count orelse 32),
@@ -256,6 +260,7 @@ pub const State = struct {
 	}
 
 	pub fn deinit(self: *State, allocator: Allocator) void {
+		// not our job to clear the arena!
 		if (self.body) |buf| {
 			self.buffer_pool.release(buf);
 			self.body = null;
@@ -267,6 +272,7 @@ pub const State = struct {
 	}
 
 	pub fn reset(self: *State) void {
+		// not our job to clear the arena!
 		self.pos = 0;
 		self.len = 0;
 		self.url = null;
@@ -497,7 +503,7 @@ pub const State = struct {
 			self.pos = len;
 		} else {
 			// We don't have the [full] body, and our static buffer is too small
-			const body_buf = try self.buffer_pool.alloc(cl);
+			const body_buf = try self.buffer_pool.arenaAlloc(self.arena.allocator(), cl);
 			@memcpy(body_buf.data[0..read], buf[pos..pos + read]);
 			self.body = body_buf;
 		}
