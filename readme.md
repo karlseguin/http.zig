@@ -6,14 +6,16 @@ http.zig powers the <https://www.aolium.com> [api server](https://github.com/kar
 # Installation
 This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`.
 
-# Branches, Scaling and Windows
-Until async support is re-added to Zig, 2 versions of this project are being maintained. Except for very small API changes and a few different configuration options, the differences between the two branches are internal.
+## Branches (scaling, robustness and windows)
+Until async support is re-added to Zig, 2 versions of this project are being maintained: the `master` branch and the `blocking` branch. Except for very small API changes and a few different configuration options, the differences between the two branches are internal.
 
-Whichever branch you pick, if you plan on exposing this publicly, I strongly recommend that you place it behind a robust reverse proxy (e.g. nxing). Neither branch does TLS termination and the "basic" branch is relatively easy to DOS.
+Whichever branch you pick, if you plan on exposing this publicly, I strongly recommend that you place it behind a robust reverse proxy (e.g. nginx). Neither  does TLS termination and the `blocking` branch is relatively easy to DOS.
 
-The "master" branch is more advanced and only runs on systems with epoll (Linux) and kqueue (e.g. BSD, MacOS). It should scale and perform better under load and be more predictable in the face of real-world networking (e.g. slow or misbehaving clients). It has a few additional configuration settings to control memory usage and timeouts.
+The `master` branch is more advanced and only runs on systems with epoll (Linux) and kqueue (e.g. BSD, MacOS). It should scale and perform better under load and be more predictable in the face of real-world networking (e.g. slow or misbehaving clients). It has a few additional configuration settings to control memory usage and timeouts.
 
-The "basic" branch uses a naive thread-per-connection. It is simpler and should work on most platforms, including Windows. This approach can have unpredictable memory spikes due to the overhead of the threads themselves. Plus, performance can suffer due to thread thrashing. The `thread_pool = # setting`, uses a `std.Thread.Pool` to limit the number of threads, resulting in more predictable memory usage and, assuming good behavior clients, better performance. The "basic" branch is very easy to DOS and really has to sit behind a reverse proxy that can enforce timeouts/limits.
+The `blocking` branch uses a naive thread-per-connection. It is simpler and should work on most platforms, including Windows. This approach can have unpredictable memory spikes due to the overhead of the threads themselves. Plus, performance can suffer due to thread thrashing. The `thread_pool = #` setting, uses a `std.Thread.Pool` to limit the number of threads, resulting in more predictable memory usage and, assuming properly behaved clients, can perform better. The `blocking` branch is easy to DOS and really _has_ to sit behind a reverse proxy that can enforce timeouts/limits.
+
+More details are [available here](https://www.aolium.com/karlseguin/f75427ac-699e-35f1-dec8-32d54a4f5700).
 
 # Usage
 
