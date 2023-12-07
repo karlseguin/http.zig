@@ -3,7 +3,6 @@
 const std = @import("std");
 const t = @import("t.zig");
 const httpz = @import("httpz.zig");
-const response = @import("response.zig");
 
 const Conn = @import("worker.zig").Conn;
 
@@ -25,20 +24,28 @@ pub fn init(config: httpz.Config) Testing {
 		}
 	}
 
+	const aa = conn.arena.allocator();
+
+	const req = aa.create(httpz.Request) catch unreachable;
+	req.* = ctx.request();
+
+	const res = aa.create(httpz.Response) catch unreachable;
+	res.* = ctx.response();
+
 	return Testing{
 		._ctx = ctx,
+		.req = req,
+		.res = res,
+		.arena = aa,
 		.conn = ctx.conn,
-		.req = ctx.request(),
-		.res = ctx.response(),
-		.arena = ctx.arena.allocator(),
 	};
 }
 
 pub const Testing = struct {
 	_ctx: t.Context,
 	conn: *Conn,
-	req: httpz.Request,
-	res: httpz.Response,
+	req: *httpz.Request,
+	res: *httpz.Response,
 	arena: std.mem.Allocator,
 	parsed_response: ?Response = null,
 
@@ -100,7 +107,7 @@ pub const Testing = struct {
 	}
 
 	pub fn query(self: *Testing, name: []const u8, value: []const u8) void {
-		const req = &self.req;
+		const req = self.req;
 		req.qs_read = true;
 		req.qs.add(name, value);
 
