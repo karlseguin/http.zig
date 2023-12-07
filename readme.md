@@ -13,7 +13,7 @@ Whichever branch you pick, if you plan on exposing this publicly, I strongly rec
 
 The "master" branch is more advanced and only runs on systems with epoll (Linux) and kqueue (e.g. BSD, MacOS). It should scale and perform better under load and be more predictable in the face of real-world networking (e.g. slow or misbehaving clients). It has a few additional configuration settings to control memory usage and timeouts.
 
-The "basic" branch uses a naive thread-per-connection. It is simpler and should work on most platforms, including Windows. This approach can have unpredictable memory spikes due to the overhead of the threads themselves. Plus, performance can suffer due to thread thrashing. The thread_pool = # setting, uses a std.Thread.Pool to limit the number of threads, resulting in more predictable memory usage and, assuming good behavior clients, better performance. The "basic" branch is very easy to DOS and really has to sit behind a reverse proxy that can enforce timeouts/limits.
+The "basic" branch uses a naive thread-per-connection. It is simpler and should work on most platforms, including Windows. This approach can have unpredictable memory spikes due to the overhead of the threads themselves. Plus, performance can suffer due to thread thrashing. The `thread_pool = # setting`, uses a `std.Thread.Pool` to limit the number of threads, resulting in more predictable memory usage and, assuming good behavior clients, better performance. The "basic" branch is very easy to DOS and really has to sit behind a reverse proxy that can enforce timeouts/limits.
 
 # Usage
 
