@@ -8,7 +8,7 @@ pub const Config = struct {
 	workers: Worker = .{},
 	request: Request = .{},
 	response: Response = .{},
-	keepalive: Keepalive = .{},
+	timeout: Timeout = .{},
 	cors: ?CORS = null,
 
 	pub const Worker = struct {
@@ -33,8 +33,10 @@ pub const Config = struct {
 		header_buffer_size: ?usize = null,
 	};
 
-	pub const Keepalive = struct {
-		timeout: ?u32 = null,
+	pub const Timeout = struct {
+		request: ?u32 = null,
+		keepalive: ?u32 = null,
+		request_count: ?u32 = null,
 	};
 
 	pub const CORS = struct {

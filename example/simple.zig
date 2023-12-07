@@ -8,7 +8,7 @@ var index_file_contents: []u8 = undefined;
 // small variations in using httpz.
 pub fn start(allocator: Allocator) !void {
 	var server = try httpz.Server().init(allocator, .{
-		.workers = .{.min_conn = 200},
+		.timeout = .{.request_count = 3},
 	});
 	defer server.deinit();
 	var router = server.router();

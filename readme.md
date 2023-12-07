@@ -7,8 +7,7 @@ http.zig powers the <https://www.aolium.com> [api server](https://github.com/kar
 This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`.
 
 # Important Notice
-Please consider running http.zig behind a robust reverse proxy (e.g. NGINX). First, it doesn't support TLS termination. Second, this library was written at a time where async support was being temporarily dropped from Zig. I want http.zig to be robust, but I don't want to write a cross-platform I/O interface only to have to scrap it when async is re-added to Zig. As such, the current implementation can be considered a stopgap until async is properly supported. Of particularly note is the ability for a misbehaving client to stall legitimate requests from being processed. (essentially by feeding a single byte per timeout interval).
-
+Please run http.zig behind a robust reverse proxy (e.g. NGINX). This library does not support TLS termination.
 
 # Usage
 
@@ -601,26 +600,29 @@ try httpz.listen(allocator, &router, .{
         .max_header_count: usize = 16,
     },
 
-    .keepalive = .{
-        // Time in milliseconds that keepalive connections will be kept alive
-        // Note that this only represents the minimum time. On a non-busy system
-        // the connection can be kept alive much longer.
-        .timeout = null
+    .timeout = .{
+        // Time in seconds that keepalive connections will be kept alive while inactive
+        .keepalive = null,
+
+        // Time in seconds that a connection has to send a complete request
+        .request = null
+
+        // Maximum number of a requests allowed on a single keepalive connection
+        .request_count = null,
     }
 });
 ```
 
-`pool.count * (request.buffer_size + response.body_buffer_size + response.header_buffer_size)` is the minimum amount of memory this library will use (plus various overhead, but that should be relatively small in comparison).
-
-`pool.count * (request.max_body_size + response.body_buffer_size + response.header_buffer_size)` is the maximum amount of memory this library will use (plus various overhead, but that should be relatively small in comparison).
-
-Systems with memory to spare will benefit by using buffers large enough for their typical request and response bodies. Pool configuration is more complicated, especially given the (current) threaded-nature of the system and keepalive. Using a relatively small (e.g. # of cores) `pool.min` and `pool.max` would yield the highest performance (due to having less contention), but because of keepalive, that can easily result in running out of available pooled items (which results in a 503 error). 
-
-
 ### Timeouts
-The system supports various timeouts: `keepalive.timeout`, `request.read_header_timeout` and `request.read_body_timeout`. It is recommended that you leave these null (disabled) and use the appropriate timeout in your reverse proxy (e.g. NGINX). 
+The configuration settings under the `timeouts` section are designed to help protect the system against basic DOS attacks (say, by connecting and not sending data). However it is recommended that you leave these null (disabled) and use the appropriate timeout in your reverse proxy (e.g. NGINX). 
 
-Only if http.zig is exposed without a reverse proxy (not recommended), should these timeouts be set.
+The `timeout.request` is the time, in seconds, that a connection has to send a complete request. The `timeout.keepalive` is the time, in second, that a connection can stay connected without sending a request (after the initial request has been sent).
+
+The connection alternates between these two timeouts. It starts with a timeout of `timeout.request` and after the response is sent and the connection is placed in the "keepalive list", switches to the `timeout.keepalive`. When new data is received, it switches back to `timeout.request`. When `null`, both timeouts default to 2_147_483_647 seconds (so not completely disabled, both close enough).
+
+The `timeout.request_count` is the number of individual requests allowed within a single keepalive session. This protects against a client consuming the connection by sending unlimited meaningless but valid HTTP requests.
+
+When the three are combined, it should be difficult for a problematic client to stay connected indefinitely.
 
 # Testing
 The `httpz.testing` namespace exists to help application developers setup `*httpz.Requests` and assert `*httpz.Responses`.

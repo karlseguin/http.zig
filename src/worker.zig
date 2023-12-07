@@ -19,6 +19,9 @@ const os = std.os;
 const net = std.net;
 const log = std.log.scoped(.httpz);
 
+const MAX_TIMEOUT = 2_147_483_647;
+const MAX_REQUEST_COUNT = 4_294_967_295;
+
 pub fn Worker(comptime S: type) type {
 	return struct {
 		server: S,
@@ -37,9 +40,9 @@ pub fn Worker(comptime S: type) type {
 		// the maximum connection a worker should manage, we won't accept more than this
 		max_conn: usize,
 
-		keepalive_timeout: u32,
-
 		config: *const Config,
+
+		max_request_per_connection: u64,
 
 		const Self = @This();
 
@@ -63,7 +66,7 @@ pub fn Worker(comptime S: type) type {
 				.manager = manager,
 				.allocator = allocator,
 				.max_conn = config.workers.max_conn orelse 512,
-				.keepalive_timeout = config.keepalive.timeout orelse 4294967295,
+				.max_request_per_connection = config.timeout.request_count orelse MAX_REQUEST_COUNT,
 			};
 		}
 
@@ -86,18 +89,18 @@ pub fn Worker(comptime S: type) type {
 				return;
 			};
 
-
 			while (true) {
-				var it = self.loop.wait() catch |err| {
+				const timeout = manager.prepreToWait();
+				var it = self.loop.wait(timeout) catch |err| {
 					log.err("Failed to wait on events: {}", .{err});
 					std.time.sleep(std.time.ns_per_s);
 					continue;
 				};
-				const now = std.time.microTimestamp();
+				// const now = std.time.microTimestamp();
 
 				while (it.next()) |data| {
 					if (data == 0) {
-						self.accept(listener, now) catch |err| {
+						self.accept(listener) catch |err| {
 							log.err("Failed to accept connection: {}", .{err});
 							std.time.sleep(std.time.ns_per_s);
 						};
@@ -110,13 +113,14 @@ pub fn Worker(comptime S: type) type {
 					}
 
 					const conn: *align(8) Conn = @ptrFromInt(data);
+					manager.active(conn);
 					const result = switch (conn.poll_mode) {
-						.read => self.handleRequest(conn, now),
+						.read => self.handleRequest(conn),
 						.write => self.write(conn) catch .close,
 					};
 
 					switch (result) {
-						.keepalive => conn.keepalive() catch manager.close(conn),
+						.keepalive => manager.keepalive(conn),
 						.close => manager.close(conn),
 						.wait_for_socket => {},
 					}
@@ -130,7 +134,7 @@ pub fn Worker(comptime S: type) type {
 			wait_for_socket,
 		};
 
-		pub fn handleRequest(self: *Self, conn: *Conn, now: i64) HandleResult {
+		pub fn handleRequest(self: *Self, conn: *Conn) HandleResult {
 			const stream = conn.stream;
 
 			const done = conn.req_state.parse(stream) catch |err| {
@@ -164,7 +168,7 @@ pub fn Worker(comptime S: type) type {
 				return .close;
 			}
 
-			if (result == .write_and_close or ((now - conn.last_request) > self.keepalive_timeout)) {
+			if (result == .write_and_close or conn.request_count == self.max_request_per_connection) {
 				conn.close = true;
 				res.keepalive = false;
 			}
@@ -252,7 +256,7 @@ pub fn Worker(comptime S: type) type {
 			return .keepalive;
 		}
 
-		fn accept(self: *Self, listener: os.fd_t, now: i64) !void {
+		fn accept(self: *Self, listener: os.fd_t) !void {
 			const max_conn = self.max_conn;
 
 			var manager = &self.manager;
@@ -276,7 +280,6 @@ pub fn Worker(comptime S: type) type {
 
 				var conn = try manager.new();
 				conn.socket_flags = flags;
-				conn.last_request = now;
 				conn.stream = .{.handle = socket};
 				conn.address = address;
 
@@ -325,9 +328,28 @@ pub const Conn = struct {
 		write,
 	};
 
+	// A connection can be in one of two states: active or keepalive. It begins
+	// and stays in "active" until the response is sent. Then, assuming the
+	// connection isn't closed, it transitions to "keepalive" until the first
+	// byte of a new request is received.
+	// The main purpose of the two different states is to support a different
+	// keepalive_timeout and request_timeout.
+	const State = enum {
+		active,
+		keepalive,
+	};
+
 	io_mode: IOMode,
 
 	poll_mode: PollMode,
+
+	state: State,
+
+	// unix timestamp (seconds) where this connection should timeout
+	timeout: u32,
+
+	// number of requests made on this connection (within a keepalive session)
+	request_count: u64,
 
 	// Socket flags. On connect, we get this in order to change to nonblocking.
 	// Since we have it at that point, we might as well store it for the rare cases
@@ -357,9 +379,6 @@ pub const Conn = struct {
 	// application as req.arena and res.arena.
 	arena: *std.heap.ArenaAllocator,
 
-	// Used to enfoce the config.keepalive.timeout
-	last_request: i64,
-
 	// Workers maintain their active conns in a linked list. The link list is intrusive.
 	next: ?*Conn,
 	prev: ?*Conn,
@@ -379,6 +398,7 @@ pub const Conn = struct {
 		return .{
 			.arena = arena,
 			.close = false,
+			.state = .active,
 			.io_mode = .nonblocking,
 			.poll_mode = .read,
 			.stream = undefined,
@@ -388,7 +408,8 @@ pub const Conn = struct {
 			.res_state = res_state,
 			.next = null,
 			.prev = null,
-			.last_request = 0,
+			.timeout = 0,
+			.request_count = 0,
 		};
 	}
 
@@ -433,12 +454,14 @@ pub const Conn = struct {
 };
 
 const Manager = struct {
-	// Double linked list of Conn a worker is currently managing. The head of the
-	// list has the "oldest" connection. Age, e.g. "oldest", is measured by time
-	// of last request, not when the connection was first established. This is
-	// important for keepalive. We keep them in this order so that we can quickly
-	// scan for timed out connections.
-	list: List(Conn),
+	// Double linked list of Conn a worker is actively servicing. An "active"
+	// connection is one where we've at least received 1 byte of the request and
+	// continues to be "active" until the response is sent.
+	active_list: List(Conn),
+
+	// Double linked list of Conn a worker is monitoring. Unlike "active" connections
+	// these connections are between requests (which is possible due to keepalive).
+	keepalive_list: List(Conn),
 
 	// # of active connections we're managing. This is the length of our list.
 	len: usize,
@@ -454,6 +477,9 @@ const Manager = struct {
 
 	allocator: Allocator,
 
+	timeout_request: u32,
+	timeout_keepalive: u32,
+
 	fn init(allocator: Allocator, config: *const Config) !Manager {
 		const buffer_pool = try allocator.create(BufferPool);
 		errdefer allocator.destroy(buffer_pool);
@@ -467,43 +493,124 @@ const Manager = struct {
 
 		return .{
 			.len = 0,
-			.list = .{},
+			.active_list = .{},
+			.keepalive_list = .{},
 			.conn_pool = conn_pool,
 			.allocator = allocator,
 			.buffer_pool = buffer_pool,
+			.timeout_request = config.timeout.request orelse MAX_TIMEOUT,
+			.timeout_keepalive = config.timeout.keepalive orelse MAX_TIMEOUT,
 		};
 	}
 
 	pub fn deinit(self: *Manager) void {
 		const allocator = self.allocator;
+		var conn_pool = self.conn_pool;
 
-		var conn = self.list.head;
-		while (conn) |c| {
-			c.stream.close();
-			conn = c.next;
+		{
+			var conn = self.active_list.head;
+			while (conn) |c| {
+				c.stream.close();
+				conn = c.next;
 
-			c.deinit(allocator);
-			self.conn_pool.mem_pool.destroy(c);
+				c.deinit(allocator);
+				conn_pool.mem_pool.destroy(c);
+			}
 		}
 
-		self.conn_pool.deinit();
+		{
+			var conn = self.keepalive_list.head;
+			while (conn) |c| {
+				c.stream.close();
+				conn = c.next;
 
+				c.deinit(allocator);
+				conn_pool.mem_pool.destroy(c);
+			}
+		}
+
+		conn_pool.deinit();
 		self.buffer_pool.deinit();
 		allocator.destroy(self.buffer_pool);
 	}
 
-	pub fn new(self: *Manager) !*Conn {
+	fn new(self: *Manager) !*Conn {
 		const conn = try self.conn_pool.acquire();
-		self.list.insert(conn);
+		self.active_list.insert(conn);
+		conn.request_count = 1;
+		conn.timeout = timestamp() + self.timeout_request;
 		self.len += 1;
 		return conn;
 	}
 
-	pub fn close(self: *Manager, conn: *Conn) void {
+	fn active(self: *Manager, conn: *Conn) void {
+		if (conn.state == .active) return;
+
+		// If we're here, it means the connection is going from a keepalive
+		// state to an active state.
+
+		conn.state = .active;
+		conn.request_count += 1;
+		conn.timeout = timestamp() + self.timeout_request;
+		self.keepalive_list.remove(conn);
+		self.active_list.insert(conn);
+	}
+
+	fn keepalive(self: *Manager, conn: *Conn) void {
+		conn.keepalive() catch {
+			self.close(conn);
+			return;
+		};
+		conn.state = .keepalive;
+		conn.timeout = timestamp() + self.timeout_keepalive;
+		self.active_list.remove(conn);
+		self.keepalive_list.insert(conn);
+	}
+
+	fn close(self: *Manager, conn: *Conn) void {
 		conn.stream.close();
-		self.list.remove(conn);
+		switch (conn.state) {
+			.active => self.active_list.remove(conn),
+			.keepalive => self.keepalive_list.remove(conn),
+		}
 		self.conn_pool.release(conn);
 		self.len -= 1;
+	}
+
+	// Enforces timeouts, and returs when the next timeout should be checked.
+	fn prepreToWait(self: *Manager) ?u32 {
+		const now = timestamp();
+		const next_active = self.enforceTimeout(self.active_list, now);
+		const next_keepalive = self.enforceTimeout(self.keepalive_list, now);
+
+		if (next_active == null and next_keepalive == null) {
+			return null;
+		}
+
+		const next = @min(next_active orelse MAX_TIMEOUT, next_keepalive orelse MAX_TIMEOUT);
+		if (next < now) {
+			// can happen if a socket was just about to time out when enforceTimeout
+			// was called
+			return 1;
+		}
+
+		return next - now;
+	}
+
+	// lists are ordered from soonest to timeout to latest, as soon as we find
+	// a connection that isn't timed out, we can break;
+	// This returns the next timeout
+	fn enforceTimeout(self: *Manager, list: List(Conn), now: u32) ?u32 {
+		var conn = list.head;
+		while (conn) |c| {
+			const timeout = c.timeout;
+			if (timeout > now) {
+				return timeout;
+			}
+			self.close(c);
+			conn = c.next;
+		}
+		return null;
 	}
 };
 
@@ -611,6 +718,24 @@ pub fn List(comptime T: type) type {
 			node.next = null;
 		}
 
+		pub fn moveToTail(self: *Self, node: *T) void {
+			// orelse, it's already the tail
+			const next = node.next orelse return;
+			const prev = node.prev;
+
+			if (prev) |p| {
+				p.next = next;
+			} else {
+				self.head = next;
+			}
+
+			next.prev = prev;
+			node.prev = self.tail;
+			node.prev.?.next = node;
+			self.tail = node;
+			node.next = null;
+		}
+
 		pub fn remove(self: *Self, node: *T) void {
 			if (node.prev) |prev| {
 				prev.next = node.next;
@@ -623,6 +748,8 @@ pub fn List(comptime T: type) type {
 			} else {
 				self.tail = node.prev;
 			}
+			node.prev = null;
+			node.next = null;
 			self.len -= 1;
 		}
 	};
@@ -713,9 +840,10 @@ const KQueue = struct {
 		self.change_count = change_count + 1;
 	}
 
-	fn wait(self: *KQueue) !Iterator {
+	fn wait(self: *KQueue, timeout_sec: ?u32) !Iterator {
 		const event_list = &self.event_list;
-		const event_count = try std.os.kevent(self.q, self.change_buffer[0..self.change_count], event_list, null);
+		const timeout: ?os.timespec = if (timeout_sec) |ts| os.timespec{.tv_sec = ts, .tv_nsec = 0} else null;
+		const event_count = try std.os.kevent(self.q, self.change_buffer[0..self.change_count], event_list, if (timeout) |ts| &ts else null);
 		self.change_count = 0;
 
 		return .{
@@ -781,9 +909,18 @@ const EPoll = struct {
 		return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_MOD, fd, &event);
 	}
 
-	fn wait(self: *EPoll) !Iterator {
+	fn wait(self: *EPoll, timeout_sec: ?u32) !Iterator {
 		const event_list = &self.event_list;
-		const event_count = std.os.epoll_wait(self.q, event_list, -1);
+		const event_count = os.linux.syscall6(
+			.epoll_pwait2,
+			@as(usize, @bitCast(@as(isize, self.q))),
+			@intFromPtr(event_list.ptr),
+			event_list.len,
+			if (timeout_sec) |ts| @intFromPtr(&os.timespec{.tv_sec = ts, .tv_nsec = 0}) else 0,
+			0,
+			@sizeOf(os.linux.sigset_t),
+		);
+
 		return .{
 			.index = 0,
 			.events = event_list[0..event_count],
@@ -805,6 +942,12 @@ const EPoll = struct {
 		}
 	};
 };
+
+fn timestamp() u32 {
+	var ts: os.timespec = undefined;
+	os.clock_gettime(os.CLOCK.REALTIME, &ts) catch unreachable;
+	return @intCast(ts.tv_sec);
+}
 
 const t = @import("t.zig");
 test "ConnPool" {
@@ -834,7 +977,7 @@ test "ConnPool" {
 	p.release(s4);
 }
 
-test "Conn: List" {
+test "List: insert & remove" {
 	var list = List(TestNode){};
 	try expectList(&.{}, list);
 
@@ -868,6 +1011,43 @@ test "Conn: List" {
 
 	list.remove(&n3);
 	try expectList(&.{}, list);
+}
+
+test "List: moveToTail" {
+	var list = List(TestNode){};
+	try expectList(&.{}, list);
+
+	var n1 = TestNode{.id = 1};
+	list.insert(&n1);
+	// list.moveToTail(&n1);
+	try expectList(&.{1}, list);
+
+	var n2 = TestNode{.id = 2};
+	list.insert(&n2);
+
+	list.moveToTail(&n1);
+	try expectList(&.{2, 1}, list);
+
+	list.moveToTail(&n1);
+	try expectList(&.{2, 1}, list);
+
+	list.moveToTail(&n2);
+	try expectList(&.{1, 2}, list);
+
+	var n3 = TestNode{.id = 3};
+	list.insert(&n3);
+
+	list.moveToTail(&n1);
+	try expectList(&.{2, 3, 1}, list);
+
+	list.moveToTail(&n1);
+	try expectList(&.{2, 3, 1}, list);
+
+	list.moveToTail(&n2);
+	try expectList(&.{3, 1, 2}, list);
+
+	list.moveToTail(&n1);
+	try expectList(&.{3, 2, 1}, list);
 }
 
 const TestNode = struct {

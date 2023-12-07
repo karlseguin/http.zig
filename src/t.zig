@@ -97,13 +97,15 @@ pub const Context = struct {
 
 		const conn = aa.create(Conn) catch unreachable;
 		conn.* = .{
+			.state = .active,
 			.stream = server,
 			.address = std.net.Address.initIp4([_]u8{127, 0, 0, 200}, 0),
 			.req_state = req_state,
 			.res_state = res_state,
 			.next = null,
 			.prev = null,
-			.last_request = 0,
+			.timeout = 0,
+			.request_count = 0,
 			.close = false,
 			.io_mode = .nonblocking,
 			.poll_mode = .read,
