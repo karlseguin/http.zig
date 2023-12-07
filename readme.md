@@ -6,14 +6,14 @@ http.zig powers the <https://www.aolium.com> [api server](https://github.com/kar
 # Installation
 This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`.
 
-## Async, Threads, Scale
-Until async support is re-added to Zig, this library is using a stopgap approach for concurrency. 
+## Branches and Windows
+Until async support is re-added to Zig, 2 versions of this project are being maintained. Except for very small API changes and a few different configuration options, the differences between the two branches are internal.
 
-In the master branch, a naive thread-per-connection is used. This approach is straightforward and simple to reason about. Despite using a pool of objects, this approach can still cause unpredictable memory spikes due to the overhead of the threads themselves. Plus, performance can be hurt due to thread thrashing.
+Whichever branch you pick, if you plan on exposing this publicly, I strongly recommend that you place it behind a robust reverse proxy (e.g. nxing). Neither branch does TLS termination and the "basic" branch is relatively easy to DOS.
 
-As a simple alternative, the `thread_pool = #` configuration value can be set which will use an `std.Thread.Pool`. This will make memory usage predictable and can result in better performance.
+The "master" branch is more advanced and only runs on systems with epoll (Linux) and kqueue (e.g. BSD, MacOS). It should scale and perform better under load and be more predictable in the face of real-world networking (e.g. slow or misbehaving clients). It has a few additional configuration settings to control memory usage and timeouts.
 
-If your system has access to poll(2) (e.g. Linux, BSD, MacOS), you can also try the [thread_pool](https://github.com/karlseguin/http.zig/tree/thread_pool) branch. This uses a custom thread pool, and poll(2) for better concurrency. It also supports additional timeout configurations (though, ideally, you leave them disabled and set timeouts in your reverse proxy).
+The "basic" branch uses a naive thread-per-connection. It is simpler and should work on most platforms, including Windows. This approach can have unpredictable memory spikes due to the overhead of the threads themselves. Plus, performance can suffer due to thread thrashing. The `thread_pool = #` setting, uses a `std.Thread.Pool` to limit the number of threads, resulting in more predictable memory usage and, assuming good behavior clients, better performance. The "basic" branch is very easy to DOS and really _has_ to sit behind a reverse proxy that can enforce timeouts/limits.
 
 # Usage
 
