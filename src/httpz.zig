@@ -201,6 +201,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 		_router: Router(G, R),
 		_errorHandler: ErrorHandlerAction(G),
 		_notFoundHandler: Action(G),
+		_cors_response: ?[]const u8,
 
 		const Self = @This();
 
@@ -217,20 +218,33 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 				var_config.address = "127.0.0.1";
 			}
 
+			var rtr = try Router(G, R).init(allocator, dd, ctx);
+			errdefer rtr.deinit(allocator);
+
+			const cors_response = if (config.cors) |cc| try buildCORSResponse(allocator, cc) else null;
+			errdefer {
+				if (cors_response) |cr| allocator.free(cr);
+			}
+
 			return .{
 				.ctx = ctx,
 				.config = var_config,
 				.app_allocator = allocator,
 				.httpz_allocator = allocator,
+				._router = rtr,
 				._errorHandler = erh,
 				._notFoundHandler = nfh,
-				._router = try Router(G, R).init(allocator, dd, ctx),
+				._cors_response = cors_response,
 				._cors_origin = if (config.cors) |cors| cors.origin else null,
 			};
 		}
 
 		pub fn deinit(self: *Self) void {
-			self._router.deinit(self.httpz_allocator);
+			const allocator = self.httpz_allocator;
+			self._router.deinit(allocator);
+			if (self._cors_response) |cr| {
+				allocator.free(cr);
+			}
 		}
 
 		pub fn listen(self: *Self) !void {
@@ -313,7 +327,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 			return req.canKeepAlive();
 		}
 
-		inline fn dispatch(self: Self, dispatchable_action: ?DispatchableAction(G, R), req: *Request, res: *Response) !void {
+		fn dispatch(self: Self, dispatchable_action: ?DispatchableAction(G, R), req: *Request, res: *Response) !void {
 			if (self._cors_origin) |origin| {
 				res.header("Access-Control-Allow-Origin", origin);
 			}
@@ -324,23 +338,14 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 				return da.dispatcher(da.ctx, da.action,req, res);
 			}
 
-			if (req.method == .OPTIONS) {
-				if (self.config.cors) |config| {
-					if (req.header("sec-fetch-mode")) |mode| {
-						if (std.mem.eql(u8, mode, "cors")) {
-							if (config.headers) |headers| {
-								res.header("Access-Control-Allow-Headers", headers);
-							}
-							if (config.methods) |methods| {
-								res.header("Access-Control-Allow-Methods", methods);
-							}
-							if (config.max_age) |max_age| {
-								res.header("Access-Control-Max-Age", max_age);
-							}
-							res.status = 204;
-							return;
-						}
-					}
+			if (isCORS(req)) {
+				if (self._cors_response) |cr| {
+					// our CORS response is static. We can write it directly to the socket
+					// and by setting res.written = true, we prevent any future calls
+					// to res.write() from doing anything.
+					res.written = true;
+					res.stream.writeAll(cr) catch return false;
+					return;
 				}
 			}
 
@@ -350,6 +355,37 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 			return self._notFoundHandler(self.ctx, req, res);
 		}
 	};
+}
+
+fn isCORS(req: *Request) bool {
+	if (req.method != .OPTIONS) return false;
+	const fetch_mode = req.header("sec-fetch-mode") orelse return false;
+	return std.mem.eql(u8, fetch_mode, "cors");
+}
+
+fn buildCORSResponse(allocator: Allocator, config: Config.CORS) ![]const u8 {
+	// not the most efficient way to do this, but it's only called once on startup
+	var arr = std.ArrayList(u8).init(allocator);
+	defer arr.deinit();
+
+	try arr.appendSlice("HTTP/1.1 204");
+	try arr.appendSlice("\r\nAccess-Control-Allow-Origin: ");
+	try arr.appendSlice(config.origin);
+
+	if (config.headers) |headers| {
+		try arr.appendSlice("\r\nAccess-Control-Allow-Headers: ");
+		try arr.appendSlice(headers);
+	}
+	if (config.methods) |methods| {
+		try arr.appendSlice("\r\nAccess-Control-Allow-Methods: ");
+		try arr.appendSlice(methods);
+	}
+	if (config.max_age) |max_age| {
+		try arr.appendSlice("\r\nAccess-Control-Max-Age: ");
+		try arr.appendSlice(max_age);
+	}
+	try arr.appendSlice("\r\nContent-Length: 0\r\n\r\n");
+	return allocator.dupe(u8, arr.items);
 }
 
 const t = @import("t.zig");
