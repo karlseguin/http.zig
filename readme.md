@@ -6,6 +6,9 @@ http.zig powers the <https://www.aolium.com> [api server](https://github.com/kar
 # Installation
 This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`.
 
+# Why not std.http.Server
+`std.http.Server` is really slow. Exactly how slow depends on what you're doing and how you're testing, but we're talking in the orders of magnitude.
+
 ## Branches (scaling, robustness and windows)
 Until async support is re-added to Zig, 2 versions of this project are being maintained: the `master` branch and the `blocking` branch. Except for very small API changes and a few different configuration options, the differences between the two branches are internal.
 
