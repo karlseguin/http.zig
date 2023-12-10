@@ -13,7 +13,7 @@ pub fn init(config: httpz.Config) Testing {
 
 	var aa = arena.allocator();
 	var req = aa.create(httpz.Request) catch unreachable;
-	req.init(aa, aa, config.request) catch unreachable;
+	req.init(aa, aa, undefined, config.request) catch unreachable;
 	req.url = httpz.Url.parse("/");
 	req.reset();
 

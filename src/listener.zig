@@ -2,6 +2,7 @@ const std = @import("std");
 const t = @import("t.zig");
 const builtin = @import("builtin");
 const httpz = @import("httpz.zig");
+const websocket = @import("websocket");
 
 const Pool = @import("pool.zig").Pool;
 const Config = @import("config.zig").Config;
@@ -17,7 +18,19 @@ const net = std.net;
 const ReqResPool = Pool(*RequestResponsePair, RequestResponsePairConfig);
 
 pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Allocator, server: S, config: Config) !void {
-	var reqResPool = try initReqResPool(httpz_allocator, app_allocator, &config);
+	const ws_config = config.websocket orelse Config.Websocket{};
+	var ws = try websocket.Server.init(httpz_allocator, .{
+		.max_size = ws_config.max_size,
+		.buffer_size = ws_config.buffer_size,
+		.handle_ping = ws_config.handle_ping,
+		.handle_pong = ws_config.handle_pong,
+		.handle_close = ws_config.handle_close,
+		.large_buffer_pool_count = ws_config.large_buffer_pool_count,
+		.large_buffer_size = ws_config.large_buffer_size,
+	});
+	defer ws.deinit(httpz_allocator);
+
+	var reqResPool = try initReqResPool(httpz_allocator, app_allocator, &ws, &config);
 	defer reqResPool.deinit();
 
 	var socket = net.StreamServer.init(.{
@@ -59,15 +72,11 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 		if (socket.accept()) |conn| {
 			const c: Conn = if (comptime builtin.is_test) undefined else conn;
 			const args = .{ S, server, c, &reqResPool };
-			if (comptime std.io.is_async) {
-				try Loop.instance.?.runDetached(httpz_allocator, handleConnection, args);
+			if (config.thread_pool > 0) {
+				try thread_pool.spawn(handleConnection, args);
 			} else {
-				if (config.thread_pool > 0) {
-					try thread_pool.spawn(handleConnection, args);
-				} else {
-					const thrd = try std.Thread.spawn(.{}, handleConnection, args);
-					thrd.detach();
-				}
+				const thrd = try std.Thread.spawn(.{}, handleConnection, args);
+				thrd.detach();
 			}
 		} else |err| {
 			std.log.err("http.zig: failed to accept connection {}", .{err});
@@ -75,9 +84,10 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 	}
 }
 
-pub fn initReqResPool(httpz_allocator: Allocator, app_allocator: Allocator, config: *const Config) !ReqResPool {
+pub fn initReqResPool(httpz_allocator: Allocator, app_allocator: Allocator, ws: *websocket.Server, config: *const Config) !ReqResPool {
 	return try ReqResPool.init(httpz_allocator, config.pool, initReqRes, .{
 		.config = config,
+		.websocket = ws,
 		.app_allocator = app_allocator,
 		.httpz_allocator = httpz_allocator,
 	});
@@ -87,7 +97,10 @@ pub fn handleConnection(comptime S: type, server: S, conn: Conn, reqResPool: *Re
 	std.os.maybeIgnoreSigpipe();
 
 	const stream = if (comptime builtin.is_test) conn else conn.stream;
-	defer stream.close();
+	var own = true;
+	defer {
+		if (own) stream.close();
+	}
 
 	const reqResPair = reqResPool.acquire() catch |err| {
 		stream.writeAll("HTTP/1.1 503\r\nRetry-After: 10\r\nContent-Length: 36\r\n\r\nServer overloaded. Please try again.") catch {};
@@ -117,6 +130,10 @@ pub fn handleConnection(comptime S: type, server: S, conn: Conn, reqResPool: *Re
 			// hard to keep this request alive on a parseError since in a lot of
 			// failure cases, it's unclear where 1 request stops and another starts.
 			requestParseError(err, res);
+			return;
+		}
+		if (res.disowned == true) {
+			own = false;
 			return;
 		}
 		req.drain() catch {
@@ -169,6 +186,7 @@ const RequestResponsePairConfig = struct {
 	config: *const Config,
 	app_allocator: Allocator,
 	httpz_allocator: Allocator,
+	websocket: *websocket.Server,
 };
 
 // Should not be called directly, but initialized through a pool
@@ -180,7 +198,7 @@ pub fn initReqRes(c: RequestResponsePairConfig) !*RequestResponsePair {
 	const app_allocator = arena.allocator();
 
 	var req = try httpz_allocator.create(httpz.Request);
-	try req.init(httpz_allocator, app_allocator, c.config.request);
+	try req.init(httpz_allocator, app_allocator, c.websocket, c.config.request);
 
 	var res = try httpz_allocator.create(httpz.Response);
 	try res.init(httpz_allocator, app_allocator, c.config.response);

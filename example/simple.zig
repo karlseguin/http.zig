@@ -1,5 +1,6 @@
 const std = @import("std");
 const httpz = @import("httpz");
+const websocket = httpz.websocket;
 const Allocator = std.mem.Allocator;
 
 var index_file_contents: []u8 = undefined;
@@ -63,11 +64,11 @@ fn writer(req: *httpz.Request, res: *httpz.Response) !void {
 	res.content_type = httpz.ContentType.JSON;
 
 	const name = req.param("name").?;
-	var ws = std.json.writeStream(res.writer(), .{.whitespace = .indent_4});
-	try ws.beginObject();
-	try ws.objectField("name");
-	try ws.write(name);
-	try ws.endObject();
+	var write = std.json.writeStream(res.writer(), .{.whitespace = .indent_4});
+	try write.beginObject();
+	try write.objectField("name");
+	try write.write(name);
+	try write.endObject();
 }
 
 fn chunked(_: *httpz.Request, res: *httpz.Response) !void {

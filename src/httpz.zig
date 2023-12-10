@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+pub const websocket = @import("websocket");
 pub const testing = @import("testing.zig");
 
 pub const routing = @import("router.zig");
@@ -344,8 +345,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 					// and by setting res.written = true, we prevent any future calls
 					// to res.write() from doing anything.
 					res.written = true;
-					res.stream.writeAll(cr) catch return false;
-					return;
+					return res.stream.writeAll(cr);
 				}
 			}
 
@@ -386,6 +386,39 @@ fn buildCORSResponse(allocator: Allocator, config: Config.CORS) ![]const u8 {
 	}
 	try arr.appendSlice("\r\nContent-Length: 0\r\n\r\n");
 	return allocator.dupe(u8, arr.items);
+}
+
+pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, context: anytype) !bool {
+	const key = ensureWebsocketRequest(req) orelse return false;
+	try websocket.Handshake.reply(key, req.stream);
+	res.disown();
+
+	const thread = try std.Thread.spawn(.{}, websocketHandler, .{H, req.websocket, res.stream, context});
+	thread.detach();
+	return true;
+}
+
+fn ensureWebsocketRequest(req: *Request) ?[]const u8 {
+	const upgrade = req.header("upgrade") orelse return null;
+	if (std.ascii.eqlIgnoreCase(upgrade, "websocket") == false) return null;
+
+	const version = req.header("sec-websocket-version") orelse return null;
+	if (std.ascii.eqlIgnoreCase(version, "13") == false) return null;
+
+	// firefox will send multiple values for this header
+	const connection = req.header("connection") orelse return null;
+	if (std.ascii.indexOfIgnoreCase(connection, "upgrade") == null) return null;
+
+	return req.header("sec-websocket-key");
+}
+
+fn websocketHandler(comptime H: type, server: *websocket.Server, stream: Stream, context: anytype) void {
+	errdefer stream.close();
+	std.os.maybeIgnoreSigpipe();
+
+	var conn = server.newConn(stream);
+	var handler = H.init(&conn, context) catch return;
+	server.handle(H, &handler, &conn);
 }
 
 const t = @import("t.zig");
@@ -729,7 +762,7 @@ test "ContentType: forX" {
 }
 
 test "httpz: event stream" {
-var stream = t.Stream.init();
+	var stream = t.Stream.init();
 	defer stream.deinit();
 	_ = stream.add("GET /test/stream HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
@@ -755,7 +788,7 @@ fn testRequest(comptime G: type, srv: *ServerCtx(G, G), stream: *t.Stream) void 
 		.request = .{.buffer_size = 4096},
 		.response = .{.body_buffer_size = 4096},
 	};
-	var reqResPool = listener.initReqResPool(t.allocator, t.allocator, &config) catch unreachable;
+	var reqResPool = listener.initReqResPool(t.allocator, t.allocator, undefined, &config) catch unreachable;
 	defer reqResPool.deinit();
 	listener.handleConnection(*ServerCtx(G, G), srv, stream, &reqResPool);
 }

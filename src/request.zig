@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const http = @import("httpz.zig");
+const websocket = http.websocket;
 
 const Url = @import("url.zig").Url;
 const Params = @import("params.zig").Params;
@@ -88,6 +89,9 @@ pub const Request = struct {
 	// If possible, this space will also be used for the body.
 	static: []u8,
 
+	// Reference to our websocket server
+	websocket: *websocket.Server,
+
 	// An arena that will be reset at the end of each request. Can be used
 	// internally by this framework. The application is also free to make use of
 	// this arena. This is the same arena as response.arena.
@@ -96,11 +100,12 @@ pub const Request = struct {
 	const Self = @This();
 
 	// Should not be called directly, but initialized through a pool, see server.zig reqResInit
-	pub fn init(self: *Self, allocator: Allocator, arena: Allocator, config: Config) !void {
+	pub fn init(self: *Self, allocator: Allocator, arena: Allocator, ws: *websocket.Server, config: Config) !void {
 		self.pos = 0;
 		self.arena = arena;
 		self.stream = undefined;
 		self.address = undefined;
+		self.websocket = ws;
 		self.max_body_size = config.max_body_size orelse 1_048_576;
 		self.qs = try KeyValue.init(allocator, config.max_query_count orelse 32);
 
@@ -1235,7 +1240,7 @@ fn expectParseError(expected: Error, input: []const u8, config: Config) !void {
 
 fn testRequest(config: Config, ) *Request {
 	var req = t.allocator.create(Request) catch unreachable;
-	req.init(t.allocator, t.allocator, config) catch unreachable;
+	req.init(t.allocator, t.allocator, undefined, config) catch unreachable;
 	return req;
 }
 

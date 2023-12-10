@@ -61,6 +61,11 @@ pub const Response = struct {
 	// whether or not we've already written the response
 	written: bool,
 
+	// Indicates that http.zig no longer owns this socket connection. App can
+	// us this if it wants to take over ownership of the socket. We use it
+	// when upgrading the connection to websocket.
+	disowned: bool,
+
 	const Self = @This();
 
 	// Should not be called directly, but initialized through a pool
@@ -84,9 +89,15 @@ pub const Response = struct {
 		self.status = 200;
 		self.written = false;
 		self.chunked = false;
+		self.disowned = false;
 		self.content_type = null;
 		self.writer_buffer = self.body_buffer;
 		self.headers.reset();
+	}
+
+	pub fn disown(self: *Self) void {
+		self.written = true;
+		self.disowned = true;
 	}
 
 	pub fn json(self: *Self, value: anytype, options: std.json.StringifyOptions) !void {
