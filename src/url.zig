@@ -25,13 +25,11 @@ const ENC_5D = @as(u16, @bitCast([2]u8{'5', 'D'}));
 
 
 pub const Url = struct {
-	raw: []const u8,
-	path: []const u8,
-	query: []const u8,
+	raw: []const u8 = "",
+	path: []const u8 = "",
+	query: []const u8 = "",
 
-	const Self = @This();
-
-	pub fn parse(raw: []const u8) Self {
+	pub fn parse(raw: []const u8) Url {
 		var path = raw;
 		var query: []const u8 = "";
 
@@ -48,7 +46,7 @@ pub const Url = struct {
 	}
 
 	// the special "*" url, which is valid in HTTP OPTIONS request.
-	pub fn star() Self {
+	pub fn star() Url {
 		return .{
 			.raw = "*",
 			.path = "*",
@@ -60,7 +58,7 @@ pub const Url = struct {
 		// Set to the value, whether or not it required unescaped.
 		value: []const u8,
 
-		// true if the value WAS unesected AND placed in buffer
+		// true if the value WAS unescaped AND placed in buffer
 		buffered: bool,
 	};
 	// std.Url.unescapeString has 2 problems
@@ -92,7 +90,7 @@ pub const Url = struct {
 			}
 		}
 
-		// no encoding, and no plus? nothing to unescape
+		// no encoding, and no plus. nothing to unescape
 		if (unescaped_len == input.len and !has_plus) {
 			return .{.value = input, .buffered = false};
 		}

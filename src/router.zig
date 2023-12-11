@@ -2,8 +2,8 @@ const std = @import("std");
 
 const httpz = @import("httpz.zig");
 const Params = @import("params.zig").Params;
-const Request = @import("request.zig").Request;
-const Response = @import("response.zig").Response;
+const Request = httpz.Request;
+const Response = httpz.Response;
 
 const Allocator = std.mem.Allocator;
 const StringHashMap = std.StringHashMap;
@@ -415,7 +415,7 @@ fn addRoute(comptime A: type, allocator: Allocator, root: *Part(A), url: []const
 	defer param_name_collector.deinit();
 
 	var route_part = root;
-	var it = std.mem.split(u8, normalized, "/");
+	var it = std.mem.splitScalar(u8, normalized, '/');
 	while (it.next()) |part| {
 		if (part[0] == ':') {
 			try param_name_collector.append(part[1..]);
@@ -488,8 +488,11 @@ fn getRoute(comptime A: type, root: Part(A), url: []const u8, params: *Params) ?
 	var route_part = &r;
 
 	var glob_all: ?*Part(A) = null;
-	var it = std.mem.split(u8, normalized, "/");
-	while (it.next()) |part| {
+	var pos: usize = 0;
+	while (pos < normalized.len) {
+		const index = std.mem.indexOfScalarPos(u8, normalized, pos, '/') orelse normalized.len;
+		const part = normalized[pos..index];
+
 		// the most specific "glob_all" route we find, which is the one most deeply
 		// nested, is the one we'll use in case there are no other matches.
 		if (route_part.glob_all) {
@@ -510,6 +513,7 @@ fn getRoute(comptime A: type, root: Part(A), url: []const u8, params: *Params) ?
 			}
 			return null;
 		}
+		pos = index + 1; // +1 tos skip the slash on the next iteration
 	}
 
 	if (route_part.action) |action| {
@@ -549,8 +553,8 @@ test "route: root" {
 	try t.expectEqual(&testRoute2, router.route(httpz.Method.PUT, urls[0], &params).?.action);
 	try t.expectEqual(&testRoute3, router.route(httpz.Method.POST, urls[0], &params).?.action);
 
-	try t.expectEqual(@as(?httpz.DispatchableAction(void, void), null), router.route(httpz.Method.GET, urls[1], &params));
-	try t.expectEqual(@as(?httpz.DispatchableAction(void, void), null), router.route(httpz.Method.DELETE, urls[0], &params));
+	try t.expectEqual(null, router.route(httpz.Method.GET, urls[1], &params));
+	try t.expectEqual(null, router.route(httpz.Method.DELETE, urls[0], &params));
 
 	// test "all" route
 	inline for (@typeInfo(httpz.Method).Enum.fields) |field| {
@@ -583,7 +587,7 @@ test "route: static" {
 			try t.expectEqual(&testRoute2, router.route(httpz.Method.GET, url, &params).?.action);
 
 			// different method
-			try t.expectEqual(@as(?httpz.DispatchableAction(void, void), null), router.route(httpz.Method.PUT, url, &params));
+			try t.expectEqual(null, router.route(httpz.Method.PUT, url, &params));
 		}
 	}
 
@@ -591,7 +595,7 @@ test "route: static" {
 		// random not found
 		const urls = .{"over/9000!", "over/ 9000"};
 		inline for (urls) |url| {
-			try t.expectEqual(@as(?httpz.DispatchableAction(void, void), null), router.route(httpz.Method.GET, url, &params));
+			try t.expectEqual(null, router.route(httpz.Method.GET, url, &params));
 		}
 	}
 }
@@ -612,7 +616,7 @@ test "route: params" {
 	{
 		// root param
 		try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, "info", &params).?.action);
-		try t.expectEqual(@as(usize, 1), params.len);
+		try t.expectEqual(1, params.len);
 		try t.expectString("info", params.get("p1").?);
 	}
 
@@ -620,7 +624,7 @@ test "route: params" {
 		// nested param
 		params.reset();
 		try t.expectEqual(&testRoute2, router.route(httpz.Method.GET, "/users/33", &params).?.action);
-		try t.expectEqual(@as(usize, 1), params.len);
+		try t.expectEqual(1, params.len);
 		try t.expectString("33", params.get("p2").?);
 	}
 
@@ -628,12 +632,12 @@ test "route: params" {
 		// nested param with statix suffix
 		params.reset();
 		try t.expectEqual(&testRoute3, router.route(httpz.Method.GET, "/users/9/fav", &params).?.action);
-		try t.expectEqual(@as(usize, 1), params.len);
+		try t.expectEqual(1, params.len);
 		try t.expectString("9", params.get("p2").?);
 
 		params.reset();
 		try t.expectEqual(&testRoute4, router.route(httpz.Method.GET, "/users/9/like", &params).?.action);
-		try t.expectEqual(@as(usize, 1), params.len);
+		try t.expectEqual(1, params.len);
 		try t.expectString("9", params.get("p2").?);
 	}
 
@@ -641,13 +645,13 @@ test "route: params" {
 		// nested params
 		params.reset();
 		try t.expectEqual(&testRoute5, router.route(httpz.Method.GET, "/users/u1/fav/blue", &params).?.action);
-		try t.expectEqual(@as(usize, 2), params.len);
+		try t.expectEqual(2, params.len);
 		try t.expectString("u1", params.get("p2").?);
 		try t.expectString("blue", params.get("p3").?);
 
 		params.reset();
 		try t.expectEqual(&testRoute6, router.route(httpz.Method.GET, "/users/u3/like/tea", &params).?.action);
-		try t.expectEqual(@as(usize, 2), params.len);
+		try t.expectEqual(2, params.len);
 		try t.expectString("u3", params.get("p2").?);
 		try t.expectString("tea", params.get("p3").?);
 	}
@@ -655,11 +659,11 @@ test "route: params" {
 	{
 		// not_found
 		params.reset();
-		try t.expectEqual(@as(?httpz.DispatchableAction(void, void), null), router.route(httpz.Method.GET, "/users/u1/other", &params));
-		try t.expectEqual(@as(usize, 0), params.len);
+		try t.expectEqual(null, router.route(httpz.Method.GET, "/users/u1/other", &params));
+		try t.expectEqual(0, params.len);
 
-		try t.expectEqual(@as(?httpz.DispatchableAction(void, void), null), router.route(httpz.Method.GET, "/users/u1/favss/blue", &params));
-		try t.expectEqual(@as(usize, 0), params.len);
+		try t.expectEqual(null, router.route(httpz.Method.GET, "/users/u1/favss/blue", &params));
+		try t.expectEqual(0, params.len);
 	}
 }
 
@@ -679,7 +683,7 @@ test "route: glob" {
 		const urls = .{"/anything", "/this/could/be/anything", "/"};
 		inline for (urls) |url| {
 			try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, url, &params).?.action);
-			try t.expectEqual(@as(usize, 0), params.len);
+			try t.expectEqual(0, params.len);
 		}
 	}
 
@@ -688,7 +692,7 @@ test "route: glob" {
 		const urls = .{"/users/", "/users", "/users/hello", "/users/could/be/anything"};
 		inline for (urls) |url| {
 			try t.expectEqual(&testRoute2, router.route(httpz.Method.GET, url, &params).?.action);
-			try t.expectEqual(@as(usize, 0), params.len);
+			try t.expectEqual(0, params.len);
 		}
 	}
 
@@ -697,14 +701,14 @@ test "route: glob" {
 		const urls = .{"/users/hello/test", "/users/x/test"};
 		inline for (urls) |url| {
 			try t.expectEqual(&testRoute3, router.route(httpz.Method.GET, url, &params).?.action);
-			try t.expectEqual(@as(usize, 0), params.len);
+			try t.expectEqual(0, params.len);
 		}
 	}
 
 	{
 		// nest glob specific
 		try t.expectEqual(&testRoute4, router.route(httpz.Method.GET, "/users/other/test", &params).?.action);
-		try t.expectEqual(@as(usize, 0), params.len);
+		try t.expectEqual(0, params.len);
 	}
 }
 
@@ -724,17 +728,17 @@ test "route: glob" {
 // 	router.get("/hello/users/test", 2, .{});
 
 // 	{
-// 		try t.expectEqual(@as(u32, 1), router.route(httpz.Method.GET, "/x/users", &params));
-// 		try t.expectEqual(@as(usize, 1), params.len);
+// 		try t.expectEqual(1, router.route(httpz.Method.GET, "/x/users", &params));
+// 		try t.expectEqual(1, params.len);
 // 		try t.expectString("x", params.get("any"));
 
 // 		params.reset();
-// 		try t.expectEqual(@as(u32, 2), router.route(httpz.Method.GET, "/hello/users/test", &params));
-// 		try t.expectEqual(@as(usize, 0), params.len);
+// 		try t.expectEqual(2, router.route(httpz.Method.GET, "/hello/users/test", &params));
+// 		try t.expectEqual(0, params.len);
 
 // 		params.reset();
-// 		try t.expectEqual(@as(u32, 1), router.route(httpz.Method.GET, "/hello/users", &params));
-// 		try t.expectEqual(@as(usize, 1), params.len);
+// 		try t.expectEqual(1, router.route(httpz.Method.GET, "/hello/users", &params));
+// 		try t.expectEqual(1, params.len);
 // 		try t.expectString("hello", params.get("any"));
 // 	}
 // }

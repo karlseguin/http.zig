@@ -15,24 +15,22 @@ pub const Params = struct {
 	names: [][]const u8,
 	values: [][]const u8,
 
-	const Self = @This();
-
-	pub fn init(allocator: Allocator, max: usize) !Self {
+	pub fn init(allocator: Allocator, max: usize) !Params {
 		const names = try allocator.alloc([]const u8, max);
 		const values = try allocator.alloc([]const u8, max);
-		return Self{
+		return .{
 			.len = 0,
 			.names = names,
 			.values = values,
 		};
 	}
 
-	pub fn deinit(self: *Self, allocator: Allocator) void {
+	pub fn deinit(self: *Params, allocator: Allocator) void {
 		allocator.free(self.names);
 		allocator.free(self.values);
 	}
 
-	pub fn addValue(self: *Self, value: []const u8) void {
+	pub fn addValue(self: *Params, value: []const u8) void {
 		const len = self.len;
 		const values = self.values;
 		if (len == values.len) {
@@ -46,7 +44,7 @@ pub const Params = struct {
 	// a bit dangerous to assume that since self.names is re-used between requests
 	// and we don't want to leak anything, so I think enforcing a len of names.len
 	// is safer, since names is generally statically defined based on routes setup.
-	pub fn addNames(self: *Self, names: [][]const u8) void {
+	pub fn addNames(self: *Params, names: [][]const u8) void {
 		std.debug.assert(names.len == self.len);
 		const n = self.names;
 		for (names, 0..) |name, i| {
@@ -55,7 +53,7 @@ pub const Params = struct {
 		self.len = names.len;
 	}
 
-	pub fn get(self: *Self, needle: []const u8) ?[]const u8 {
+	pub fn get(self: *const Params, needle: []const u8) ?[]const u8 {
 		const names = self.names[0..self.len];
 		for (names, 0..) |name, i| {
 			if (mem.eql(u8, name, needle)) {
@@ -66,7 +64,7 @@ pub const Params = struct {
 		return null;
 	}
 
-	pub fn reset(self: *Self) void {
+	pub fn reset(self: *Params) void {
 		self.len = 0;
 	}
 };
@@ -80,15 +78,16 @@ test "params: get" {
 	params.addValue("idaho");
 	params.addNames(names[0..]);
 
-	try t.expectEqual(@as(?[]const u8, "9000"), params.get("over"));
-	try t.expectEqual(@as(?[]const u8, "idaho"), params.get("duncan"));
+	try t.expectEqual("9000", params.get("over").?);
+	try t.expectEqual("idaho", params.get("duncan").?);
 
 	params.reset();
-	try t.expectEqual(@as(?[]const u8, null), params.get("over"));
-	try t.expectEqual(@as(?[]const u8, null), params.get("duncan"));
+	try t.expectEqual(null, params.get("over"));
+	try t.expectEqual(null, params.get("duncan"));
+
 	params.addValue("!9000!");
 	params.addNames(names[0..1]);
-	try t.expectEqual(@as(?[]const u8, "!9000!"), params.get("over"));
+	try t.expectEqual("!9000!", params.get("over").?);
 
 	params.deinit(t.allocator);
 }

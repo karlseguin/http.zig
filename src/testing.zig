@@ -4,42 +4,52 @@ const std = @import("std");
 const t = @import("t.zig");
 const httpz = @import("httpz.zig");
 
+const Conn = @import("worker.zig").Conn;
+
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 
 pub fn init(config: httpz.Config) Testing {
-	var arena = t.allocator.create(std.heap.ArenaAllocator) catch unreachable;
-	arena.* = std.heap.ArenaAllocator.init(t.allocator);
+	const ctx = t.Context.init(config);
+	var conn = ctx.conn;
 
-	var aa = arena.allocator();
-	var req = aa.create(httpz.Request) catch unreachable;
-	req.init(aa, aa, config.request) catch unreachable;
-	req.url = httpz.Url.parse("/");
-	req.reset();
+	// Parse a basic request. This will put our conn.req_state into a valid state
+	// for creating a request. Application code can modify the request directly
+	// thereafter to change whatever properties they want.
+	var base_request = std.io.fixedBufferStream("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+	while (true) {
+		const done = conn.req_state.parse(&base_request) catch unreachable;
+		if (done) {
+			break;
+		}
+	}
 
-	var res = aa.create(httpz.Response) catch unreachable;
-	res.init(aa, aa, config.response) catch unreachable;
-	res.stream = t.Stream.initWithAllocator(aa);
-	res.reset();
+	const aa = conn.arena.allocator();
+
+	const req = aa.create(httpz.Request) catch unreachable;
+	req.* = ctx.request();
+
+	const res = aa.create(httpz.Response) catch unreachable;
+	res.* = ctx.response();
 
 	return Testing{
+		._ctx = ctx,
 		.req = req,
 		.res = res,
-		._arena = arena,
 		.arena = aa,
+		.conn = ctx.conn,
 	};
 }
 
 pub const Testing = struct {
-	_arena: *std.heap.ArenaAllocator,
+	_ctx: t.Context,
+	conn: *Conn,
 	req: *httpz.Request,
 	res: *httpz.Response,
 	arena: std.mem.Allocator,
 	parsed_response: ?Response = null,
 
-	const Self = @This();
-
-	const Response = struct {
+	pub const Response = struct {
 		status: u16,
 		raw: []const u8,
 		body: []const u8,
@@ -50,7 +60,7 @@ pub const Testing = struct {
 			if (expected) |e| {
 				try t.expectString(e, self.headers.get(name).?);
 			} else {
-				try t.expectEqual(@as(?[]const u8, null), self.headers.get(name));
+				try t.expectEqual(null, self.headers.get(name));
 			}
 		}
 
@@ -78,16 +88,15 @@ pub const Testing = struct {
 		}
 	};
 
-	pub fn deinit(self: *Self) void {
-		self._arena.deinit();
-		t.allocator.destroy(self._arena);
+	pub fn deinit(self: *Testing) void {
+		self._ctx.deinit();
 	}
 
-	pub fn url(self: *Self, u: []const u8) void {
+	pub fn url(self: *Testing, u: []const u8) void {
 		self.req.url = httpz.Url.parse(u);
 	}
 
-	pub fn param(self: *Self, name: []const u8, value: []const u8) void {
+	pub fn param(self: *Testing, name: []const u8, value: []const u8) void {
 		// This is ugly, but the Param structure is optimized for how the router
 		// works, so we don't have a clean API for setting 1 key=value pair. We'll
 		// just dig into the internals instead
@@ -97,7 +106,7 @@ pub const Testing = struct {
 		p.len += 1;
 	}
 
-	pub fn query(self: *Self, name: []const u8, value: []const u8) void {
+	pub fn query(self: *Testing, name: []const u8, value: []const u8) void {
 		const req = self.req;
 		req.qs_read = true;
 		req.qs.add(name, value);
@@ -114,18 +123,19 @@ pub const Testing = struct {
 		}
 	}
 
-	pub fn header(self: *Self, name: []const u8, value: []const u8) void {
+	pub fn header(self: *Testing, name: []const u8, value: []const u8) void {
 		const lower = self.arena.alloc(u8, name.len) catch unreachable;
 		_ = std.ascii.lowerString(lower, name);
 		self.req.headers.add(lower, value);
 	}
 
-	pub fn body(self: *Self, bd: []const u8) void {
-		self.req.bd_read = true;
-		self.req.bd = bd;
+	pub fn body(self: *Testing, bd: []const u8) void {
+		const mutable = self.arena.dupe(u8, bd) catch unreachable;
+		self.req.body_buffer = .{.type = .static, .data = mutable};
+		self.req.body_len = bd.len;
 	}
 
-	pub fn json(self: *Self, value: anytype) void {
+	pub fn json(self: *Testing, value: anytype) void {
 		var arr = ArrayList(u8).init(self.arena);
 		defer arr.deinit();
 
@@ -136,40 +146,42 @@ pub const Testing = struct {
 		self.body(bd);
 	}
 
-	pub fn expectStatus(self: Self, expected: u16) !void {
+	pub fn expectStatus(self: Testing, expected: u16) !void {
 		try t.expectEqual(expected, self.res.status);
 	}
 
-	pub fn expectBody(self: *Self, expected: []const u8) !void {
+	pub fn expectBody(self: *Testing, expected: []const u8) !void {
 		const pr = try self.parseResponse();
 		try t.expectString(expected, pr.body);
 	}
 
-	pub fn expectJson(self: *Self, expected: anytype) !void {
+	pub fn expectJson(self: *Testing, expected: anytype) !void {
 		const pr = try self.parseResponse();
 		try pr.expectJson(expected);
 	}
 
-	pub fn expectHeader(self: *Self, name: []const u8, expected: ?[]const u8) !void {
+	pub fn expectHeader(self: *Testing, name: []const u8, expected: ?[]const u8) !void {
 		const pr = try self.parseResponse();
 		return pr.expectHeader(name, expected);
 	}
 
-	pub fn expectHeaderCount(self: *Self, expected: u32) !void {
+	pub fn expectHeaderCount(self: *Testing, expected: u32) !void {
 		const pr = try self.parseResponse();
 		try t.expectEqual(expected, pr.headers.count());
 	}
 
-	pub fn getJson(self: *Self) !std.json.Value {
+	pub fn getJson(self: *Testing) !std.json.Value {
 		const pr = try self.parseResponse();
 		return try std.json.parseFromSliceLeaky(std.json.Value, self.arena, pr.body, .{});
 	}
 
-	pub fn parseResponse(self: *Self) !Response {
+	pub fn parseResponse(self: *Testing) !Response {
 		if (self.parsed_response) |r| return r;
 		try self.res.write();
+		self._ctx.close();
 
-		const pr = try parseWithAllocator(self.arena, self.res.stream.received.items);
+		const data = try self._ctx.read(self.arena);
+		const pr = try parseWithAllocator(self.arena, data.items);
 		self.parsed_response = pr;
 		return pr;
 	}
@@ -182,14 +194,13 @@ pub fn parse(data: []u8) !Testing.Response {
 pub fn parseWithAllocator(allocator: Allocator, data: []u8) !Testing.Response {
 	// data won't outlive this function, we want our Response to take ownership
 	// of the full body, since it needs to reference parts of it.
-	const raw = allocator.alloc(u8, data.len) catch unreachable;
-	@memcpy(raw, data);
+	const raw = allocator.dupe(u8, data) catch unreachable;
 
 	var status: u16 = 0;
 	var header_length: usize = 0;
 	var headers = std.StringHashMap([]const u8).init(allocator);
 
-	var it = std.mem.split(u8, raw, "\r\n");
+	var it = std.mem.splitSequence(u8, raw, "\r\n");
 	if (it.next()) |line| {
 		header_length = line.len + 2;
 		status = try std.fmt.parseInt(u16, line[9..], 10);
@@ -246,13 +257,10 @@ fn decodeChunkedEncoding(full_dest: []u8, full_src: []u8) usize {
 		src = src[nl+4+chunk_length..];
 	}
 	return length;
-
 }
 
 const JsonComparer = struct {
 	_arena: std.heap.ArenaAllocator,
-
-	const Self = @This();
 
 	const Diff = struct {
 		err: []const u8,
@@ -261,20 +269,20 @@ const JsonComparer = struct {
 		b: []const u8,
 	};
 
-	fn init(allocator: Allocator) Self {
+	fn init(allocator: Allocator) JsonComparer {
 		return .{
 			._arena = std.heap.ArenaAllocator.init(allocator),
 		};
 	}
 
-	fn deinit(self: Self) void {
+	fn deinit(self: JsonComparer) void {
 		self._arena.deinit();
 	}
 
 	// We compare by getting the string representation of a and b
 	// and then parsing it into a std.json.ValueTree, which we can compare
 	// Either a or b might already be serialized JSON string.
-	fn compare(self: *Self, a: anytype, b: anytype) !ArrayList(Diff) {
+	fn compare(self: *JsonComparer, a: anytype, b: anytype) !ArrayList(Diff) {
 		const allocator = self._arena.allocator();
 		var a_bytes: []const u8 = undefined;
 		if (@TypeOf(a) != []const u8) {
@@ -301,7 +309,7 @@ const JsonComparer = struct {
 		return diffs;
 	}
 
-	fn compareValue(self: *Self, a: std.json.Value, b: std.json.Value, diffs: *ArrayList(Diff), path: *ArrayList([]const u8)) !void {
+	fn compareValue(self: *JsonComparer, a: std.json.Value, b: std.json.Value, diffs: *ArrayList(Diff), path: *ArrayList([]const u8)) !void {
 		const allocator = self._arena.allocator();
 
 		if (!std.mem.eql(u8, @tagName(a), @tagName(b))) {
@@ -365,7 +373,7 @@ const JsonComparer = struct {
 		}
 	}
 
-	fn diff(self: *Self, err: []const u8, path: *ArrayList([]const u8), a_rep: []const u8, b_rep: []const u8) Diff {
+	fn diff(self: *JsonComparer, err: []const u8, path: *ArrayList([]const u8), a_rep: []const u8, b_rep: []const u8) Diff {
 		const full_path = std.mem.join(self._arena.allocator(), ".", path.items) catch unreachable;
 		return .{
 			.a = a_rep,
@@ -375,13 +383,13 @@ const JsonComparer = struct {
 		};
 	}
 
-	fn stringify(self: *Self, value: anytype) ![]const u8 {
+	fn stringify(self: *JsonComparer, value: anytype) ![]const u8 {
 		var arr = ArrayList(u8).init(self._arena.allocator());
 		try std.json.stringify(value, .{}, arr.writer());
 		return arr.items;
 	}
 
-	fn format(self: *Self, value: anytype) []const u8 {
+	fn format(self: *JsonComparer, value: anytype) []const u8 {
 		return std.fmt.allocPrint(self._arena.allocator(), "{}", .{value}) catch unreachable;
 	}
 };
@@ -392,7 +400,7 @@ test "testing: params" {
 
 	ht.param("id", "over9000");
 	try t.expectString("over9000", ht.req.params.get("id").?);
-	try t.expectEqual(@as(?[]const u8, null), ht.req.params.get("other"));
+	try t.expectEqual(null, ht.req.params.get("other"));
 }
 
 test "testing: query" {
@@ -406,7 +414,7 @@ test "testing: query" {
 	try t.expectString("t:ea", query.get("search").?);
 	try t.expectString("447", query.get("category").?);
 	try t.expectString("search=t%3Aea&category=447", ht.req.url.query);
-	try t.expectEqual(@as(?[]const u8, null), query.get("other"));
+	try t.expectEqual(null, query.get("other"));
 }
 
 test "testing: empty query" {
@@ -414,7 +422,7 @@ test "testing: empty query" {
 	defer ht.deinit();
 
 	const query = try ht.req.query();
-	try t.expectEqual(@as(usize, 0), query.len);
+	try t.expectEqual(0, query.len);
 }
 
 test "testing: query via url" {
@@ -435,7 +443,7 @@ test "testing: header" {
 
 	try t.expectString("tea", ht.req.headers.get("search").?);
 	try t.expectString("447", ht.req.headers.get("category").?);
-	try t.expectEqual(@as(?[]const u8, null), ht.req.headers.get("other"));
+	try t.expectEqual(null, ht.req.headers.get("other"));
 }
 
 test "testing: body" {
@@ -443,7 +451,7 @@ test "testing: body" {
 	defer ht.deinit();
 
 	ht.body("the body");
-	try t.expectString("the body", (try ht.req.body()).?);
+	try t.expectString("the body", ht.req.body().?);
 }
 
 test "testing: json" {
@@ -451,7 +459,7 @@ test "testing: json" {
 	defer ht.deinit();
 
 	ht.json(.{.over = 9000});
-	try t.expectString("{\"over\":9000}", (try ht.req.body()).?);
+	try t.expectString("{\"over\":9000}", ht.req.body().?);
 }
 
 test "testing: expectBody empty" {
@@ -503,6 +511,6 @@ test "testing: parseResponse" {
 
 	try ht.expectStatus(201);
 	const res = try ht.parseResponse();
-	try t.expectEqual(@as(u16, 201), res.status);
-	try t.expectEqual(@as(usize, 2), res.headers.count());
+	try t.expectEqual(201, res.status);
+	try t.expectEqual(2, res.headers.count());
 }

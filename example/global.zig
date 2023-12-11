@@ -4,20 +4,17 @@ const Allocator = std.mem.Allocator;
 
 // Our global state
 const GlobalContext = struct {
-	const Self = @This();
-
 	hits: usize = 0,
 	l: std.Thread.Mutex = .{},
 
-	pub fn increment(self: *Self, _: *httpz.Request, res: *httpz.Response) !void {
+	pub fn increment(self: *GlobalContext, _: *httpz.Request, res: *httpz.Response) !void {
 		self.l.lock();
 		const hits = self.hits + 1;
 		self.hits = hits;
 		self.l.unlock();
 
 		res.content_type = httpz.ContentType.TEXT;
-		const out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-		res.body = out;
+		res.body = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
 	}
 };
 
@@ -25,7 +22,7 @@ const GlobalContext = struct {
 // small variations in using httpz.
 pub fn start(allocator: Allocator) !void {
 	var ctx = GlobalContext{};
-	var server = try httpz.ServerCtx(*GlobalContext, *GlobalContext).init(allocator, .{.pool = .{.min = 20}, .port = 5883}, &ctx);
+	var server = try httpz.ServerCtx(*GlobalContext, *GlobalContext).init(allocator, .{.port = 5883}, &ctx);
 	defer server.deinit();
 	var router = server.router();
 	router.get("/increment", GlobalContext.increment);

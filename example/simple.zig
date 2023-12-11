@@ -22,7 +22,6 @@ pub fn start(allocator: Allocator) !void {
 	router.get("/hello", hello);
 	router.get("/json/hello/:name", json);
 	router.get("/writer/hello/:name", writer);
-	router.get("/chunked_response", chunked);
 	router.get("/static_file", staticFile);
 	router.get("/cached_static_file", cachedStaticFile);
 	try server.listen();
@@ -35,7 +34,6 @@ fn index(_: *httpz.Request, res: *httpz.Response) !void {
 		\\ <li><a href="/hello?name=Teg">Querystring + text output</a>
 		\\ <li><a href="/writer/hello/Ghanima">Path parameter + serialize json object</a>
 		\\ <li><a href="/json/hello/Duncan">Path parameter + json writer</a>
-		\\ <li><a href="/chunked_response">Chunked response</a>
 		\\ <li><a href="/static_file">Static file</a>
 		\\ <li><a href="/cached_static_file">Cached static file</a>
 		\\ <li><a href="http://localhost:5883/increment">Global shared state</a>
@@ -47,8 +45,7 @@ fn hello(req: *httpz.Request, res: *httpz.Response) !void {
 	const name = query.get("name") orelse "stranger";
 
 	// One solution is to use res.arena
-	// var out = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
-	// res.body = out
+	// res.body = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
 
 	// another is to use res.writer(), which might be more efficient in some cases
 	try std.fmt.format(res.writer(), "Hello {s}", .{name});
@@ -70,22 +67,10 @@ fn writer(req: *httpz.Request, res: *httpz.Response) !void {
 	try ws.endObject();
 }
 
-fn chunked(_: *httpz.Request, res: *httpz.Response) !void {
-	// status and headers (including content type) must be set
-	// before the first call to chunk
-	res.status = 200;
-	res.header("A", "Header");
-	res.content_type = httpz.ContentType.TEXT;
-
-	try res.chunk("This is a chunk");
-	try res.chunk("\r\n");
-	try res.chunk("And another one");
-}
-
-fn staticFile(req: *httpz.Request, res: *httpz.Response) !void {
+fn staticFile(_: *httpz.Request, res: *httpz.Response) !void {
 	var index_file = try std.fs.cwd().openFile("example/index.html", .{});
 	defer index_file.close();
-	res.body = try index_file.readToEndAlloc(req.arena, 100000);
+	res.body = try index_file.readToEndAlloc(res.arena, 100000);
 }
 
 fn cachedStaticFile(req: *httpz.Request, res: *httpz.Response) !void {

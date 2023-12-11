@@ -10,12 +10,10 @@ const GlobalContext = struct {
 
 // our per-request data
 const RequestContext = struct {
-	const Self = @This();
-
 	user_id: ?[]const u8,
 	global: *GlobalContext,
 
-	pub fn increment(self: *Self, _: *httpz.Request, res: *httpz.Response) !void {
+	pub fn increment(self: *RequestContext, _: *httpz.Request, res: *httpz.Response) !void {
 		// we don't actually do anything with ctx.user_id
 		// except make sure it's been set. This could be common in a route
 		// where any user can take an action as long as they're logged in.
@@ -28,14 +26,13 @@ const RequestContext = struct {
 		self.global.l.unlock();
 
 		res.content_type = httpz.ContentType.TEXT;
-		const out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-		res.body = out;
+		res.body = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
 	}
 };
 
 pub fn start(allocator: Allocator) !void {
 	var ctx = GlobalContext{};
-	var server = try httpz.ServerCtx(*GlobalContext, *RequestContext).init(allocator, .{.pool = .{.min = 20}, .port = 5884}, &ctx);
+	var server = try httpz.ServerCtx(*GlobalContext, *RequestContext).init(allocator, .{.port = 5884}, &ctx);
 	defer server.deinit();
 	server.dispatcher(dispatcher);
 	var router = server.router();
@@ -43,7 +40,7 @@ pub fn start(allocator: Allocator) !void {
 	return server.listen();
 }
 
-fn notAuthorized(res: *httpz.Response) void {
+fn notAuthorized(res: *httpz.Response) !void {
 	res.status = 401;
 	res.body = "Not authorized";
 }

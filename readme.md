@@ -6,14 +6,19 @@ http.zig powers the <https://www.aolium.com> [api server](https://github.com/kar
 # Installation
 This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`.
 
-## Async, Threads, Scale
-Until async support is re-added to Zig, this library is using a stopgap approach for concurrency. 
+# Why not std.http.Server
+`std.http.Server` is really slow. Exactly how slow depends on what you're doing and how you're testing, but we're talking in the orders of magnitude.
 
-In the master branch, a naive thread-per-connection is used. This approach is straightforward and simple to reason about. Despite using a pool of objects, this approach can still cause unpredictable memory spikes due to the overhead of the threads themselves. Plus, performance can be hurt due to thread thrashing.
+## Branches (scaling, robustness and windows)
+Until async support is re-added to Zig, 2 versions of this project are being maintained: the `master` branch and the `blocking` branch. Except for very small API changes and a few different configuration options, the differences between the two branches are internal.
 
-As a simple alternative, the `thread_pool = #` configuration value can be set which will use an `std.Thread.Pool`. This will make memory usage predictable and can result in better performance.
+Whichever branch you pick, if you plan on exposing this publicly, I strongly recommend that you place it behind a robust reverse proxy (e.g. nginx). Neither  does TLS termination and the `blocking` branch is relatively easy to DOS.
 
-If your system has access to poll(2) (e.g. Linux, BSD, MacOS), you can also try the [thread_pool](https://github.com/karlseguin/http.zig/tree/thread_pool) branch. This uses a custom thread pool, and poll(2) for better concurrency. It also supports additional timeout configurations (though, ideally, you leave them disabled and set timeouts in your reverse proxy).
+The `master` branch is more advanced and only runs on systems with epoll (Linux) and kqueue (e.g. BSD, MacOS). It should scale and perform better under load and be more predictable in the face of real-world networking (e.g. slow or misbehaving clients). It has a few additional configuration settings to control memory usage and timeouts.
+
+The `blocking` branch uses a naive thread-per-connection. It is simpler and should work on most platforms, including Windows. This approach can have unpredictable memory spikes due to the overhead of the threads themselves. Plus, performance can suffer due to thread thrashing. The `thread_pool = #` setting, uses a `std.Thread.Pool` to limit the number of threads, resulting in more predictable memory usage and, assuming properly behaved clients, can perform better. The `blocking` branch is easy to DOS and really _has_ to sit behind a reverse proxy that can enforce timeouts/limits.
+
+More details are [available here](https://www.aolium.com/karlseguin/f75427ac-699e-35f1-dec8-32d54a4f5700).
 
 # Usage
 
@@ -104,8 +109,7 @@ fn increment(global: *Global, _: *httpz.Request, res: *httpz.Response) !void {
 
     // or, more verbosse: httpz.ContentType.TEXT
     res.content_type = .TEXT;
-    var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-    res.body = out;
+    res.body = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
 }
 ```
 
@@ -123,13 +127,12 @@ const Global = struct {
 
     fn increment(global: *Global, _: *httpz.Request, res: *httpz.Response) !void {
         global.l.lock();
-        var hits = global.hits + 1;
+        const hits = global.hits + 1;
         global.hits = hits;
         global.l.unlock();
 
         res.content_type = .TEXT;
-        var out = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-        res.body = out;
+        res.body = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
     }
 };
 
@@ -329,15 +332,7 @@ On first call, the `query` function attempts to parse the querystring. This requ
 The original casing of both the key and the name are preserved.
 
 ### Body
-The body works like the querystring. It isn't automatically read from the socket and thus the initial call to `body()` can fail:
-
-```zig
-if (try req.body()) |body| {
-
-}
-```
-
-Like `query`, the body is internally cached and subsequent calls are fast and cannot fail. If there is no body, `body()` returns null.
+The body of the request, if any, can be accessed using `req.body()`. This returns a `?[]const u8`.
 
 #### Json Body
 The `req.json(TYPE)` function is a wrapper around the `body()` function which will call `std.json.parse` on the body. This function does not consider the content-type of the request and will try to parse any body.
@@ -375,40 +370,28 @@ The following fields are the most useful:
 
 * `status` - set the status code, by default, each response starts off with a 200 status code
 * `content_type` - an httpz.ContentType enum value. This is a convenience and optimization over using the `res.header` function.
-* `body` - set the body to an explicit []const u8. The memory address pointed to by this value must be valid beyond the action handler. The `arena` field can help for dynamic values
 * `arena` - an arena allocator that will be reset at the end of the request
 
-## JSON
-The `json` function will set the content_type to `httpz.ContentType.JSON` and serialize the provided value using `std.json.stringify`. The 2nd argument to the json function is the `std.json.StringifyOptions` to pass to the `stringify` function.
+### Body
+The simplest way to set a body is to set `res.body` to a `[]const u8`. **However** the provided value must remain valid until the body is written, which happens outside of your application code.
 
-Because the final size of the serialized object cannot be known ahead of a time, a custom writer is used. Initially, this writer will use a static buffer defined by the `config.response.body_buffer_size`. However, as the object is being serialized, if this static buffer runs out of space, a dynamic buffer will be allocated and the static buffer will be copied into it (at this point, the dynamic buffer essentially behaves like an `ArrayList(u8)`.
+Therefore, `res.body` can be safely used with constant strings. It can also be used with content created with `res.arena` (explained in the next section).
 
-As a general rule, I'd suggest making sure `config.response.body_buffer_size` is large enough to fit 99% of your responses. As an alternative, you can always manage your own serialization and simply set the `res.content_type` and `res_body` fields.
+It is possible to call `res.write() !void` direclty from your code. This will put the socket into blocking mode and send the full response. This is an advanced feature. Calling `res.write()` again does nothing.
 
-## Dynamic Content
-Besides helpers like `json`, you can use the `res.arena` to create dynamic content:
+### Dynamic Content
+You can use the `res.arena` allocator to create dynamic content:
 
 ```zig
 const query = try req.query();
 const name = query.get("name") orelse "stranger";
-var out = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
-res.body = out;
+res.body = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
 ```
 
-## Chunked Response
-You can send a chunked response using `res.chunk(DATA)`. Chunked responses do not include a `Content-Length` so do need to be fully buffered in memory before sending. Multiple calls to `res.chunk` are, of course, supported. However, the response status along with any header, must be set before the first call to `chunk`:
+Memory allocated with `res.arena` will exist until the response is sent.
 
-```zig
-res.status = 200;
-res.header("A", "Header");
-res.content_type = httpz.ContentType.TEXT;
 
-try res.chunk("This is a chunk");
-try res.chunk("\r\n");
-try res.chunk("And another one");
-```
-
-## io.Writer
+### io.Writer
 `res.writer()` returns an `std.io.Writer`. Various types support writing to an io.Writer. For example, the built-in JSON stream writer can use this writer:
 
 ```zig
@@ -419,26 +402,29 @@ try ws.emitString(req.param("name").?);
 try ws.endObject();
 ```
 
-See the `json` function for an explanation on how this writer behaves.
+Initially, writes will go to a pre-allocated buffer defined by `config.response.body_buffer_size`. If the buffer becomes full, a larger buffer will either be fetched from the large buffer pool (`config.workers.large_buffer_count`) or dynamically allocated.
+
+### JSON
+The `res.json` function will set the content_type to `httpz.ContentType.JSON` and serialize the provided value using `std.json.stringify`. The 2nd argument to the json function is the `std.json.StringifyOptions` to pass to the `stringify` function.
+
+This function uses `res.writer()` explained above.
 
 ## Header Value
-Set header values using the `res.header(NAME, VALUE) function`:
+Set header values using the `res.header(NAME, VALUE)` function:
 
 ```zig
 res.header("Location", "/");
 ```
 
-The header name and value are sent as provided.
+The header name and value are sent as provided. Both the name and value must remain valid until the response is sent, which will happen outside of the action. Dynamic names and/or values should be created and or dupe'd with `res.arena`. 
 
-## Explicit Write
-Internally, when the dispatcher returns (whether it be an internal/default dispatcher or an application-specific dispatcher), `res.write()` is called to
-write the response to the socket. 
+`res.headerOpts(NAME, VALUE, OPTS)` can be used to dupe the name and/or value:
 
-It is safe to call `res.write()` directly from the application. This is absolutely not necessary in normal cases. One case where this could be needed is if the data for the response (say the body) only exists within the application's handler (and the `res.arena` cannot be used).
+```zig
+try res.headerOpts("Location", location, .{.dupe_value = true});
+```
 
-`res.write()` is safe to call because of the `res.written` boolean flag. Once called, `res.written` is set to true and subsequent calls to `res.write()` are ignored. Thus, an even more advanced use case is for the application to set `res.written` directly.
-
-While explicit use of `res.write()` is uncommon, I can think of no reason to to call `res.write()` when `res.chunk([]const u8)` is used. This is not supported.
+`HeaderOpts` currently supports `dupe_name: bool` and `dupe_value: bool`, both default to `false`.
 
 ## Router
 You can use the `get`, `put`, `post`, `head`, `patch`, `trace`, `delete` or `options` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
@@ -532,25 +518,46 @@ The third option given to `listen` is an `httpz.Config` instance. Possible value
 
 ```zig
 try httpz.listen(allocator, &router, .{
-    // the port to listen on
+    // Port to listen on
     .port = 5882, 
 
-    // the interface address to bind to
+    // Interface address to bind to
     .address = "127.0.0.1",
 
     // unix socket to listen on (mutually exlusive with host&port)
     .unix_path = null,
 
     // configure the pool of request/response object pairs
-    .pool = .{
-        // number of items to keep in the pool at all times.
-        .min = 20,
+    .workers = .{
+        // Number of worker threads
+        .count = 2,
 
-        // maximum number of items to create
-        .max = 500,
+        // Maximum number of concurrent connection each worker can handle
+        // $max_conn * (
+        //   $request.max_body_size + 
+        //   $response.header_buffer_size + (max($response.body_buffer_size, $your_largest_body)) +
+        //   $a_bit_of_overhead + ($large_buffer_count * $large_buffer_size)
+        // )
+        // is a rough estimate for the most amount of memory httpz will use
+        .max_conn = 500,
 
-        // time, in millisecond, to wait for an item to be available
-        .timeout = 5000,
+        // Minimum number of connection states each worker should maintain
+        // $min_conn * (
+        //   $request.buffer_size + 
+        //   $response.header_buffer_size + $response.body_buffer_size +
+        //   $a_bit_of_overhead + ($large_buffer_count * $large_buffer_size)
+        // )
+        // is a rough estimate for the lowest amount of memory httpz will use
+        .min_conn = 32,
+
+        // A pool of larger buffers that can be used for any data larger than configured
+        // static buffers. For example, if response headers don't fit in in 
+        // $response.header_buffer_size, a buffer will be pulled from here.
+        // This is per-worker. 
+        .large_buffer_count = 16,
+
+        // The size of each large buffer.
+        .large_buffer_size = 65536,
     },
 
     // defaults to null
@@ -563,7 +570,7 @@ try httpz.listen(allocator, &router, .{
 
     // various options for tweaking request processing
     .request = .{
-        // The maximum body size that we'll process. We'll can allocate up 
+        // Maximum body size that we'll process. We'll can allocate up 
         // to this much memory per request for the body. Internally, we might
         // keep this memory around for a number of requests as an optimization.
         // So the maximum amount of memory that our request pool will use is in
@@ -572,50 +579,61 @@ try httpz.listen(allocator, &router, .{
         max_body_size: usize = 1_048_576,
 
         // This memory is allocated upfront. The request header _must_ fit into
-        // this space, else the request will be rejected. If possible, we'll 
-        // try to load the body in here too. The minimum amount of memory that our request
-        // pool will use is in the neighborhood of pool_size * buffer_size. It will never
-        // be smaller than this (there are other static allocations, but this is the biggest chunk.)
-        .buffer_size: usize = 65_536,
+        // this space, else the request will be rejected. If it fits, the body will
+        // also be loaded here, else the large_buffer_pool or dynamic allocation is used.
+        .buffer_size: usize = 32_768,
 
-        // The maximum number of headers to accept. 
+        // Maximum number of headers to accept. 
         // Additional headers will be silently ignored.
         .max_header_count: usize = 32,
 
-        // the maximum number of URL parameters to accept.
+        // Maximum number of URL parameters to accept.
         // Additional parameters will be silently ignored.
         .max_param_count: usize = 10,
 
-        // the maximum number of query string parameters to accept.
+        // Maximum number of query string parameters to accept.
         // Additional parameters will be silently ignored.
         .max_query_count: usize = 32,
-    }
+    },
+
     // various options for tweaking response object
     .response = .{
-        // Used to buffer the response header.
-        // This MUST be at least as big as your largest individual header+value+4
-        // (the +4 is for for the colon+space and the \r\n)
-        .header_buffer_size: usize = 4096,
+        // Used to buffer the response header. If the header is larger, a buffer will be
+        // pulled from the large buffer pool, or dynamic allocations will take place.
+        .header_buffer_size: usize = 1024,
 
-        // Used to buffer dynamic responses. If the response body is larger than this
-        // value, a dynamic buffer will be allocated. It's possible to set this to 0,
-        // but this should only be done if the overwhelming majority of responses
-        // are set directly using res.body = "VALUE"; and not a dynamic response
-        // generator like res.json(..);
-        .body_buffer_size: usize = 32_768,
+        // Used to buffer the response body. If the body is larger, a buffer will be 
+        // pulled from the large buffer pool, or dynamic allocations will take place.
+        .body_buffer_size: usize = 1024,
 
         // The maximum number of headers to accept. 
         // Additional headers will be silently ignored.
         .max_header_count: usize = 16,
+    },
+
+    .timeout = .{
+        // Time in seconds that keepalive connections will be kept alive while inactive
+        .keepalive = null,
+
+        // Time in seconds that a connection has to send a complete request
+        .request = null
+
+        // Maximum number of a requests allowed on a single keepalive connection
+        .request_count = null,
     }
 });
 ```
 
-`pool.min * (request.buffer_size + response.body_buffer_size + response.header_buffer_size)` is the minimum amount of memory this library will use (plus various overhead, but that should be relatively small in comparison).
+### Timeouts
+The configuration settings under the `timeouts` section are designed to help protect the system against basic DOS attacks (say, by connecting and not sending data). However it is recommended that you leave these null (disabled) and use the appropriate timeout in your reverse proxy (e.g. NGINX). 
 
-`pool.max * (request.max_body_size + response.body_buffer_size + response.header_buffer_size)` is the maximum amount of memory this library will use (plus various overhead, but that should be relatively small in comparison).
+The `timeout.request` is the time, in seconds, that a connection has to send a complete request. The `timeout.keepalive` is the time, in second, that a connection can stay connected without sending a request (after the initial request has been sent).
 
-Systems with memory to spare will benefit by using buffers large enough for their typical request and response bodies. Pool configuration is more complicated, especially given the (current) threaded-nature of the system and keepalive. Using a relatively small (e.g. # of cores) `pool.min` and `pool.max` would yield the highest performance (due to having less contention), but because of keepalive, that can easily result in running out of available pooled items (which results in a 503 error). 
+The connection alternates between these two timeouts. It starts with a timeout of `timeout.request` and after the response is sent and the connection is placed in the "keepalive list", switches to the `timeout.keepalive`. When new data is received, it switches back to `timeout.request`. When `null`, both timeouts default to 2_147_483_647 seconds (so not completely disabled, both close enough).
+
+The `timeout.request_count` is the number of individual requests allowed within a single keepalive session. This protects against a client consuming the connection by sending unlimited meaningless but valid HTTP requests.
+
+When the three are combined, it should be difficult for a problematic client to stay connected indefinitely.
 
 # Testing
 The `httpz.testing` namespace exists to help application developers setup `*httpz.Requests` and assert `*httpz.Responses`.

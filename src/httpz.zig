@@ -1,11 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const Thread = std.Thread;
 pub const testing = @import("testing.zig");
 
 pub const routing = @import("router.zig");
 pub const request = @import("request.zig");
-pub const listener = @import("listener.zig");
 pub const response = @import("response.zig");
 
 pub const Router = routing.Router;
@@ -13,7 +13,6 @@ pub const Request = request.Request;
 pub const Response = response.Response;
 pub const Url = @import("url.zig").Url;
 pub const Config = @import("config.zig").Config;
-pub const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
 
 const Allocator = std.mem.Allocator;
 
@@ -195,14 +194,15 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 	return struct {
 		ctx: G,
 		config: Config,
-		app_allocator: Allocator,
-		httpz_allocator: Allocator,
+		allocator: Allocator,
 		_cors_origin: ?[]const u8,
 		_router: Router(G, R),
 		_errorHandler: ErrorHandlerAction(G),
 		_notFoundHandler: Action(G),
+		_cond: Thread.Condition,
 
 		const Self = @This();
+		const Worker = @import("worker.zig").Worker(*Self);
 
 		pub fn init(allocator: Allocator, config: Config, ctx: G) !Self {
 			const nfh = if (comptime G == void) defaultNotFound else defaultNotFoundWithContext;
@@ -220,8 +220,8 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 			return .{
 				.ctx = ctx,
 				.config = var_config,
-				.app_allocator = allocator,
-				.httpz_allocator = allocator,
+				.allocator = allocator,
+				._cond = .{},
 				._errorHandler = erh,
 				._notFoundHandler = nfh,
 				._router = try Router(G, R).init(allocator, dd, ctx),
@@ -230,15 +230,95 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 		}
 
 		pub fn deinit(self: *Self) void {
-			self._router.deinit(self.httpz_allocator);
+			self._router.deinit(self.allocator);
 		}
 
 		pub fn listen(self: *Self) !void {
-			try listener.listen(*ServerCtx(G, R), self.httpz_allocator, self.app_allocator, self, self.config);
+			const os = std.os;
+			const net = std.net;
+			const config = self.config;
+
+			var no_delay = true;
+			const address = blk: {
+				if (config.unix_path) |unix_path| {
+					no_delay = false;
+					std.fs.deleteFileAbsolute(unix_path) catch {};
+					break :blk try net.Address.initUnix(unix_path);
+				} else {
+					const listen_port = config.port.?;
+					const listen_address = config.address.?;
+					break :blk try net.Address.parseIp(listen_address, listen_port);
+				}
+			};
+
+			const socket = blk: {
+				const sock_flags = os.SOCK.STREAM | os.SOCK.CLOEXEC | os.SOCK.NONBLOCK;
+				const proto = if (address.any.family == os.AF.UNIX) @as(u32, 0) else os.IPPROTO.TCP;
+				break :blk try os.socket(address.any.family, sock_flags, proto);
+			};
+
+			if (no_delay) {
+				// TODO: Broken on darwin:
+				// https://github.com/ziglang/zig/issues/17260
+				// if (@hasDecl(os.TCP, "NODELAY")) {
+				//  try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, os.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
+				// }
+				try os.setsockopt(socket, os.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
+			}
+
+			if (@hasDecl(os.SO, "REUSEPORT_LB")) {
+				try os.setsockopt(socket, os.SOL.SOCKET, os.SO.REUSEPORT_LB, &std.mem.toBytes(@as(c_int, 1)));
+			} else if (@hasDecl(os.SO, "REUSEPORT")) {
+				try os.setsockopt(socket, os.SOL.SOCKET, os.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1)));
+			}
+
+			{
+				const socklen = address.getOsSockLen();
+				try os.bind(socket, &address.any, socklen);
+				try os.listen(socket, 1204); // kernel backlog
+			}
+			defer os.close(socket);
+
+			const allocator = self.allocator;
+			const signal = try os.pipe();
+
+			const worker_count = config.workers.count orelse 2;
+			const workers = try allocator.alloc(Worker, worker_count);
+			const threads = try allocator.alloc(Thread, worker_count);
+
+			var started: usize = 0;
+
+			defer {
+				// should cause the workers to unblock
+				os.close(signal[1]);
+
+				for (0..started) |i| {
+					threads[i].join();
+					workers[i].deinit();
+				}
+				allocator.free(workers);
+				allocator.free(threads);
+			}
+
+			for (0..workers.len) |i| {
+				workers[i] = try Worker.init(allocator, self, &config);
+				threads[i] = try Thread.spawn(.{}, Worker.run, .{&workers[i], socket, signal[0]});
+				started += 1;
+			}
+
+			// is this really the best way?
+			var mutex = Thread.Mutex{};
+			mutex.lock();
+			self._cond.wait(&mutex);
+			mutex.unlock();
 		}
 
 		pub fn listenInNewThread(self: *Self) !std.Thread {
 			return try std.Thread.spawn(.{}, listen, .{self});
+		}
+
+		pub fn stop(self: *Self) void {
+			self._cond.signal();
 		}
 
 		pub fn notFound(self: *Self, nfa: Action(G)) void {
@@ -288,17 +368,23 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 			return error.CannotDispatch;
 		}
 
-		pub fn handle(self: Self, req: *Request, res: *Response) bool {
+		pub const HandleResult = enum {
+			close,
+			write_and_close,
+			write_and_keepalive,
+		};
+
+		pub fn handle(self: Self, req: *Request, res: *Response) HandleResult {
 			const dispatchable_action = self._router.route(req.method, req.url.path, &req.params);
 			self.dispatch(dispatchable_action, req, res) catch |err| switch (err) {
+				error.BrokenPipe, error.ConnectionResetByPeer, error.Unexpected => {
+					// TODO: maybe allow the user to set a different errorHandler for these sort of conditions
+					return .close;
+				},
 				error.BodyTooBig => {
 					res.status = 431;
 					res.body = "Request body is too big";
-					res.write() catch return false;
-				},
-				error.BrokenPipe, error.ConnectionResetByPeer, error.Unexpected => {
-					// TODO: maybe allow the user to set a different errorHandler for these sort of conditions
-					return false;
+					return .write_and_close;
 				},
 				else => {
 					if (comptime G == void) {
@@ -309,8 +395,11 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 					}
 				}
 			};
-			res.write() catch return false;
-			return req.canKeepAlive();
+
+			if (!req.canKeepAlive()) {
+				return .write_and_close;
+			}
+			return .write_and_keepalive;
 		}
 
 		inline fn dispatch(self: Self, dispatchable_action: ?DispatchableAction(G, R), req: *Request, res: *Response) !void {
@@ -353,209 +442,197 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 }
 
 const t = @import("t.zig");
+var la = std.heap.GeneralPurposeAllocator(.{}){};
+
+var default_server: *ServerCtx(void, void) = undefined;
+var context_server: *ServerCtx(u32, u32) = undefined;
+var cors_server: *ServerCtx(u32, u32) = undefined;
+
 test {
+	// this will leak since the server will run until the process exits. If we use
+	// our testing allocator, it'll report the leak.
+	const leaking_allocator = la.allocator();
+	{
+		default_server = try leaking_allocator.create(ServerCtx(void, void));
+		default_server.* = try Server().init(leaking_allocator, .{.port = 5992});
+		var router = default_server.router();
+		router.get("/test/json", testJsonRes);
+		router.get("/test/query", testReqQuery);
+		router.get("/test/stream", testEventStream);
+		router.allC("/test/dispatcher", testDispatcherAction, .{.dispatcher = testDispatcher1});
+		var thread = try default_server.listenInNewThread();
+		thread.detach();
+	}
+
+	{
+		context_server = try leaking_allocator.create(ServerCtx(u32, u32));
+		context_server.* = try ServerCtx(u32, u32).init(leaking_allocator, .{.port = 5993}, 3);
+		context_server.notFound(testNotFound);
+		var router = context_server.router();
+		router.get("/", ctxEchoAction);
+		router.get("/fail", testFail);
+		router.post("/login", ctxEchoAction);
+		router.get("/test/body/cl", testCLBody);
+		router.get("/test/headers", testHeaders);
+		router.all("/api/:version/users/:UserId", testParams);
+
+		var admin_routes = router.group("/admin/", .{.dispatcher = ctxTestDispatcher2, .ctx = 99});
+		admin_routes.get("/users", ctxEchoAction);
+		admin_routes.put("/users/:id", ctxEchoAction);
+
+		var debug_routes = router.group("/debug", .{.dispatcher = ctxTestDispatcher3, .ctx = 20});
+		debug_routes.head("/ping", ctxEchoAction);
+		debug_routes.options("/stats", ctxEchoAction);
+
+		var thread = try context_server.listenInNewThread();
+		thread.detach();
+	}
+
+	{
+		cors_server = try leaking_allocator.create(ServerCtx(u32, u32));
+		cors_server.* = try ServerCtx(u32, u32).init(leaking_allocator, .{
+			.port = 5994,
+			.cors = .{
+				.origin = "httpz.local",
+				.headers = "content-type",
+				.methods = "GET,POST",
+				.max_age = "300"
+			},
+		}, 100);
+		var router = cors_server.router();
+		router.all("/echo", ctxEchoAction);
+		var thread = try cors_server.listenInNewThread();
+		thread.detach();
+	}
+
 	std.testing.refAllDecls(@This());
 }
 
-test "httpz: invalid request (not enough data, assume closed)" {
-	var stream = t.Stream.init();
-	defer stream.deinit();
-	_ = stream.add("GET / HTTP/1.1\r");
-
-	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
-	defer srv.deinit();
-	testRequest(u32, &srv, stream);
-
-	try t.expectEqual(true, stream.closed);
-	try t.expectEqual(@as(usize, 0), stream.received.items.len);
-}
-
 test "httpz: invalid request" {
-	var stream = t.Stream.init();
-	defer stream.deinit();
-	_ = stream.add("TEA / HTTP/1.1\r\n\r\n");
+	const stream = testStream(5992);
+	defer stream.close();
+	try stream.writeAll("TEA / HTTP/1.1\r\n\r\n");
 
-	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
-	defer srv.deinit();
-	testRequest(u32, &srv, stream);
-
-	try t.expectString("HTTP/1.1 400\r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received.items);
+	var buf: [100]u8 = undefined;
+	try t.expectString("HTTP/1.1 400\r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
 }
 
 test "httpz: no route" {
-	var stream = t.Stream.init();
-	defer stream.deinit();
-	_ = stream.add("GET / HTTP/1.1\r\n\r\n");
+	const stream = testStream(5992);
+	defer stream.close();
+	try stream.writeAll("GET / HTTP/1.1\r\n\r\n");
 
-	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
-	defer srv.deinit();
-	testRequest(u32, &srv, stream);
-
-	try t.expectString("HTTP/1.1 404\r\nContent-Length: 9\r\n\r\nNot Found", stream.received.items);
+	var buf: [100]u8 = undefined;
+	try t.expectString("HTTP/1.1 404\r\nContent-Length: 9\r\n\r\nNot Found", testReadAll(stream, &buf));
 }
 
 test "httpz: no route with custom notFound handler" {
-	var stream = t.Stream.init();
-	defer stream.deinit();
-	_ = stream.add("GET / HTTP/1.1\r\n\r\n");
+	const stream = testStream(5993);
+	defer stream.close();
+	try stream.writeAll("GET /not_found HTTP/1.1\r\n\r\n");
 
-	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 3) catch unreachable;
-	defer srv.deinit();
-	srv.notFound(testNotFound);
-	testRequest(u32, &srv, stream);
-
-	try t.expectString("HTTP/1.1 404\r\nCtx: 3\r\nContent-Length: 10\r\n\r\nwhere lah?", stream.received.items);
+	var buf: [100]u8 = undefined;
+	try t.expectString("HTTP/1.1 404\r\nCtx: 3\r\nContent-Length: 10\r\n\r\nwhere lah?", testReadAll(stream, &buf));
 }
 
 test "httpz: unhandled exception" {
 	std.testing.log_level = .err;
 	defer std.testing.log_level = .warn;
 
-	var stream = t.Stream.init();
-	defer stream.deinit();
-	_ = stream.add("GET /fail HTTP/1.1\r\n\r\n");
+	const stream = testStream(5993);
+	defer stream.close();
+	try stream.writeAll("GET /fail HTTP/1.1\r\n\r\n");
 
-	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 5) catch unreachable;
-	defer srv.deinit();
-	srv.router().get("/fail", testFail);
-	testRequest(u32, &srv, stream);
-
-	try t.expectString("HTTP/1.1 500\r\nContent-Length: 21\r\n\r\nInternal Server Error", stream.received.items);
+	var buf: [100]u8 = undefined;
+	try t.expectString("HTTP/1.1 500\r\nContent-Length: 21\r\n\r\nInternal Server Error", testReadAll(stream, &buf));
 }
 
 test "httpz: unhandled exception with custom error handler" {
+	// should not be done like this, server isn't thread safe and shouldn't
+	// be changed once listening, but greatly simplifies our testing.
+	context_server.errorHandler(testErrorHandler);
+
 	std.testing.log_level = .err;
 	defer std.testing.log_level = .warn;
 
-	var stream = t.Stream.init();
-	defer stream.deinit();
-	_ = stream.add("GET /fail HTTP/1.1\r\n\r\n");
+	const stream = testStream(5993);
+	defer stream.close();
+	try stream.writeAll("GET /fail HTTP/1.1\r\n\r\n");
 
-	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 4) catch unreachable;
-	defer srv.deinit();
-	srv.errorHandler(testErrorHandler);
-	srv.router().get("/fail", testFail);
-	testRequest(u32, &srv, stream);
-
-	try t.expectString("HTTP/1.1 500\r\nCtx: 4\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", stream.received.items);
+	var buf: [100]u8 = undefined;
+	try t.expectString("HTTP/1.1 500\r\nCtx: 3\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", testReadAll(stream, &buf));
 }
 
 test "httpz: route params" {
-	var stream = t.Stream.init();
-	defer stream.deinit();
-	_ = stream.add("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
+	const stream = testStream(5993);
+	defer stream.close();
+	try stream.writeAll("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
 
-	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
-	defer srv.deinit();
-	srv.router().all("/api/:version/users/:UserId", testParams);
-	testRequest(u32, &srv, stream);
-
-	try t.expectString("HTTP/1.1 200\r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", stream.received.items);
+	var buf: [100]u8 = undefined;
+	try t.expectString("HTTP/1.1 200\r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", testReadAll(stream, &buf));
 }
 
 test "httpz: request and response headers" {
-	var stream = t.Stream.init();
-	defer stream.deinit();
-	_ = stream.add("GET /test/headers HTTP/1.1\r\nHeader-Name: Header-Value\r\n\r\n");
+	const stream = testStream(5993);
+	defer stream.close();
+	try stream.writeAll("GET /test/headers HTTP/1.1\r\nHeader-Name: Header-Value\r\n\r\n");
 
-	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 88) catch unreachable;
-	defer srv.deinit();
-	srv.router().get("/test/headers", testHeaders);
-	testRequest(u32, &srv, stream);
-
-	try t.expectString("HTTP/1.1 200\r\nCtx: 88\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", stream.received.items);
+	var buf: [100]u8 = undefined;
+	try t.expectString("HTTP/1.1 200\r\nCtx: 3\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", testReadAll(stream, &buf));
 }
 
 test "httpz: content-length body" {
-	var stream = t.Stream.init();
-	defer stream.deinit();
-	_ = stream.add("GET /test/body/cl HTTP/1.1\r\nHeader-Name: Header-Value\r\nContent-Length: 4\r\n\r\nabcz");
+	const stream = testStream(5993);
+	defer stream.close();
+	try stream.writeAll("GET /test/body/cl HTTP/1.1\r\nHeader-Name: Header-Value\r\nContent-Length: 4\r\n\r\nabcz");
 
-	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
-	defer srv.deinit();
-	srv.router().get("/test/body/cl", testCLBody);
-	testRequest(u32, &srv, stream);
-
-	try t.expectString("HTTP/1.1 200\r\nEcho-Body: abcz\r\nContent-Length: 0\r\n\r\n", stream.received.items);
+	var buf: [100]u8 = undefined;
+	try t.expectString("HTTP/1.1 200\r\nEcho-Body: abcz\r\nContent-Length: 0\r\n\r\n", testReadAll(stream, &buf));
 }
 
 test "httpz: json response" {
-	var stream = t.Stream.init();
-	defer stream.deinit();
-	_ = stream.add("GET /test/json HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+	const stream = testStream(5992);
+	defer stream.close();
+	try stream.writeAll("GET /test/json HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
-	var srv = Server().init(t.allocator, .{}) catch unreachable;
-	defer srv.deinit();
-	srv.router().get("/test/json", testJsonRes);
-	testRequest(void, &srv, stream);
-
-	try t.expectString("HTTP/1.1 201\r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", stream.received.items);
+	var buf: [100]u8 = undefined;
+	try t.expectString("HTTP/1.1 201\r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", testReadAll(stream, &buf));
 }
 
 test "httpz: query" {
-	var stream = t.Stream.init();
-	defer stream.deinit();
-	_ = stream.add("GET /test/query?fav=keemun%20te%61%21 HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+	const stream = testStream(5992);
+	defer stream.close();
+	try stream.writeAll("GET /test/query?fav=keemun%20te%61%21 HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
-	var srv = Server().init(t.allocator, .{}) catch unreachable;
-	defer srv.deinit();
-	srv.router().get("/test/query", testReqQuery);
-	testRequest(void, &srv, stream);
-
-	try t.expectString("HTTP/1.1 200\r\nContent-Length: 11\r\n\r\nkeemun tea!", stream.received.items);
+	var buf: [100]u8 = undefined;
+	try t.expectString("HTTP/1.1 200\r\nContent-Length: 11\r\n\r\nkeemun tea!", testReadAll(stream, &buf));
 }
 
 test "httpz: custom dispatcher" {
-	var stream = t.Stream.init();
-	defer stream.deinit();
+	const stream = testStream(5992);
+	defer stream.close();
+	try stream.writeAll("HEAD /test/dispatcher HTTP/1.1\r\n\r\n");
 
-	var srv = Server().init(t.allocator, .{}) catch unreachable;
-	defer srv.deinit();
-	var router = srv.router();
-	router.allC("/test/dispatcher", testDispatcherAction, .{.dispatcher = testDispatcher1});
-
-	_ = stream.add("HEAD /test/dispatcher HTTP/1.1\r\n\r\n");
-	testRequest(void, &srv, stream);
-	try t.expectString("HTTP/1.1 200\r\ndispatcher: test-dispatcher-1\r\nContent-Length: 6\r\n\r\naction", stream.received.items);
+	var buf: [100]u8 = undefined;
+	try t.expectString("HTTP/1.1 200\r\ndispatcher: test-dispatcher-1\r\nContent-Length: 6\r\n\r\naction", testReadAll(stream, &buf));
 }
 
 test "httpz: router groups" {
-	var srv = ServerCtx(i32, i32).init(t.allocator, .{}, 33) catch unreachable;
-	defer srv.deinit();
-
-	var router = srv.router();
-	router.get("/", ctxEchoAction);
-
-	var admin_routes = router.group("/admin/", .{.dispatcher = ctxTestDispatcher2, .ctx = 99});
-	admin_routes.get("/users", ctxEchoAction);
-	admin_routes.put("/users/:id", ctxEchoAction);
-
-	var debug_routes = router.group("/debug", .{.dispatcher = ctxTestDispatcher3, .ctx = 20});
-	debug_routes.head("/ping", ctxEchoAction);
-	debug_routes.options("/stats", ctxEchoAction);
-
-	router.post("/login", ctxEchoAction);
+	const stream = testStream(5993);
+	defer stream.close();
 
 	{
-		var stream = t.Stream.init();
-		defer stream.deinit();
-		_ = stream.add("GET / HTTP/1.1\r\n\r\n");
-
-		testRequest(i32, &srv, stream);
-		var res = try testing.parse(stream.received.items);
+		try stream.writeAll("GET / HTTP/1.1\r\n\r\n");
+		var res = testReadParsed(stream);
 		defer res.deinit();
 
-		try res.expectJson(.{.ctx = 33, .method = "GET", .path = "/"});
+		try res.expectJson(.{.ctx = 3, .method = "GET", .path = "/"});
 		try t.expectEqual(true, res.headers.get("dispatcher") == null);
 	}
 
 	{
-		var stream = t.Stream.init();
-		defer stream.deinit();
-		_ = stream.add("GET /admin/users HTTP/1.1\r\n\r\n");
-
-		testRequest(i32, &srv, stream);
-		var res = try testing.parse(stream.received.items);
+		try stream.writeAll("GET /admin/users HTTP/1.1\r\n\r\n");
+		var res = testReadParsed(stream);
 		defer res.deinit();
 
 		try res.expectJson(.{.ctx = 99, .method = "GET", .path = "/admin/users"});
@@ -563,12 +640,8 @@ test "httpz: router groups" {
 	}
 
 	{
-		var stream = t.Stream.init();
-		defer stream.deinit();
-		_ = stream.add("PUT /admin/users/:id HTTP/1.1\r\n\r\n");
-
-		testRequest(i32, &srv, stream);
-		var res = try testing.parse(stream.received.items);
+		try stream.writeAll("PUT /admin/users/:id HTTP/1.1\r\n\r\n");
+		var res = testReadParsed(stream);
 		defer res.deinit();
 
 		try res.expectJson(.{.ctx = 99, .method = "PUT", .path = "/admin/users/:id"});
@@ -576,12 +649,8 @@ test "httpz: router groups" {
 	}
 
 	{
-		var stream = t.Stream.init();
-		defer stream.deinit();
-		_ = stream.add("HEAD /debug/ping HTTP/1.1\r\n\r\n");
-
-		testRequest(i32, &srv, stream);
-		var res = try testing.parse(stream.received.items);
+		try stream.writeAll("HEAD /debug/ping HTTP/1.1\r\n\r\n");
+		var res = testReadParsed(stream);
 		defer res.deinit();
 
 		try res.expectJson(.{.ctx = 20, .method = "HEAD", .path = "/debug/ping"});
@@ -589,12 +658,8 @@ test "httpz: router groups" {
 	}
 
 	{
-		var stream = t.Stream.init();
-		defer stream.deinit();
-		_ = stream.add("OPTIONS /debug/stats HTTP/1.1\r\n\r\n");
-
-		testRequest(i32, &srv, stream);
-		var res = try testing.parse(stream.received.items);
+		try stream.writeAll("OPTIONS /debug/stats HTTP/1.1\r\n\r\n");
+		var res = testReadParsed(stream);
 		defer res.deinit();
 
 		try res.expectJson(.{.ctx = 20, .method = "OPTIONS", .path = "/debug/stats"});
@@ -602,35 +667,22 @@ test "httpz: router groups" {
 	}
 
 	{
-		var stream = t.Stream.init();
-		defer stream.deinit();
-		_ = stream.add("POST /login HTTP/1.1\r\n\r\n");
-
-		testRequest(i32, &srv, stream);
-		var res = try testing.parse(stream.received.items);
+		try stream.writeAll("POST /login HTTP/1.1\r\n\r\n");
+		var res = testReadParsed(stream);
 		defer res.deinit();
 
-		try res.expectJson(.{.ctx = 33, .method = "POST", .path = "/login"});
+		try res.expectJson(.{.ctx = 3, .method = "POST", .path = "/login"});
 		try t.expectEqual(true, res.headers.get("dispatcher") == null);
 	}
 }
 
 test "httpz: CORS" {
-	var srv = Server().init(t.allocator, .{.cors = .{
-		.origin = "httpz.local",
-		.headers = "content-type",
-		.methods = "GET,POST",
-		.max_age = "300"
-	}}) catch unreachable;
-	defer srv.deinit();
+	const stream = testStream(5994);
+	defer stream.close();
 
 	{
-		var stream = t.Stream.init();
-		defer stream.deinit();
-		_ = stream.add("GET /debug/stats HTTP/1.1\r\n\r\n");
-
-		testRequest(void, &srv, stream);
-		var res = try testing.parse(stream.received.items);
+		try stream.writeAll("GET /echo HTTP/1.1\r\n\r\n");
+		var res = testReadParsed(stream);
 		defer res.deinit();
 		try t.expectEqual(true, res.headers.get("Access-Control-Max-Age") == null);
 		try t.expectEqual(true, res.headers.get("Access-Control-Allow-Methods") == null);
@@ -640,12 +692,8 @@ test "httpz: CORS" {
 
 	{
 		// non-cors options
-		var stream = t.Stream.init();
-		defer stream.deinit();
-		_ = stream.add("OPTIONS /debug/stats HTTP/1.1\r\nSec-Fetch-Mode: navigate\r\n\r\n");
-
-		testRequest(void, &srv, stream);
-		var res = try testing.parse(stream.received.items);
+		try stream.writeAll("OPTIONS /echo HTTP/1.1\r\nSec-Fetch-Mode: navigate\r\n\r\n");
+		var res = testReadParsed(stream);
 		defer res.deinit();
 
 		try t.expectEqual(true, res.headers.get("Access-Control-Max-Age") == null);
@@ -656,12 +704,8 @@ test "httpz: CORS" {
 
 	{
 		// cors request
-		var stream = t.Stream.init();
-		defer stream.deinit();
-		_ = stream.add("OPTIONS /debug/stats HTTP/1.1\r\nSec-Fetch-Mode: cors\r\n\r\n");
-
-		testRequest(void, &srv, stream);
-		var res = try testing.parse(stream.received.items);
+		try stream.writeAll("OPTIONS /no_route HTTP/1.1\r\nSec-Fetch-Mode: cors\r\n\r\n");
+		var res = testReadParsed(stream);
 		defer res.deinit();
 
 		try t.expectString("httpz.local", res.headers.get("Access-Control-Allow-Origin").?);
@@ -693,35 +737,19 @@ test "ContentType: forX" {
 }
 
 test "httpz: event stream" {
-var stream = t.Stream.init();
-	defer stream.deinit();
-	_ = stream.add("GET /test/stream HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+	const stream = testStream(5992);
+	defer stream.close();
+	try stream.writeAll("GET /test/stream HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
-	var srv = Server().init(t.allocator, .{}) catch unreachable;
-	defer srv.deinit();
-	srv.router().get("/test/stream", testEventStream);
-	testRequest(void, &srv, stream);
-
-	var res = try testing.parse(stream.received.items);
+	var res = testReadParsed(stream);
 	defer res.deinit();
 
-	try t.expectEqual(@as(u16, 818), res.status);
+	try t.expectEqual(818, res.status);
 	try t.expectEqual(true, res.headers.get("Content-Length") == null);
 	try t.expectString("text/event-stream", res.headers.get("Content-Type").?);
 	try t.expectString("no-cache", res.headers.get("Cache-Control").?);
 	try t.expectString("keep-alive", res.headers.get("Connection").?);
 	try t.expectString("a message", res.body);
-}
-
-fn testRequest(comptime G: type, srv: *ServerCtx(G, G), stream: *t.Stream) void {
-	const config = Config{
-		.pool = .{.min = 2, .max = 2},
-		.request = .{.buffer_size = 4096},
-		.response = .{.body_buffer_size = 4096},
-	};
-	var reqResPool = listener.initReqResPool(t.allocator, t.allocator, &config) catch unreachable;
-	defer reqResPool.deinit();
-	listener.handleConnection(*ServerCtx(G, G), srv, stream, &reqResPool);
 }
 
 fn testFail(_: u32, _: *Request, _: *Response) !void {
@@ -730,8 +758,7 @@ fn testFail(_: u32, _: *Request, _: *Response) !void {
 
 fn testParams(_: u32, req: *Request, res: *Response) !void {
 	const args = .{req.param("version").?, req.param("UserId").?};
-	const out = try std.fmt.allocPrint(req.arena, "version={s},user={s}", args);
-	res.body = out;
+	res.body =  try std.fmt.allocPrint(req.arena, "version={s},user={s}", args);
 }
 
 fn testHeaders(ctx: u32, req: *Request, res: *Response) !void {
@@ -741,8 +768,7 @@ fn testHeaders(ctx: u32, req: *Request, res: *Response) !void {
 }
 
 fn testCLBody(_: u32, req: *Request, res: *Response) !void {
-	const body = try req.body();
-	res.header("Echo-Body", body.?);
+	res.header("Echo-Body", req.body().?);
 }
 
 fn testJsonRes(_: *Request, res: *Response) !void {
@@ -788,20 +814,55 @@ fn testDispatcher1(action: Action(void), req: *Request, res: *Response) !void {
 	return action(req, res);
 }
 
-fn ctxTestDispatcher2(ctx: i32, action: Action(i32), req: *Request, res: *Response) !void {
+fn ctxTestDispatcher2(ctx: u32, action: Action(u32), req: *Request, res: *Response) !void {
 	res.header("dispatcher", "test-dispatcher-2");
 	return action(ctx, req, res);
 }
 
-fn ctxTestDispatcher3(ctx: i32, action: Action(i32), req: *Request, res: *Response) !void {
+fn ctxTestDispatcher3(ctx: u32, action: Action(u32), req: *Request, res: *Response) !void {
 	res.header("dispatcher", "test-dispatcher-3");
 	return action(ctx, req, res);
 }
 
-fn ctxEchoAction(ctx: i32, req: *Request, res: *Response) !void {
+fn ctxEchoAction(ctx: u32, req: *Request, res: *Response) !void {
 	return res.json(.{
 		.ctx = ctx,
 		.method = @tagName(req.method),
 		.path = req.url.path,
 	}, .{});
+}
+
+fn testStream(port: u16) std.net.Stream {
+	const timeout = std.mem.toBytes(std.os.timeval{
+		.tv_sec = 0,
+		.tv_usec = 20_000,
+	});
+
+	const stream = std.net.tcpConnectToHost(t.allocator, "127.0.0.1", port) catch unreachable;
+	std.os.setsockopt(stream.handle, std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &timeout) catch unreachable;
+	std.os.setsockopt(stream.handle, std.os.SOL.SOCKET, std.os.SO.SNDTIMEO, &timeout) catch unreachable;
+	return stream;
+}
+
+fn testReadAll(stream: std.net.Stream, buf: []u8) []u8 {
+	var pos: usize = 0;
+	while (true) {
+		std.debug.assert(pos < buf.len);
+		const n = stream.read(buf[pos..]) catch |err| switch (err) {
+			error.WouldBlock => return buf[0..pos],
+			else => @panic(@errorName(err)),
+		};
+
+		if (n == 0) {
+			return buf[0..pos];
+		}
+		pos += n;
+	}
+	unreachable;
+}
+
+fn testReadParsed(stream: std.net.Stream) testing.Testing.Response {
+	var buf: [1024]u8 = undefined;
+	const data = testReadAll(stream, &buf);
+	return testing.parse(data) catch unreachable;
 }

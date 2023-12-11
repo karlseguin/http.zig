@@ -3,22 +3,23 @@
 // httpz.Request and httpz.Response, checkout testing.zig
 // which is exposed as httpz.testing.
 const std = @import("std");
+const httpz = @import("httpz.zig");
 
-const mem = std.mem;
-const ArrayList = std.ArrayList;
+const Conn = @import("worker.zig").Conn;
+const BufferPool = @import("buffer.zig").Pool;
 
-pub const expect = std.testing.expect;
-pub const allocator = std.testing.allocator;
+pub fn expectEqual(expected: anytype, actual: anytype) !void {
+	try std.testing.expectEqual(@as(@TypeOf(actual), expected), actual);
+}
 
-pub const expectEqual = std.testing.expectEqual;
 pub const expectError = std.testing.expectError;
 pub const expectString = std.testing.expectEqualStrings;
 
-pub var aa = std.heap.ArenaAllocator.init(allocator);
-pub const arena = aa.allocator();
+pub const allocator = std.testing.allocator;
+pub var arena = std.heap.ArenaAllocator.init(allocator);
 
 pub fn reset() void {
-	_ = aa.reset(.free_all);
+	_ = arena.reset(.free_all);
 }
 
 pub fn getRandom() std.rand.DefaultPrng {
@@ -27,92 +28,161 @@ pub fn getRandom() std.rand.DefaultPrng {
 	return std.rand.DefaultPrng.init(seed);
 }
 
-pub const Stream = struct {
-	closed: bool,
-	read_index: usize,
-	address: std.net.Address,
-	to_read: ArrayList(u8),
-	random: ?std.rand.DefaultPrng,
-	received: ArrayList(u8),
+pub const Context = struct {
+	// the stream that the server gets
+	stream: std.net.Stream,
 
-	const Self = @This();
+	// the client (e.g. browser stream)
+	client: std.net.Stream,
 
-	pub fn init() *Stream {
-		return initWithAllocator(allocator);
-	}
+	closed: bool = false,
 
-	pub fn initWithAllocator(a: std.mem.Allocator) *Stream {
-		var s = a.create(Stream) catch unreachable;
-		s.closed = false;
-		s.read_index = 0;
-		s.random = getRandom();
-		s.to_read = ArrayList(u8).init(a);
-		s.received = ArrayList(u8).init(a);
-		return s;
-	}
+	conn: *Conn,
 
-	pub fn deinit(self: *Self) void {
-		self.to_read.deinit();
-		self.received.deinit();
-		allocator.destroy(self);
-	}
+	arena: *std.heap.ArenaAllocator,
 
-	pub fn reset(self: *Self) void {
-		self.to_read.clearRetainingCapacity();
-		self.received.clearRetainingCapacity();
-	}
-
-	pub fn add(self: *Self, value: []const u8) *Self {
-		self.to_read.appendSlice(value) catch unreachable;
-		return self;
-	}
-
-	pub fn read(self: *Self, buf: []u8) !usize {
-		std.debug.assert(!self.closed);
-
-		const read_index = self.read_index;
-		const items = self.to_read.items;
-
-		if (read_index == items.len) {
-			return 0;
-		}
-		if (buf.len == 0) {
-			return 0;
+	pub fn allocInit(ctx_allocator: std.mem.Allocator, config_: httpz.Config) Context {
+		var pair: [2]c_int = undefined;
+		const rc = std.c.socketpair(std.os.AF.LOCAL, std.os.SOCK.STREAM, 0, &pair);
+		if (rc != 0) {
+			@panic("socketpair fail");
 		}
 
-		// let's fragment this message
-		const left_to_read = items.len - read_index;
-		const max_can_read = if (buf.len < left_to_read) buf.len else left_to_read;
+		{
+			const timeout = std.mem.toBytes(std.os.timeval{
+				.tv_sec = 0,
+				.tv_usec = 20_000,
+			});
+			std.os.setsockopt(pair[0], std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &timeout) catch unreachable;
+			std.os.setsockopt(pair[0], std.os.SOL.SOCKET, std.os.SO.SNDTIMEO, &timeout) catch unreachable;
+			std.os.setsockopt(pair[1], std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &timeout) catch unreachable;
+			std.os.setsockopt(pair[1], std.os.SOL.SOCKET, std.os.SO.SNDTIMEO, &timeout) catch unreachable;
 
-		var to_read = max_can_read;
-		if (self.random) |*r| {
-			const random = r.random();
-			to_read = random.uintAtMost(usize, max_can_read - 1) + 1;
+			// for request.fuzz, which does up to an 8K write. Not sure why this has
+			// to be so much more but on linux, even a 10K SNDBUF results in WOULD_BLOCK.
+			std.os.setsockopt(pair[1], std.os.SOL.SOCKET, std.os.SO.SNDBUF, &std.mem.toBytes(@as(c_int, 20_000))) catch unreachable;
 		}
 
-		var data = items[read_index..(read_index+to_read)];
-		if (data.len > buf.len) {
-			// we have more data than we have space in buf (our target)
-			// we'll give it when it can take
-			data = data[0..buf.len];
-		}
-		self.read_index = read_index + data.len;
+		const server = std.net.Stream{.handle = pair[0]};
+		const client = std.net.Stream{.handle = pair[1]};
 
-		// std.debug.print("TEST: {d} {d} {d}\n", .{data.len, read_index, max_can_read});
-		for (data, 0..) |b, i| {
-			buf[i] = b;
+		var ctx_arena = ctx_allocator.create(std.heap.ArenaAllocator) catch unreachable;
+		ctx_arena.* = std.heap.ArenaAllocator.init(ctx_allocator);
+		const aa = ctx_arena.allocator();
+
+
+		const bp = aa.create(BufferPool) catch unreachable;
+		bp.* = BufferPool.init(aa, 2, 256) catch unreachable;
+
+		var config = config_;
+		{
+			// Various parts of the code using pretty generous defaults. For tests
+			// we can use more conservative values.
+			const cw = config.workers;
+			if (cw.count == null) config.workers.count = 2;
+			if (cw.max_conn == null) config.workers.max_conn = 2;
+			if (cw.min_conn == null) config.workers.min_conn = 1;
+			if (cw.large_buffer_count == null) config.workers.large_buffer_count = 1;
+			if (cw.large_buffer_size == null) config.workers.large_buffer_size = 256;
 		}
 
-		return data.len;
+			// a bit over the top..we could use ctx_arena here, but this better mimics
+		// the actual code where the conn has a distinct arena (whereas ctx_arena is
+		// something specific to this test context)
+		const conn_arena = aa.create(std.heap.ArenaAllocator) catch unreachable;
+		conn_arena.* = std.heap.ArenaAllocator.init(aa);
+
+		const req_state = httpz.Request.State.init(aa, conn_arena, bp, &config.request) catch unreachable;
+		const res_state = httpz.Response.State.init(aa, conn_arena, bp, &config.response) catch unreachable;
+
+		const conn = aa.create(Conn) catch unreachable;
+		conn.* = .{
+			.state = .active,
+			.stream = server,
+			.address = std.net.Address.initIp4([_]u8{127, 0, 0, 200}, 0),
+			.req_state = req_state,
+			.res_state = res_state,
+			.next = null,
+			.prev = null,
+			.timeout = 0,
+			.request_count = 0,
+			.close = false,
+			.io_mode = .nonblocking,
+			.poll_mode = .read,
+			.socket_flags = 0,
+			.arena = conn_arena,
+		};
+
+		return .{
+			.conn = conn,
+			.arena = ctx_arena,
+			.stream = server,
+			.client = client,
+		};
 	}
 
-	// store messages that are written to the stream
-	pub fn writeAll(self: *Self, data: []const u8) !void {
-		self.received.appendSlice(data) catch unreachable;
+	pub fn init(config: httpz.Config) Context {
+		return allocInit(allocator, config);
 	}
 
-	pub fn close(self: *Self) void {
-		self.closed = true;
+	pub fn deinit(self: *Context) void {
+		if (self.closed == false) {
+			self.closed = true;
+			self.stream.close();
+		}
+		self.client.close();
+
+		const ctx_allocator = arena.child_allocator;
+		self.arena.deinit();
+		ctx_allocator.destroy(self.arena);
+	}
+
+	// force the server side socket to be closed, which helps our reading-test
+	// know that there's no more data.
+	pub fn close(self: *Context) void {
+		if (self.closed == false) {
+			self.closed = true;
+			self.stream.close();
+		}
+	}
+
+	pub fn write(self: Context, data: []const u8) void {
+		self.client.writeAll(data) catch unreachable;
+	}
+
+	pub fn read(self: Context, a: std.mem.Allocator) !std.ArrayList(u8) {
+		var buf: [1024]u8 = undefined;
+		var arr = std.ArrayList(u8).init(a);
+
+		while (true) {
+			const n = self.client.read(&buf) catch |err| switch (err) {
+				error.WouldBlock => return arr,
+				else => return err,
+			};
+			if (n == 0) return arr;
+			try arr.appendSlice(buf[0..n]);
+		}
+		unreachable;
+	}
+
+	pub fn expect(self: Context, expected: []const u8) !void {
+		var pos: usize = 0;
+		var buf = try allocator.alloc(u8, expected.len);
+		defer allocator.free(buf);
+		while (pos < buf.len) {
+			const n = try self.client.read(buf[pos..]);
+			if (n == 0) break;
+			pos += n;
+		}
+		try expectString(expected, buf);
+	}
+
+	pub fn request(self: Context) httpz.Request {
+		return httpz.Request.init(self.conn.arena.allocator(), self.conn);
+	}
+
+	pub fn response(self: Context) httpz.Response {
+		return httpz.Response.init(self.conn.arena.allocator(), self.conn);
 	}
 };
 
