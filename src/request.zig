@@ -499,7 +499,7 @@ pub const State = struct {
 		if (missing < spare) {
 			// we don't have the [full] body, but we have enough space in our static
 			// buffer for it
-			self.body = .{.type = .static, .data = buf[pos..len]};
+			self.body = .{.type = .static, .data = buf[pos..pos+cl]};
 			self.pos = len;
 		} else {
 			// We don't have the [full] body, and our static buffer is too small
