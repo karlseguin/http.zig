@@ -49,7 +49,7 @@ pub fn Worker(comptime S: type) type {
 		const Loop = switch (builtin.os.tag) {
 			.macos, .ios, .tvos, .watchos, .freebsd, .netbsd, .dragonfly, .openbsd => KQueue,
 			.linux => EPoll,
-			else => @compileError("not supported"),
+			else => @compileError("This branch requires access to kqueue or epoll. Consider using the \"blocking\" branch instead."),
 		};
 
 		pub fn init(allocator: Allocator, server: S, config: *const Config) !Self {
