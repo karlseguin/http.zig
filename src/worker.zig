@@ -96,7 +96,6 @@ pub fn Worker(comptime S: type) type {
 					std.time.sleep(std.time.ns_per_s);
 					continue;
 				};
-				// const now = std.time.microTimestamp();
 
 				while (it.next()) |data| {
 					if (data == 0) {
@@ -139,15 +138,14 @@ pub fn Worker(comptime S: type) type {
 
 			const done = conn.req_state.parse(stream) catch |err| {
 				switch (err) {
-					error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
-						// todo: write event loop
-						stream.writeAll(errorResponse(400, "Invalid Request")) catch {};
-					},
-					error.HeaderTooBig => {
-						// todo: write event loop
-						stream.writeAll(errorResponse(431, "Request header is too big")) catch {};
-					},
-					else => {}
+					error.HeaderTooBig => self.writeError(conn, 431, "Request header is too big"),
+					error.UnknownMethod,
+					error.InvalidRequestTarget,
+					error.UnknownProtocol,
+					error.UnsupportedProtocol,
+					error.InvalidHeaderLine => self.writeError(conn, 400, "Invalid Request"),
+					error.ConnectionClosed => {},
+					else => log.err("Unknown read/parse error: {}", .{err}),
 				}
 				return .close;
 			};
@@ -158,7 +156,6 @@ pub fn Worker(comptime S: type) type {
 			}
 
 			const aa = conn.arena.allocator();
-			const res_state = &conn.res_state;
 
 			var req = Request.init(aa, conn);
 			var res = Response.init(aa, conn);
@@ -177,7 +174,10 @@ pub fn Worker(comptime S: type) type {
 				return if (conn.close) .close else .keepalive;
 			}
 
-			res_state.prepareForWrite(&res) catch return .close;
+			conn.res_state.prepareForWrite(&res) catch |err| {
+				log.err("Failed to prepare response for writing: {}", .{err});
+				return .close;
+			};
 			return self.write(conn) catch .close;
 		}
 
@@ -287,15 +287,23 @@ pub fn Worker(comptime S: type) type {
 				len += 1;
 			}
 		}
+
+		fn writeError(self: *Self, conn: *Conn, status: u16, msg: []const u8) void {
+			const aa = conn.arena.allocator();
+			var res = Response.init(aa, conn);
+			res.status = status;
+			res.body = msg;
+			res.keepalive = false;
+
+			conn.res_state.prepareForWrite(&res) catch |err| {
+				log.err("Failed to prepare error response for writing: {}", .{err});
+				return;
+			};
+			_ = self.write(conn) catch {};
+		}
 	};
 }
 
-fn errorResponse(comptime status: u16, comptime body: []const u8) []const u8 {
-	return std.fmt.comptimePrint(
-		"HTTP/1.1 {d}\r\nConnection: Close\r\nContent-Length: {d}\r\n\r\n{s}",
-		.{status, body.len, body}
-	);
-}
 
 // Wraps a socket with a application-specific details, such as information needed
 // to manage the connection's lifecycle (e.g. timeouts). Conns are placed in a
