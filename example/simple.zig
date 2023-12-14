@@ -1,5 +1,6 @@
 const std = @import("std");
 const httpz = @import("httpz");
+const websocket = httpz.websocket;
 const Allocator = std.mem.Allocator;
 
 var index_file_contents: []u8 = undefined;

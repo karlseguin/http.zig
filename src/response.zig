@@ -42,6 +42,11 @@ pub const Response = struct {
 	// whether or not we've already written the response
 	written: bool,
 
+	// Indicates that http.zig no longer owns this socket connection. App can
+	// us this if it wants to take over ownership of the socket. We use it
+	// when upgrading the connection to websocket.
+	disowned: bool,
+
 	// when false, the Connection: Close header is sent. This should not be set
 	// directly, rather set req.keepalive = false.
 	keepalive: bool,
@@ -61,11 +66,17 @@ pub const Response = struct {
 			.conn = conn,
 			.status = 200,
 			.arena = arena,
+			.disowned = false,
 			.written = false,
 			.keepalive = true,
 			.content_type = null,
 			.headers = conn.res_state.headers,
 		};
+	}
+
+	pub fn disown(self: *Response) void {
+		self.written = true;
+		self.disowned = true;
 	}
 
 	pub fn json(self: *Response, value: anytype, options: std.json.StringifyOptions) !void {

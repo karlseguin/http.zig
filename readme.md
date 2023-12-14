@@ -620,7 +620,17 @@ try httpz.listen(allocator, &router, .{
 
         // Maximum number of a requests allowed on a single keepalive connection
         .request_count = null,
-    }
+    },
+    .websocket = .{
+        // refer to https://github.com/karlseguin/websocket.zig#config
+        max_size: usize = 65536,
+        buffer_size: usize = 4096,
+        handle_ping: bool = false,
+        handle_pong: bool = false,
+        handle_close: bool = false,
+        large_buffer_pool_count: u16 = 8,
+        large_buffer_size: usize = 32768,
+    },
 });
 ```
 
@@ -749,5 +759,60 @@ while (true) {
 }
 ```
 
-# websocket.zig
-I'm also working on a websocket server implementation for zig: [https://github.com/karlseguin/websocket.zig](https://github.com/karlseguin/websocket.zig).
+# Websocket
+http.zig integrates with [https://github.com/karlseguin/websocket.zig](https://github.com/karlseguin/websocket.zig). When `httpz.upgradeWebsocket` is called and succeeds, the provided `Handler` is initialized and the socket is handed over to the websocket read loop within a separate thread.
+
+When using websocket.zig standalone, your Handler's `init` function gets a 3rd parameter: a websocket.Handshake. With the http.zig integration, `init` does not get a handshake; you should validate the `*httpz.Request` before calling `upgradeWebsocket`.
+
+```zig
+const std = @import("std");
+const httpz = @import("httpz");
+cont websocket = httpz.websocket;
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    var server = try httpz.Server().init(allocator, .{.port = 5882});
+    var router = server.router();
+    // a normal route
+    router.get("/ws", ws);
+    try server.listen(); 
+}
+
+fn ws(req: *httpz.Request, res: *httpz.Response) !void {
+    if (try httpz.upgradeWebsocket(Handler, req, res, Context{}) == false) {
+        // this was not a valid websocket handshake request
+        // you should probably return with an error
+        res.status = 400;
+        res.body = "invalid websocket handshake";
+        return;
+    }
+    // when upgradeWebsocket succeeds, you can no longer use `res` 
+}
+
+// arbitrary data you want to pass into your Handler's `init` function
+const Context = struct {
+
+}
+
+// this is your websocket handle
+// it MUST have these 3 public functions
+const Handler = struct {
+    ctx: Context
+    conn: *websocket.Conn,
+    pub fn init(conn: *websocket.Conn, ctx: Context) !Handler {
+        return .{
+            .ctx = ctx,
+            .conn = conn,
+        };
+    }
+
+    pub fn handle(self: *Handler, message: websocket.Message) !void {
+        const data = message.data;
+        try self.conn.write(data); // echo the message back
+    }
+
+    pub fn close(_: *Handler) void {}
+}
+```

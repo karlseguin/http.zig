@@ -2,6 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const httpz = @import("httpz.zig");
+const websocket = httpz.websocket;
+
 const Config = httpz.Config;
 const Request = httpz.Request;
 const Response = httpz.Response;
@@ -52,11 +54,11 @@ pub fn Worker(comptime S: type) type {
 			else => @compileError("This branch requires access to kqueue or epoll. Consider using the \"blocking\" branch instead."),
 		};
 
-		pub fn init(allocator: Allocator, server: S, config: *const Config) !Self {
+		pub fn init(allocator: Allocator, server: S, ws: *websocket.Server, config: *const Config) !Self {
 			const loop = try Loop.init();
 			errdefer loop.deinit();
 
-			const manager = try Manager.init(allocator, config);
+			const manager = try Manager.init(allocator, ws, config);
 			errdefer manager.deinit();
 
 			return .{
@@ -122,6 +124,13 @@ pub fn Worker(comptime S: type) type {
 						.keepalive => manager.keepalive(conn),
 						.close => manager.close(conn),
 						.wait_for_socket => {},
+						.disown => {
+							if (self.loop.remove(conn.stream.handle)) {
+								manager.disown(conn);
+							} else |_| {
+								manager.close(conn);
+							}
+						},
 					}
 				}
 			}
@@ -129,6 +138,7 @@ pub fn Worker(comptime S: type) type {
 
 		const HandleResult = enum {
 			close,
+			disown,
 			keepalive,
 			wait_for_socket,
 		};
@@ -161,13 +171,17 @@ pub fn Worker(comptime S: type) type {
 			var res = Response.init(aa, conn);
 			const result = self.server.handle(&req, &res);
 
-			if (result == .close) {
-				return .close;
-			}
-
-			if (result == .write_and_close or conn.request_count == self.max_request_per_connection) {
-				conn.close = true;
-				res.keepalive = false;
+			switch (result) {
+				.write_and_keepalive =>	if (conn.request_count == self.max_request_per_connection) {
+					conn.close = true;
+					res.keepalive = false;
+				},
+				.write_and_close => {
+					conn.close = true;
+					res.keepalive = false;
+				},
+				.close => return .close,
+				.disown => return .disown,
 			}
 
 			if (res.written) {
@@ -275,7 +289,7 @@ pub fn Worker(comptime S: type) type {
 				errdefer os.close(socket);
 
 				// set non blocking
-				const flags = (try os.fcntl(socket, os.F.GETFL, 0)) | os.SOCK.NONBLOCK;
+				const flags = (try os.fcntl(socket, os.F.GETFL, 0)) | os.O.NONBLOCK;
 				_ = try os.fcntl(socket, os.F.SETFL, flags);
 
 				var conn = try manager.new();
@@ -387,11 +401,14 @@ pub const Conn = struct {
 	// application as req.arena and res.arena.
 	arena: *std.heap.ArenaAllocator,
 
+	// Reference to our websocket server
+	websocket: *websocket.Server,
+
 	// Workers maintain their active conns in a linked list. The link list is intrusive.
 	next: ?*Conn,
 	prev: ?*Conn,
 
-	fn init(allocator: Allocator, buffer_pool: *BufferPool, config: *const Config) !Conn {
+	fn init(allocator: Allocator, buffer_pool: *BufferPool, ws: *websocket.Server, config: *const Config) !Conn {
 		const arena = try allocator.create(std.heap.ArenaAllocator);
 		errdefer allocator.destroy(arena);
 
@@ -407,6 +424,7 @@ pub const Conn = struct {
 			.arena = arena,
 			.close = false,
 			.state = .active,
+			.websocket = ws,
 			.io_mode = .nonblocking,
 			.poll_mode = .read,
 			.stream = undefined,
@@ -431,7 +449,7 @@ pub const Conn = struct {
 	// being kept connected to a client
 	pub fn keepalive(self: *Conn) !void {
 		if (self.io_mode == .blocking) {
-			_ = try os.fcntl(self.stream.handle, os.F.SETFL, self.socket_flags | os.SOCK.NONBLOCK);
+			_ = try os.fcntl(self.stream.handle, os.F.SETFL, self.socket_flags);
 			self.io_mode = .nonblocking;
 		}
 		self.poll_mode = .read;
@@ -456,7 +474,7 @@ pub const Conn = struct {
 
 	pub fn blocking(self: *Conn) !void {
 		if (self.io_mode == .blocking) return;
-		_ = try os.fcntl(self.stream.handle, os.F.SETFL, self.socket_flags ^ os.SOCK.NONBLOCK);
+		_ = try os.fcntl(self.stream.handle, os.F.SETFL, self.socket_flags & ~@as(u32, os.O.NONBLOCK));
 		self.io_mode = .blocking;
 	}
 };
@@ -488,7 +506,7 @@ const Manager = struct {
 	timeout_request: u32,
 	timeout_keepalive: u32,
 
-	fn init(allocator: Allocator, config: *const Config) !Manager {
+	fn init(allocator: Allocator, ws: *websocket.Server, config: *const Config) !Manager {
 		const buffer_pool = try allocator.create(BufferPool);
 		errdefer allocator.destroy(buffer_pool);
 
@@ -497,7 +515,7 @@ const Manager = struct {
 		buffer_pool.* = try BufferPool.init(allocator, large_buffer_count, large_buffer_size);
 		errdefer buffer_pool.deinit();
 
-		const conn_pool = try ConnPool.init(allocator, buffer_pool, config);
+		const conn_pool = try ConnPool.init(allocator, buffer_pool, ws, config);
 
 		return .{
 			.len = 0,
@@ -585,6 +603,15 @@ const Manager = struct {
 		self.len -= 1;
 	}
 
+	fn disown(self: *Manager, conn: *Conn) void {
+		switch (conn.state) {
+			.active => self.active_list.remove(conn),
+			.keepalive => self.keepalive_list.remove(conn),
+		}
+		self.conn_pool.release(conn);
+		self.len -= 1;
+	}
+
 	// Enforces timeouts, and returs when the next timeout should be checked.
 	fn prepreToWait(self: *Manager) ?u32 {
 		const now = timestamp();
@@ -628,9 +655,10 @@ const ConnPool = struct {
 	allocator: Allocator,
 	config: *const Config,
 	buffer_pool: *BufferPool,
+	websocket: *websocket.Server,
 	mem_pool: std.heap.MemoryPool(Conn),
 
-	fn init(allocator: Allocator, buffer_pool: *BufferPool, config: *const Config) !ConnPool {
+	fn init(allocator: Allocator, buffer_pool: *BufferPool, ws: *websocket.Server, config: *const Config) !ConnPool {
 		const min = config.workers.min_conn orelse config.workers.max_conn orelse 32;
 
 		var conns = try allocator.alloc(*Conn, min);
@@ -649,7 +677,7 @@ const ConnPool = struct {
 		for (0..min) |i| {
 			const conn = try mem_pool.create();
 			errdefer mem_pool.destroy(conn);
-			conn.* = try Conn.init(allocator, buffer_pool, config);
+			conn.* = try Conn.init(allocator, buffer_pool, ws, config);
 
 			conns[i] = conn;
 			initialized += 1;
@@ -657,6 +685,7 @@ const ConnPool = struct {
 
 		return .{
 			.conns = conns,
+			.websocket = ws,
 			.config = config,
 			.available = min,
 			.allocator = allocator,
@@ -686,7 +715,7 @@ const ConnPool = struct {
 
 		const conn = try self.mem_pool.create();
 		errdefer self.mem_pool.destroy(conn);
-		conn.* = try Conn.init(self.allocator, self.buffer_pool, self.config);
+		conn.* = try Conn.init(self.allocator, self.buffer_pool, self.websocket, self.config);
 		return conn;
 	}
 
@@ -835,6 +864,26 @@ const KQueue = struct {
 		});
 	}
 
+	fn remove(self: *KQueue, fd: os.fd_t) !void {
+		try self.change(.{
+			.ident = @intCast(fd),
+			.filter = os.system.EVFILT_READ,
+			.flags = os.system.EV_DELETE,
+			.fflags = 0,
+			.data = 0,
+			.udata = 0,
+		});
+
+		try self.change(.{
+			.ident = @intCast(fd),
+			.filter = os.system.EVFILT_WRITE,
+			.flags = os.system.EV_DELETE,
+			.fflags = 0,
+			.data = 0,
+			.udata = 0,
+		});
+	}
+
 	fn change(self: *KQueue, event: Kevent) !void {
 		var change_count = self.change_count;
 		var change_buffer = &self.change_buffer;
@@ -917,6 +966,10 @@ const EPoll = struct {
 		return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_MOD, fd, &event);
 	}
 
+	fn remove(self: *EPoll, fd: os.fd_t) !void {
+		return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_DEL, fd, null);
+	}
+
 	fn wait(self: *EPoll, timeout_sec: ?u32) !Iterator {
 		const event_list = &self.event_list;
 		const event_count = os.linux.syscall6(
@@ -962,7 +1015,7 @@ test "ConnPool" {
 	var bp = try BufferPool.init(t.allocator, 2, 64);
 	defer bp.deinit();
 
-	var p = try ConnPool.init(t.allocator, &bp, &.{
+	var p = try ConnPool.init(t.allocator, &bp, undefined, &.{
 		.workers = .{.min_conn = 2},
 		.request = .{.buffer_size = 64},
 	});
