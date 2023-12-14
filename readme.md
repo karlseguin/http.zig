@@ -755,7 +755,7 @@ while (true) {
 ```
 
 # Websocket
-http.zig integrates with [https://github.com/karlseguin/websocket.zig](https://github.com/karlseguin/websocket.zig). When `httpz.upgradeWebsocket` is called and suceeds, the provided `Handler` is initialized and the the socket is handed over to the websocket read loop within a separate thread.
+http.zig integrates with [https://github.com/karlseguin/websocket.zig](https://github.com/karlseguin/websocket.zig). When `httpz.upgradeWebsocket` is called and succeeds, the provided `Handler` is initialized and the socket is handed over to the websocket read loop within a separate thread.
 
 When using websocket.zig standalone, your Handler's `init` function gets a 3rd parameter: a websocket.Handshake. With the http.zig integration, `init` does not get a handshake; you should validate the `*httpz.Request` before calling `upgradeWebsocket`.
 
@@ -792,10 +792,10 @@ const Context = struct {
 }
 
 // this is your websocket handle
+// it MUST have these 3 public functions
 const Handler = struct {
     ctx: Context
     conn: *websocket.Conn,
-
     pub fn init(conn: *websocket.Conn, ctx: Context) !Handler {
         return .{
             .ctx = ctx,
