@@ -391,23 +391,12 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
 		pub fn handle(self: Self, req: *Request, res: *Response) HandleResult {
 			const dispatchable_action = self._router.route(req.method, req.url.path, &req.params);
-			self.dispatch(dispatchable_action, req, res) catch |err| switch (err) {
-				error.BrokenPipe, error.ConnectionResetByPeer, error.Unexpected => {
-					// TODO: maybe allow the user to set a different errorHandler for these sort of conditions
-					return .close;
-				},
-				error.BodyTooBig => {
-					res.status = 431;
-					res.body = "Request body is too big";
-					return .write_and_close;
-				},
-				else => {
-					if (comptime G == void) {
-						self._errorHandler(req, res, err);
-					} else {
-						const ctx = if (dispatchable_action) |da| da.ctx else self.ctx;
-						self._errorHandler(ctx, req, res, err);
-					}
+			self.dispatch(dispatchable_action, req, res) catch |err| {
+				if (comptime G == void) {
+					self._errorHandler(req, res, err);
+				} else {
+					const ctx = if (dispatchable_action) |da| da.ctx else self.ctx;
+					self._errorHandler(ctx, req, res, err);
 				}
 			};
 

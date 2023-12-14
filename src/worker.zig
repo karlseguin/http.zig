@@ -154,7 +154,9 @@ pub fn Worker(comptime S: type) type {
 					error.UnknownProtocol,
 					error.UnsupportedProtocol,
 					error.InvalidHeaderLine => self.writeError(conn, 400, "Invalid Request"),
-					error.ConnectionClosed => {},
+					error.BrokenPipe,
+					error.ConnectionClosed,
+					error.ConnectionResetByPeer => {},
 					else => log.err("Unknown read/parse error: {}", .{err}),
 				}
 				return .close;
