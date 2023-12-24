@@ -413,11 +413,19 @@ pub const Request = struct {
 						continue;
 					}
 					if (b != ':') {
+						if (ALLOWED_HEADER_NAME_BYTES[b] == false) {
+							break;
+						}
 						continue;
 					}
 
 					const name = buf[0..i];
 					const value = trimLeadingSpace(buf[i+1..header_end]);
+					for (value) |vb| {
+						if (ALLOWED_HEADER_VALUE_BYTES[vb] == false) {
+							break;
+						}
+					}
 					self.headers.add(name, value);
 					return .{.read = buf_len - len, .used = next + 1};
 				}
@@ -545,6 +553,28 @@ pub const Request = struct {
 		};
 	}
 };
+
+const ALLOWED_HEADER_NAME_BYTES: [255]bool = blk: {
+  var all = std.mem.zeroes([255]bool);
+  for ('a'..('z'+1)) |b| all[b] = true;
+  for ('A'..('Z'+1)) |b| all[b] = true;
+  for ('0'..('9'+1)) |b| all[b] = true;
+  all['-'] = true;
+  all['_'] = true;
+  break :blk all;
+};
+
+const ALLOWED_HEADER_VALUE_BYTES: [255]bool = blk: {
+  var all = std.mem.zeroes([255]bool);
+  for ('a'..('z'+1)) |b| all[b] = true;
+  for ('A'..('Z'+1)) |b| all[b] = true;
+  for ('0'..('9'+1)) |b| all[b] = true;
+  for ([_]u8{':', ';', '.', ',', '\\', '/', '"', '\'', '?', '!', '(', ')', '{', '}', '[', ']', '@', '<', '>', '=', '-', '+', '*', '#', '$', '&', '`', '|', '~', '^', '%'}) |b| {
+    all[b] = true;
+  }
+  break :blk all;
+};
+
 
 inline 	fn trimLeadingSpace(in: []const u8) []const u8 {
 	// very common case where we have a single space after our colon

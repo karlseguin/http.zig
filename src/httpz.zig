@@ -451,6 +451,31 @@ test "httpz: invalid request" {
 	try t.expectString("HTTP/1.1 400\r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received.items);
 }
 
+
+test "httpz: invalid request path" {
+  var stream = t.Stream.init();
+	defer stream.deinit();
+  _ = stream.add("TEA /helo\rn\nWorld:test HTTP/1.1\r\n\r\n");
+
+	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
+	defer srv.deinit();
+	testRequest(u32, &srv, stream);
+
+	try t.expectString("HTTP/1.1 400\r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received.items);
+}
+
+test "httpz: invalid header name" {
+  var stream = t.Stream.init();
+	defer stream.deinit();
+	_ = stream.add("GET / HTTP/1.1\r\nOver: 9000\r\nHel\tlo:World\r\n\r\n");
+
+	var srv = ServerCtx(u32, u32).init(t.allocator, .{}, 1) catch unreachable;
+	defer srv.deinit();
+	testRequest(u32, &srv, stream);
+
+	try t.expectString("HTTP/1.1 400\r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received.items);
+}
+
 test "httpz: no route" {
 	var stream = t.Stream.init();
 	defer stream.deinit();
