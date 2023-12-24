@@ -393,7 +393,7 @@ pub const Request = struct {
 	fn parseOneHeader(self: *Self, stream: Stream, buf: []u8, len: usize) !ParseResult {
 		var buf_len = len;
 		while (true) {
-			if (findCarriageReturnIndex(buf[0..buf_len])) |header_end| {
+			if (std.mem.indexOfScalar(u8, buf[0..buf_len], '\r')) |header_end| {
 
 				const next = header_end + 1;
 				if (next == buf_len) buf_len += try readForHeader(stream, buf[buf_len..]);
@@ -613,79 +613,6 @@ fn atoi(str: []const u8) ?usize {
 	return n;
 }
 
-const CR = '\r';
-const VECTOR_8_LEN = if (std.simd.suggestVectorSize(u8) == null) 0 else 8;
-const VECTOR_8_CR: @Vector(8, u8) = @splat(@as(u8, CR));
-const VECTOR_8_IOTA = std.simd.iota(u8, VECTOR_8_LEN);
-const VECTOR_8_NULLS: @Vector(8, u8) = @splat(@as(u8, 255));
-
-const VECTOR_16_LEN = if (std.simd.suggestVectorSize(u8) == null) 0 else 16;
-const VECTOR_16_CR: @Vector(16, u8) = @splat(@as(u8, CR));
-const VECTOR_16_IOTA = std.simd.iota(u8, VECTOR_16_LEN);
-const VECTOR_16_NULLS: @Vector(16, u8) = @splat(@as(u8, 255));
-
-const VECTOR_32_LEN = if (std.simd.suggestVectorSize(u8) == null) 0 else 32;
-const VECTOR_32_CR: @Vector(32, u8) = @splat(@as(u8, CR));
-const VECTOR_32_IOTA = std.simd.iota(u8, VECTOR_32_LEN);
-const VECTOR_32_NULLS: @Vector(32, u8) = @splat(@as(u8, 255));
-
-const VECTOR_64_LEN = if (std.simd.suggestVectorSize(u8) == null) 0 else 64;
-const VECTOR_64_CR: @Vector(64, u8) = @splat(@as(u8, CR));
-const VECTOR_64_IOTA = std.simd.iota(u8, VECTOR_64_LEN);
-const VECTOR_64_NULLS: @Vector(64, u8) = @splat(@as(u8, 255));
-
-fn findCarriageReturnIndex(buf: []u8) ?usize {
-	if (VECTOR_32_LEN == 0) {
-		return std.mem.indexOfScalar(u8, buf, CR);
-	}
-
-	var pos: usize = 0;
-	var left = buf.len;
-	while (left > 0) {
-		if (left < VECTOR_8_LEN) {
-			for (buf[pos..], 0..) |c, i| {
-				if (c == CR) {
-					return pos + i;
-				}
-			}
-			return null;
-		}
-		var index: u8 = undefined;
-		var vector_len: usize = undefined;
-		if (left < VECTOR_16_LEN) {
-			vector_len = VECTOR_8_LEN;
-			const vec: @Vector(VECTOR_8_LEN, u8) = buf[pos..][0..VECTOR_8_LEN].*;
-			const matches = vec == VECTOR_8_CR;
-			const indices = @select(u8, matches, VECTOR_8_IOTA, VECTOR_8_NULLS);
-			index = @reduce(.Min, indices);
-		} else if (left < VECTOR_32_LEN) {
-			vector_len = VECTOR_16_LEN;
-			const vec: @Vector(VECTOR_16_LEN, u8) = buf[pos..][0..VECTOR_16_LEN].*;
-			const matches = vec == VECTOR_16_CR;
-			const indices = @select(u8, matches, VECTOR_16_IOTA, VECTOR_16_NULLS);
-			index = @reduce(.Min, indices);
-		} else if (left < VECTOR_64_LEN) {
-			vector_len = VECTOR_32_LEN;
-			const vec: @Vector(VECTOR_32_LEN, u8) = buf[pos..][0..VECTOR_32_LEN].*;
-			const matches = vec == VECTOR_32_CR;
-			const indices = @select(u8, matches, VECTOR_32_IOTA, VECTOR_32_NULLS);
-			index = @reduce(.Min, indices);
-		} else {
-			vector_len = VECTOR_64_LEN;
-			const vec: @Vector(VECTOR_64_LEN, u8) = buf[pos..][0..VECTOR_64_LEN].*;
-			const matches = vec == VECTOR_64_CR;
-			const indices = @select(u8, matches, VECTOR_64_IOTA, VECTOR_64_NULLS);
-			index = @reduce(.Min, indices);
-		}
-
-		if (index != 255) {
-			return pos + index;
-		}
-		pos += vector_len;
-		left -= vector_len;
-	}
-	return null;
-}
 
 const Error = error {
 	BodyTooBig,
@@ -711,23 +638,6 @@ test "atoi" {
 	try t.expectEqual(@as(?usize, null), atoi("392a"));
 	try t.expectEqual(@as(?usize, null), atoi("b392"));
 	try t.expectEqual(@as(?usize, null), atoi("3c92"));
-}
-
-test "request: findCarriageReturnIndex" {
-	var input = ("z" ** 128).*;
-	for (1..input.len) |i| {
-		var buf = input[0..i];
-		try t.expectEqual(@as(?usize, null), findCarriageReturnIndex(buf));
-
-		for (0..i) |j| {
-			buf[j] = CR;
-			if (j > 0) {
-				buf[j-1] = 'z';
-			}
-			try t.expectEqual(j, findCarriageReturnIndex(buf).?);
-		}
-		buf[i-1] = 'z';
-	}
 }
 
 test "request: header too big" {
