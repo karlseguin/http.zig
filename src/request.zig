@@ -383,7 +383,9 @@ pub const State = struct {
 				const end_index = std.mem.indexOfScalarPos(u8, buf[1..buf_len], 0, ' ') orelse return false;
 				// +1 since we skipped the leading / in our indexOfScalar and +1 to consume the space
 				len = end_index + 2;
-				self.url = buf[0..end_index+1];
+				const url = buf[0..end_index+1];
+				if (!Url.isValid(url)) return error.InvalidRequestTarget;
+				self.url = url;
 			},
 			'*' => {
 				if (buf_len == 1) return false;
