@@ -573,6 +573,15 @@ test "httpz: invalid request path" {
 	try t.expectString("HTTP/1.1 400\r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
 }
 
+test "httpz: invalid header name" {
+	const stream = testStream(5992);
+	defer stream.close();
+	try stream.writeAll("GET / HTTP/1.1\r\nOver: 9000\r\nHel\tlo:World\r\n\r\n");
+
+	var buf: [100]u8 = undefined;
+	try t.expectString("HTTP/1.1 400\r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
+}
+
 test "httpz: no route" {
 	const stream = testStream(5992);
 	defer stream.close();
