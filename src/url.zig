@@ -145,6 +145,34 @@ pub const Url = struct {
 
 		return .{.value = out[0..unescaped_len], .buffered = buffered};
 	}
+
+	pub fn isValid(url: []const u8) bool {
+		var i: usize = 0;
+		if (std.simd.suggestVectorSize(u8)) |block_len| {
+			const Block = @Vector(block_len, u8);
+
+			// anything less than this should be encoded
+			const min: Block = @splat(32);
+
+			// anything more than this should be encoded
+			const max: Block = @splat(126);
+
+			while (i > block_len) {
+				const block: Block = url[i..][0..block_len].*;
+				if (@reduce(.Or, block < min) or @reduce(.Or, block > max)) {
+					return false;
+				}
+				i += block_len;
+			}
+		}
+		for (url[i..]) |c| {
+			if (c < 32 or c > 126) {
+				return false;
+			}
+		}
+
+		return true;
+	}
 };
 
 fn isHex(b: u8) bool {
@@ -234,4 +262,27 @@ test "url: unescape" {
 	res = try Url.unescape(allocator, &buffer, input);
 	try t.expectString(expected, res.value);
 	try t.expectEqual(false, res.buffered);
+}
+
+test "url: isValid" {
+	var input: [600]u8 = undefined;
+	for ([_]u8{' ', 'a', 'Z', '~'}) |c| {
+		@memset(&input, c);
+		for (0..input.len) |i| {
+			try t.expectEqual(true, Url.isValid(input[0..i]));
+		}
+	}
+
+	var r = t.getRandom();
+	const random = r.random();
+
+	for ([_]u8{31, 128, 0, 255}) |c| {
+		for (1..input.len) |i| {
+			var slice = input[0..i];
+			const idx = random.uintAtMost(usize, slice.len - 1);
+			slice[idx] = c;
+			try t.expectEqual(false, Url.isValid(slice));
+			slice[idx] = 'a'; // revert this index to a valid value
+		}
+	}
 }

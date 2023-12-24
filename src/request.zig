@@ -342,7 +342,10 @@ pub const Request = struct {
 			'/' => {
 				while (true) {
 					if (std.mem.indexOfScalar(u8, buf[0..buf_len], ' ')) |end_index| {
-						self.url = Url.parse(buf[0..end_index]);
+						const url = buf[0..end_index];
+						if (!Url.isValid(url)) return error.InvalidRequestTarget;
+
+						self.url = Url.parse(url);
 						// +1 to consume the space
 						return .{.used = end_index + 1, .read = buf_len - len};
 					}
