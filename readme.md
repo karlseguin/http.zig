@@ -7,12 +7,12 @@ http.zig powers the <https://www.aolium.com> [api server](https://github.com/kar
 This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`.
 
 # Why not std.http.Server
-`std.http.Server` is really slow. Exactly how slow depends on what you're doing and how you're testing, but we're talking in the orders of magnitude.
+`std.http.Server` is slow. Exactly how slow depends on what you're doing and how you're testing.
 
 ## Branches (scaling, robustness and windows)
 Until async support is re-added to Zig, 2 versions of this project are being maintained: the `master` branch and the `blocking` branch. Except for very small API changes and a few different configuration options, the differences between the two branches are internal.
 
-Whichever branch you pick, if you plan on exposing this publicly, I strongly recommend that you place it behind a robust reverse proxy (e.g. nginx). Neither  does TLS termination and the `blocking` branch is relatively easy to DOS.
+Whichever branch you pick, if you plan on exposing this publicly, I strongly recommend that you place it behind a robust reverse proxy (e.g. nginx). Neither does TLS termination and the `blocking` branch is relatively easy to DOS.
 
 The `master` branch is more advanced and only runs on systems with epoll (Linux) and kqueue (e.g. BSD, MacOS). It should scale and perform better under load and be more predictable in the face of real-world networking (e.g. slow or misbehaving clients). It has a few additional configuration settings to control memory usage and timeouts.
 
@@ -315,6 +315,15 @@ if (req.header("authorization")) |auth| {
 
 Header names are lowercase. Values maintain their original casing.
 
+To iterate over all headers, use:
+
+```zig
+for (req.headers.keys[0..req.headers.len], 0..) |name, i| {
+    // name is the header name
+    const value = req.headers.values[i];
+}
+```
+
 ### QueryString
 The framework does not automatically parse the query string. Therefore, its API is slightly different.
 
@@ -330,6 +339,14 @@ if (query.get("search")) |search| {
 On first call, the `query` function attempts to parse the querystring. This requires memory allocations to unescape encoded values. The parsed value is internally cached, so subsequent calls to `query()` are fast and cannot fail.
 
 The original casing of both the key and the name are preserved.
+
+To iterate over all query parameters, use:
+
+```zig
+for (req.qs.keys[0..req.qs.len], 0..) |name, i| {
+    const value = req.qs.values[i];
+}
+```
 
 ### Body
 The body of the request, if any, can be accessed using `req.body()`. This returns a `?[]const u8`.
