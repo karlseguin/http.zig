@@ -59,6 +59,12 @@ pub const Request = struct {
     // The query string lookup.
     qs: KeyValue,
 
+    // cannot use an optional on fd, because it's pre-allocated so always exists
+    fd_read: bool = false,
+
+    // The formData lookup.
+    fd: KeyValue,
+
     // Spare space we still have in our static buffer after parsing the request
     // We can use this, if needed, for example to unescape querystring parameters
     spare: []u8,
@@ -77,6 +83,7 @@ pub const Request = struct {
         return .{
             .arena = arena,
             .qs = state.qs,
+            .fd = state.fd,
             .method = state.method.?,
             .protocol = state.protocol.?,
             .url = Url.parse(state.url.?),
@@ -127,6 +134,13 @@ pub const Request = struct {
         }
     }
 
+    pub fn formData(self: *Request) !KeyValue {
+        if (self.fd_read) {
+            return self.fd;
+        }
+        return self.parseFormData();
+    }
+
     // OK, this is a bit complicated.
     // We might need to allocate memory to parse the querystring. Specifically, if
     // there's a url-escaped component (a key or value), we need memory to store
@@ -170,6 +184,44 @@ pub const Request = struct {
         self.qs_read = true;
         return self.qs;
     }
+    fn parseFormData(self: *Request) !KeyValue {
+        const b = self.body() orelse "";
+        if (b.len == 0) {
+            self.qs_read = true;
+            return self.fd;
+        }
+
+        var fd = &self.fd;
+        var buf = self.spare;
+        const allocator = self.arena;
+
+        var it = std.mem.splitScalar(u8, b, '&');
+        while (it.next()) |pair| {
+            if (std.mem.indexOfScalarPos(u8, pair, 0, '=')) |sep| {
+                const key_res = try Url.unescape(allocator, buf, pair[0..sep]);
+                if (key_res.buffered) {
+                    buf = buf[key_res.value.len..];
+                }
+
+                const value_res = try Url.unescape(allocator, buf, pair[sep + 1 ..]);
+                if (value_res.buffered) {
+                    buf = buf[value_res.value.len..];
+                }
+
+                fd.add(key_res.value, value_res.value);
+            } else {
+                const key_res = try Url.unescape(allocator, buf, pair);
+                if (key_res.buffered) {
+                    buf = buf[key_res.value.len..];
+                }
+                fd.add(key_res.value, "");
+            }
+        }
+
+        self.spare = buf;
+        self.fd_read = true;
+        return self.fd;
+    }
 
     pub fn canKeepAlive(self: *const Request) bool {
         return switch (self.protocol) {
@@ -199,6 +251,9 @@ pub const State = struct {
 
     // Lazy-loaded in request.query();
     qs: KeyValue,
+
+    // Lazy-loaded in request.formData();
+    fd: KeyValue,
 
     // Populated after we've parsed the request, once we're matching the request
     // to a route.
@@ -253,6 +308,7 @@ pub const State = struct {
             .buffer_pool = buffer_pool,
             .max_body_size = config.max_body_size orelse 1_048_576,
             .qs = try KeyValue.init(allocator, config.max_query_count orelse 32),
+            .fd = try KeyValue.init(allocator, config.max_body_size orelse 32),
             .buf = try allocator.alloc(u8, config.buffer_size orelse 32_768),
             .headers = try KeyValue.init(allocator, config.max_header_count orelse 32),
             .params = try Params.init(allocator, config.max_param_count orelse 10),
@@ -267,6 +323,7 @@ pub const State = struct {
         }
         allocator.free(self.buf);
         self.qs.deinit(allocator);
+        self.fd.deinit(allocator);
         self.params.deinit(allocator);
         self.headers.deinit(allocator);
     }
