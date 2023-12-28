@@ -76,7 +76,7 @@ pub const Url = struct {
 		while (in_i < input.len) {
 			const b = input[in_i];
 			if (b == '%') {
-				if (in_i + 2 >= input.len or !isHex(input[in_i+1]) or !isHex(input[in_i+2])) {
+				if (in_i + 2 >= input.len or !HEX_CHAR[input[in_i+1]] or !HEX_CHAR[input[in_i+2]]) {
 					return error.InvalidEscapeSequence;
 				}
 				in_i += 3;
@@ -129,7 +129,7 @@ pub const Url = struct {
 					ENC_40 => '@',
 					ENC_5B => '[',
 					ENC_5D => ']',
-					else => unHex(enc[0]) << 4 | unHex(enc[1]),
+					else => HEX_DECODE[enc[0]] << 4 | HEX_DECODE[enc[1]],
 				};
 				in_i += 3;
 			} else if (b == '+') {
@@ -173,23 +173,22 @@ pub const Url = struct {
 	}
 };
 
-fn isHex(b: u8) bool {
-	return switch (b) {
-		'0'...'9' => true,
-		'a'...'f' => true,
-		'A'...'F' => true,
-		else => false
-	};
-}
+const HEX_CHAR = blk: {
+	var all = std.mem.zeroes([255]bool);
+	for ('a'..('f'+1)) |b| all[b] = true;
+	for ('A'..('F'+1)) |b| all[b] = true;
+	for ('0'..('9'+1)) |b| all[b] = true;
+	break :blk all;
+};
 
-fn unHex(b: u8) u8 {
-	return switch (b) {
-		'0'...'9' => b - '0',
-		'a'...'f' => b - 'a' + 10,
-		'A'...'F' => b - 'A' + 10,
-		else => unreachable, // should never have gotten here since isHex would have failed
-	};
-}
+const HEX_DECODE = blk: {
+	var all = std.mem.zeroes([255]u8);
+	for ('a'..('z'+1)) |b| all[b] = b - 'a' + 10;
+	for ('A'..('Z'+1)) |b| all[b] = b - 'A' + 10;
+	for ('0'..('9'+1)) |b| all[b] = b - '0';
+	break :blk all;
+};
+
 
 const t = @import("t.zig");
 test "url: parse" {
