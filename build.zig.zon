@@ -1,11 +1,8 @@
 .{
-  .name = "httpz",
-  .paths = .{""},
-  .version = "0.0.0",
-  .dependencies = .{
-    .websocket = .{
-      .url = "https://github.com/karlseguin/websocket.zig/archive/2717469d68bf90d513f7250c37a56adf9756a4e1.tar.gz",
-      .hash = "1220d88669d3548a74996facc403f8fbefc9b2e2d38a0595c15d08f97bcdc337d268"
+    .name = "httpz",
+    .paths = .{""},
+    .version = "0.0.0",
+    .dependencies = .{
+        .websocket = .{ .url = "https://github.com/karlseguin/websocket.zig/archive/2717469d68bf90d513f7250c37a56adf9756a4e1.tar.gz", .hash = "1220d88669d3548a74996facc403f8fbefc9b2e2d38a0595c15d08f97bcdc337d268" },
     },
-  },
 }
