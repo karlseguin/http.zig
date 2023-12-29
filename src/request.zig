@@ -1006,12 +1006,35 @@ test "body: formData" {
 
     {
         // parses formData
-        var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 22\r\n\r\nname=test", .{});
+        var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 9\r\n\r\nname=test", .{});
 
         defer t.reset();
         const formData = try r.formData();
         try t.expectString("test", formData.get("name").?);
         try t.expectString("test", formData.get("name").?);
+    }
+
+    {
+        // multiple inputs
+        var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 25\r\n\r\nname=test1&password=test2", .{});
+
+        defer t.reset();
+        const formData = try r.formData();
+        try t.expectString("test1", formData.get("name").?);
+        try t.expectString("test1", formData.get("name").?);
+
+        try t.expectString("test2", formData.get("password").?);
+        try t.expectString("test2", formData.get("password").?);
+    }
+
+    {
+        // test
+        var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 44\r\n\r\ntest=%21%40%23%24%25%5E%26*%29%28-%3D%2B%7C+", .{});
+
+        defer t.reset();
+        const formData = try r.formData();
+        try t.expectString("!@#$%^&*)(-=+| ", formData.get("test").?);
+        try t.expectString("!@#$%^&*)(-=+| ", formData.get("test").?);
     }
 }
 
