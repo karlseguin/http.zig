@@ -344,6 +344,7 @@ pub const State = struct {
         }
 
         self.qs.reset();
+        self.fd.reset();
         self.params.reset();
         self.headers.reset();
     }
