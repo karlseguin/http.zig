@@ -187,7 +187,7 @@ pub const Request = struct {
     fn parseFormData(self: *Request) !KeyValue {
         const b = self.body() orelse "";
         if (b.len == 0) {
-            self.qs_read = true;
+            self.fd_read = true;
             return self.fd;
         }
 
