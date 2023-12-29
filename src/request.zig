@@ -989,6 +989,32 @@ test "body: jsonObject" {
     }
 }
 
+test "body: formData" {
+    {
+        // too big
+        try expectParseError(error.BodyTooBig, "POST / HTTP/1.0\r\nContent-Length: 22\r\n\r\nname=test", .{ .max_body_size = 21 });
+    }
+
+    {
+        // no body
+        var r = try testParse("POST / HTTP/1.0\r\n\r\nContent-Length: 0\r\n\r\n", .{ .max_body_size = 10 });
+        defer t.reset();
+        const formData = try r.formData();
+        try t.expectEqual(null, formData.get("name"));
+        try t.expectEqual(null, formData.get("name"));
+    }
+
+    {
+        // parses formData
+        var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 22\r\n\r\nname=test", .{});
+
+        defer t.reset();
+        const formData = try r.formData();
+        try t.expectString("test", formData.get("name").?);
+        try t.expectString("test", formData.get("name").?);
+    }
+}
+
 // our t.Stream already simulates random TCP fragmentation.
 test "request: fuzz" {
     // We have a bunch of data to allocate for testing, like header names and
