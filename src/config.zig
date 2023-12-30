@@ -26,6 +26,7 @@ pub const Config = struct {
         max_header_count: ?usize = null,
         max_param_count: ?usize = null,
         max_query_count: ?usize = null,
+        max_form_count: ?usize = null,
     };
 
     pub const Response = struct {

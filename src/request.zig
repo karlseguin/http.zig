@@ -184,6 +184,7 @@ pub const Request = struct {
         self.qs_read = true;
         return self.qs;
     }
+
     fn parseFormData(self: *Request) !KeyValue {
         const b = self.body() orelse "";
         if (b.len == 0) {
@@ -308,7 +309,7 @@ pub const State = struct {
             .buffer_pool = buffer_pool,
             .max_body_size = config.max_body_size orelse 1_048_576,
             .qs = try KeyValue.init(allocator, config.max_query_count orelse 32),
-            .fd = try KeyValue.init(allocator, config.max_body_size orelse 32),
+            .fd = try KeyValue.init(allocator, config.max_form_count orelse 32),
             .buf = try allocator.alloc(u8, config.buffer_size orelse 32_768),
             .headers = try KeyValue.init(allocator, config.max_header_count orelse 32),
             .params = try Params.init(allocator, config.max_param_count orelse 10),

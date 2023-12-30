@@ -382,6 +382,23 @@ if (try req.jsonObject()) |t| {
 }
 ```
 
+### Form Data
+The body of the request, if any, can be parsed as a x-www-form-urlencoded value  using `req.formData()`.
+
+This behaves similarly to `query()`.
+
+On first call, the `formData` function attempts to parse the body. This can require memory allocations to unescape encoded values. The parsed value is internally cached, so subsequent calls to `formData()` are fast and cannot fail.
+
+The original casing of both the key and the name are preserved.
+
+To iterate over all fields, use:
+
+```zig
+for (req.fd.keys[0..req.fd.len], 0..) |name, i| {
+    const value = req.fd.values[i];
+}
+```
+
 ## httpz.Response
 The following fields are the most useful:
 
@@ -611,6 +628,12 @@ try httpz.listen(allocator, &router, .{
         // Maximum number of query string parameters to accept.
         // Additional parameters will be silently ignored.
         .max_query_count: usize = 32,
+
+        // Maxium number of x-www-form-urlencoded fields to support.
+        // Additional parameters will be silenty ignored. If you're not
+        // using the request.formData function (say, because you're only
+        // consuming JSON), setting this to 0 can save a bit of memory.
+        .max_form_count: usize = 32,
     },
 
     // various options for tweaking response object
