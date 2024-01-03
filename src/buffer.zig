@@ -53,7 +53,7 @@ pub const Pool = struct {
         }
         const new_buffer = try self.arenaAlloc(arena, new_size);
         @memcpy(new_buffer.data[0..current_size], buffer.data[0..current_size]);
-        self.free(buffer.*);
+        self.release(buffer.*);
         return new_buffer;
     }
 
@@ -171,6 +171,7 @@ test "BufferPool: grow" {
     {
         // grow a static buffer
         var buf1 = try pool.static(15);
+        defer pool.free(buf1);
         @memcpy(buf1.data[0..6], "hello2");
         const buf2 = try pool.grow(t.arena.allocator(), &buf1, 6, 21);
         defer pool.free(buf2);
