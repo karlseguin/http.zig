@@ -175,6 +175,28 @@ pub const Context = struct {
             pos += n;
         }
         try expectString(expected, buf);
+
+        // should have no extra data
+        // let's check, with a shor timeout, which could let things slip, but
+        // else we slow down fuzz tests too much
+        std.os.setsockopt(self.client.handle, std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &std.mem.toBytes(std.os.timeval{
+            .tv_sec = 0,
+            .tv_usec = 1_000,
+        })) catch unreachable;
+
+        const n: usize = self.client.read(buf[0..]) catch |err| blk: {
+            switch (err) {
+                error.WouldBlock => break :blk 0,
+                else => @panic(@errorName(err)),
+            }
+        };
+        try expectEqual(0, n);
+
+        std.os.setsockopt(self.client.handle, std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &std.mem.toBytes(std.os.timeval{
+            .tv_sec = 0,
+            .tv_usec = 20_000,
+        })) catch unreachable;
+
     }
 
     pub fn request(self: Context) httpz.Request {
@@ -183,6 +205,10 @@ pub const Context = struct {
 
     pub fn response(self: Context) httpz.Response {
         return httpz.Response.init(self.conn.arena.allocator(), self.conn);
+    }
+
+    pub fn reset(self: Context) void {
+        self.conn.reset();
     }
 };
 

@@ -454,7 +454,7 @@ pub const Conn = struct {
     }
 
     // getting put back into the pool
-    fn reset(self: *Conn) void {
+    pub fn reset(self: *Conn) void {
         self.close = false;
         self.next = null;
         self.prev = null;

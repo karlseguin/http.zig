@@ -209,8 +209,9 @@ pub const Response = struct {
             const state = self.state;
             const pos = state.body_len;
             const required_capacity = pos + n;
-            const cap = self.state.body_buffer.?.data.len;
+            const bb = &self.state.body_buffer.?;
 
+            const cap = bb.data.len;
             if (cap > required_capacity) {
                 return;
             }
@@ -222,7 +223,7 @@ pub const Response = struct {
             }
 
             //  state.body_buffer _has_ to have been set (in the Writer.init call)
-            state.body_buffer = try state.buffer_pool.grow(state.arena.allocator(), &state.body_buffer.?, pos, new_capacity);
+            state.body_buffer = try state.buffer_pool.grow(state.arena.allocator(), bb, pos, new_capacity);
         }
     };
 };
@@ -312,6 +313,7 @@ pub const State = struct {
         // not our job to clear the arena!
         if (self.body_buffer) |buf| {
             self.buffer_pool.release(buf);
+            self.body_buffer = null;
         }
         self.buffer_pool.free(self.static_body_buffer);
 
@@ -325,6 +327,7 @@ pub const State = struct {
         // not our job to clear the arena!
         if (self.body_buffer) |buf| {
             self.buffer_pool.release(buf);
+            self.body_buffer = null;
         }
         self.buffer_pool.release(self.header_buffer);
         self.header_buffer = self.static_header_buffer;
@@ -712,7 +715,7 @@ test "response: writer fuzz" {
     var r = t.getRandom();
     const random = r.random();
 
-    for (0..1) |_| {
+    for (0..3) |_| {
         defer t.reset();
         const body = t.randomString(random, t.allocator, 1000);
         defer t.allocator.free(body);

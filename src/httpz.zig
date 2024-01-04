@@ -455,6 +455,7 @@ var la = std.heap.GeneralPurposeAllocator(.{}){};
 var default_server: *ServerCtx(void, void) = undefined;
 var context_server: *ServerCtx(u32, u32) = undefined;
 var cors_server: *ServerCtx(u32, u32) = undefined;
+var reuse_server: *ServerCtx(void, void) = undefined;
 
 pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, context: anytype) !bool {
     const key = ensureWebsocketRequest(req) orelse return false;
@@ -544,6 +545,21 @@ test {
         var router = cors_server.router();
         router.all("/echo", ctxEchoAction);
         var thread = try cors_server.listenInNewThread();
+        thread.detach();
+    }
+
+    {
+        // with only 1 worker, and a min/max conn of 1, each request should
+        // hit our reset path.
+        reuse_server = try leaking_allocator.create(ServerCtx(void, void));
+        reuse_server.* = try Server().init(leaking_allocator, .{
+            .port = 5995,
+            .response = .{ .body_buffer_size = 100 },
+            .workers = .{.count = 1, .min_conn = 1, .max_conn = 1}
+        });
+        var router = reuse_server.router();
+        router.get("/test/writer", testWriter);
+        var thread = try reuse_server.listenInNewThread();
         thread.detach();
     }
 
@@ -775,6 +791,29 @@ test "httpz: CORS" {
     }
 }
 
+test "httpz: writer re-use" {
+    defer t.reset();
+
+    const stream = testStream(5995);
+    defer stream.close();
+
+    var expected: [10]TestUser = undefined;
+
+    var buf: [100]u8 = undefined;
+    for (0..10) |i| {
+        expected[i] = .{
+            .id = try std.fmt.allocPrint(t.arena.allocator(), "id-{d}", .{i}),
+            .power = i,
+        };
+        try stream.writeAll(try std.fmt.bufPrint(&buf, "GET /test/writer?count={d} HTTP/1.1\r\nContent-Length: 0\r\n\r\n", .{i+1}));
+
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try res.expectJson(.{ .data = expected[0..i+1]});
+    }
+}
+
 test "ContentType: forX" {
     inline for (@typeInfo(ContentType).Enum.fields) |field| {
         if (comptime std.mem.eql(u8, "BINARY", field.name)) continue;
@@ -848,6 +887,7 @@ test "websocket: upgrade" {
     try t.expectEqual(10, buf[1]);
     try t.expectString("over 9000!", buf[2..12]);
 }
+
 
 fn testFail(_: u32, _: *Request, _: *Response) !void {
     return error.TestUnhandledError;
@@ -935,6 +975,21 @@ fn ctxEchoAction(ctx: u32, req: *Request, res: *Response) !void {
     }, .{});
 }
 
+fn testWriter(req: *Request, res: *Response) !void {
+    res.status = 200;
+    const query = try req.query();
+    const count = try std.fmt.parseInt(u16, query.get("count").?, 10);
+
+    var data = try res.arena.alloc(TestUser, count);
+    for (0..count) |i| {
+        data[i] = .{
+            .id = try std.fmt.allocPrint(res.arena, "id-{d}", .{i}),
+            .power = i,
+        };
+    }
+    return res.json(.{.data = data}, .{});
+}
+
 fn testStream(port: u16) std.net.Stream {
     const timeout = std.mem.toBytes(std.os.timeval{
         .tv_sec = 0,
@@ -972,7 +1027,7 @@ fn testReadAll(stream: std.net.Stream, buf: []u8) []u8 {
 }
 
 fn testReadParsed(stream: std.net.Stream) testing.Testing.Response {
-    var buf: [1024]u8 = undefined;
+    var buf: [4096]u8 = undefined;
     const data = testReadAll(stream, &buf);
     return testing.parse(data) catch unreachable;
 }
@@ -1028,4 +1083,10 @@ const TestWSHandler = struct {
     }
 
     pub fn close(_: *TestWSHandler) void {}
+};
+
+
+const TestUser = struct {
+    id: []const u8,
+    power: usize,
 };
