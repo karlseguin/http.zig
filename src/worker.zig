@@ -958,15 +958,27 @@ const EPoll = struct {
 
     fn wait(self: *EPoll, timeout_sec: ?u32) !Iterator {
         const event_list = &self.event_list;
-        const event_count = os.linux.syscall6(
-            .epoll_pwait2,
-            @as(usize, @bitCast(@as(isize, self.q))),
-            @intFromPtr(event_list.ptr),
-            event_list.len,
-            if (timeout_sec) |ts| @intFromPtr(&os.timespec{ .tv_sec = ts, .tv_nsec = 0 }) else 0,
-            0,
-            @sizeOf(os.linux.sigset_t),
-        );
+        const event_count = blk: while (true) {
+            const rc = os.linux.syscall6(
+                .epoll_pwait2,
+                @as(usize, @bitCast(@as(isize, self.q))),
+                @intFromPtr(event_list.ptr),
+                event_list.len,
+                if (timeout_sec) |ts| @intFromPtr(&os.timespec{ .tv_sec = ts, .tv_nsec = 0 }) else 0,
+                0,
+                @sizeOf(os.linux.sigset_t),
+            );
+
+            // taken from std.os.epoll_waits
+             switch (std.os.errno(rc)) {
+                .SUCCESS => break :blk @as(usize, @intCast(rc)),
+                .INTR => continue,
+                .BADF => unreachable,
+                .FAULT => unreachable,
+                .INVAL => unreachable,
+                else => unreachable,
+            }
+        };
 
         return .{
             .index = 0,
