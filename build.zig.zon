@@ -1,0 +1,11 @@
+.{
+  .name = "httpz",
+  .paths = .{""},
+  .version = "0.0.0",
+  .dependencies = .{
+    .websocket = .{
+      .url = "https://github.com/karlseguin/websocket.zig/archive/328b8cba932d2a39da1ada6efe6001179a9c1aaa.tar.gz",
+      .hash = "12208afa05b6a3e0c16d5b21402a999f752203e974491e769a4c9831693f9fe101ed"
+    },
+  },
+}

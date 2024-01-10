@@ -7,12 +7,12 @@ http.zig powers the <https://www.aolium.com> [api server](https://github.com/kar
 This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`.
 
 # Why not std.http.Server
-`std.http.Server` is really slow. Exactly how slow depends on what you're doing and how you're testing, but we're talking in the orders of magnitude.
+`std.http.Server` is slow. Exactly how slow depends on what you're doing and how you're testing.
 
 ## Branches (scaling, robustness and windows)
 Until async support is re-added to Zig, 2 versions of this project are being maintained: the `master` branch and the `blocking` branch. Except for very small API changes and a few different configuration options, the differences between the two branches are internal.
 
-Whichever branch you pick, if you plan on exposing this publicly, I strongly recommend that you place it behind a robust reverse proxy (e.g. nginx). Neither  does TLS termination and the `blocking` branch is relatively easy to DOS.
+Whichever branch you pick, if you plan on exposing this publicly, I strongly recommend that you place it behind a robust reverse proxy (e.g. nginx). Neither does TLS termination and the `blocking` branch is relatively easy to DOS.
 
 The `master` branch is more advanced and only runs on systems with epoll (Linux) and kqueue (e.g. BSD, MacOS). It should scale and perform better under load and be more predictable in the face of real-world networking (e.g. slow or misbehaving clients). It has a few additional configuration settings to control memory usage and timeouts.
 
@@ -315,6 +315,15 @@ if (req.header("authorization")) |auth| {
 
 Header names are lowercase. Values maintain their original casing.
 
+To iterate over all headers, use:
+
+```zig
+for (req.headers.keys[0..req.headers.len], 0..) |name, i| {
+    // name is the header name
+    const value = req.headers.values[i];
+}
+```
+
 ### QueryString
 The framework does not automatically parse the query string. Therefore, its API is slightly different.
 
@@ -330,6 +339,14 @@ if (query.get("search")) |search| {
 On first call, the `query` function attempts to parse the querystring. This requires memory allocations to unescape encoded values. The parsed value is internally cached, so subsequent calls to `query()` are fast and cannot fail.
 
 The original casing of both the key and the name are preserved.
+
+To iterate over all query parameters, use:
+
+```zig
+for (req.qs.keys[0..req.qs.len], 0..) |name, i| {
+    const value = req.qs.values[i];
+}
+```
 
 ### Body
 The body of the request, if any, can be accessed using `req.body()`. This returns a `?[]const u8`.
@@ -362,6 +379,23 @@ if (try req.jsonObject()) |t| {
     // probably want to be more defensive than this
     const product_type = t.get("type").?.String;
     //...
+}
+```
+
+### Form Data
+The body of the request, if any, can be parsed as a x-www-form-urlencoded value  using `req.formData()`.
+
+This behaves similarly to `query()`.
+
+On first call, the `formData` function attempts to parse the body. This can require memory allocations to unescape encoded values. The parsed value is internally cached, so subsequent calls to `formData()` are fast and cannot fail.
+
+The original casing of both the key and the name are preserved.
+
+To iterate over all fields, use:
+
+```zig
+for (req.fd.keys[0..req.fd.len], 0..) |name, i| {
+    const value = req.fd.values[i];
 }
 ```
 
@@ -594,6 +628,12 @@ try httpz.listen(allocator, &router, .{
         // Maximum number of query string parameters to accept.
         // Additional parameters will be silently ignored.
         .max_query_count: usize = 32,
+
+        // Maxium number of x-www-form-urlencoded fields to support.
+        // Additional parameters will be silenty ignored. If you're not
+        // using the request.formData function (say, because you're only
+        // consuming JSON), setting this to 0 can save a bit of memory.
+        .max_form_count: usize = 32,
     },
 
     // various options for tweaking response object
@@ -620,7 +660,17 @@ try httpz.listen(allocator, &router, .{
 
         // Maximum number of a requests allowed on a single keepalive connection
         .request_count = null,
-    }
+    },
+    .websocket = .{
+        // refer to https://github.com/karlseguin/websocket.zig#config
+        max_size: usize = 65536,
+        buffer_size: usize = 4096,
+        handle_ping: bool = false,
+        handle_pong: bool = false,
+        handle_close: bool = false,
+        large_buffer_pool_count: u16 = 8,
+        large_buffer_size: usize = 32768,
+    },
 });
 ```
 
@@ -749,5 +799,60 @@ while (true) {
 }
 ```
 
-# websocket.zig
-I'm also working on a websocket server implementation for zig: [https://github.com/karlseguin/websocket.zig](https://github.com/karlseguin/websocket.zig).
+# Websocket
+http.zig integrates with [https://github.com/karlseguin/websocket.zig](https://github.com/karlseguin/websocket.zig). When `httpz.upgradeWebsocket` is called and succeeds, the provided `Handler` is initialized and the socket is handed over to the websocket read loop within a separate thread.
+
+When using websocket.zig standalone, your Handler's `init` function gets a 3rd parameter: a websocket.Handshake. With the http.zig integration, `init` does not get a handshake; you should validate the `*httpz.Request` before calling `upgradeWebsocket`.
+
+```zig
+const std = @import("std");
+const httpz = @import("httpz");
+cont websocket = httpz.websocket;
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    var server = try httpz.Server().init(allocator, .{.port = 5882});
+    var router = server.router();
+    // a normal route
+    router.get("/ws", ws);
+    try server.listen(); 
+}
+
+fn ws(req: *httpz.Request, res: *httpz.Response) !void {
+    if (try httpz.upgradeWebsocket(Handler, req, res, Context{}) == false) {
+        // this was not a valid websocket handshake request
+        // you should probably return with an error
+        res.status = 400;
+        res.body = "invalid websocket handshake";
+        return;
+    }
+    // when upgradeWebsocket succeeds, you can no longer use `res` 
+}
+
+// arbitrary data you want to pass into your Handler's `init` function
+const Context = struct {
+
+}
+
+// this is your websocket handle
+// it MUST have these 3 public functions
+const Handler = struct {
+    ctx: Context
+    conn: *websocket.Conn,
+    pub fn init(conn: *websocket.Conn, ctx: Context) !Handler {
+        return .{
+            .ctx = ctx,
+            .conn = conn,
+        };
+    }
+
+    pub fn handle(self: *Handler, message: websocket.Message) !void {
+        const data = message.data;
+        try self.conn.write(data); // echo the message back
+    }
+
+    pub fn close(_: *Handler) void {}
+}
+```
