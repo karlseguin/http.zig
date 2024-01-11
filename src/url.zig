@@ -148,7 +148,7 @@ pub const Url = struct {
 
 	pub fn isValid(url: []const u8) bool {
 		var i: usize = 0;
-		if (std.simd.suggestVectorSize(u8)) |block_len| {
+		if (std.simd.suggestVectorLength(u8)) |block_len| {
 			const Block = @Vector(block_len, u8);
 
 			// anything less than this should be encoded

@@ -7,8 +7,8 @@ pub fn build(b: *std.Build) !void {
 
 	const websocket_module = b.dependency("websocket", dep_opts).module("websocket");
 	const httpz_module = b.addModule("httpz", .{
-		.source_file = .{ .path = "src/httpz.zig" },
-		.dependencies = &.{.{.name = "websocket", .module = websocket_module}},
+		.root_source_file = .{ .path = "src/httpz.zig" },
+		.imports = &.{.{.name = "websocket", .module = websocket_module}},
 	});
 
 	// setup executable
@@ -18,8 +18,8 @@ pub fn build(b: *std.Build) !void {
 		.target = target,
 		.optimize = optimize,
 	});
-	exe.addModule("httpz", httpz_module);
-	exe.addModule("websocket", websocket_module);
+	exe.root_module.addImport("httpz", httpz_module);
+	exe.root_module.addImport("websocket", websocket_module);
 	b.installArtifact(exe);
 
 	const run_cmd = b.addRunArtifact(exe);
@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) !void {
 		.target = target,
 		.optimize = optimize,
 	});
-	tests.addModule("websocket", websocket_module);
+	tests.root_module.addImport("websocket", websocket_module);
 	const run_test = b.addRunArtifact(tests);
 	run_test.has_side_effects = true;
 

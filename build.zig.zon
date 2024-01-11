@@ -4,8 +4,8 @@
   .version = "0.0.0",
   .dependencies = .{
     .websocket = .{
-      .url = "https://github.com/karlseguin/websocket.zig/archive/15a8c961f392a6472f7c0395b82cac6d74e79115.tar.gz",
-      .hash = "1220751343e1c2b4ccd56b9737f7a858e55afee8035fe3a8f99d006e746641134353"
+      .url = "https://github.com/karlseguin/websocket.zig/archive/1f2c4a56c642dab52fe12cdda1bd3f56865d1f86.tar.gz",
+      .hash = "1220ce168e550f8904364acd0a72f5cafd40caa08a50ba83aac50b97ba700d7bcf20"
     },
   },
 }
