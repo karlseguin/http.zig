@@ -22,12 +22,21 @@ pub const Pool = struct {
 
     pub fn init(allocator: Allocator, count: usize, buffer_size: usize) !Pool {
         const buffers = try allocator.alloc(Buffer, count);
+        errdefer allocator.free(buffers);
+
+        var initialized: usize = 0;
+        errdefer {
+            for (0..initialized) |i| {
+                allocator.free(buffers[i].data);
+            }
+        }
 
         for (0..count) |i| {
             buffers[i] = .{
                 .type = .pooled,
                 .data = try allocator.alloc(u8, buffer_size),
             };
+            initialized += 1;
         }
 
         return .{
