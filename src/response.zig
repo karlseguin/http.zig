@@ -346,79 +346,78 @@ pub const State = struct {
         var buf = &self.static_header_buffer;
         var data = buf.data;
 
-        var pos: usize = "HTTP/1.1 XXX\r\n".len;
+        var pos: usize = "HTTP/1.1 XXX \r\n".len;
         switch (res.status) {
-            100 => @memcpy(data[0..14], "HTTP/1.1 100\r\n"),
-            101 => @memcpy(data[0..14], "HTTP/1.1 101\r\n"),
-            102 => @memcpy(data[0..14], "HTTP/1.1 102\r\n"),
-            103 => @memcpy(data[0..14], "HTTP/1.1 103\r\n"),
-            200 => @memcpy(data[0..14], "HTTP/1.1 200\r\n"),
-            201 => @memcpy(data[0..14], "HTTP/1.1 201\r\n"),
-            202 => @memcpy(data[0..14], "HTTP/1.1 202\r\n"),
-            203 => @memcpy(data[0..14], "HTTP/1.1 203\r\n"),
-            204 => @memcpy(data[0..14], "HTTP/1.1 204\r\n"),
-            205 => @memcpy(data[0..14], "HTTP/1.1 205\r\n"),
-            206 => @memcpy(data[0..14], "HTTP/1.1 206\r\n"),
-            207 => @memcpy(data[0..14], "HTTP/1.1 207\r\n"),
-            208 => @memcpy(data[0..14], "HTTP/1.1 208\r\n"),
-            226 => @memcpy(data[0..14], "HTTP/1.1 226\r\n"),
-            300 => @memcpy(data[0..14], "HTTP/1.1 300\r\n"),
-            301 => @memcpy(data[0..14], "HTTP/1.1 301\r\n"),
-            302 => @memcpy(data[0..14], "HTTP/1.1 302\r\n"),
-            303 => @memcpy(data[0..14], "HTTP/1.1 303\r\n"),
-            304 => @memcpy(data[0..14], "HTTP/1.1 304\r\n"),
-            305 => @memcpy(data[0..14], "HTTP/1.1 305\r\n"),
-            306 => @memcpy(data[0..14], "HTTP/1.1 306\r\n"),
-            307 => @memcpy(data[0..14], "HTTP/1.1 307\r\n"),
-            308 => @memcpy(data[0..14], "HTTP/1.1 308\r\n"),
-            400 => @memcpy(data[0..14], "HTTP/1.1 400\r\n"),
-            401 => @memcpy(data[0..14], "HTTP/1.1 401\r\n"),
-            402 => @memcpy(data[0..14], "HTTP/1.1 402\r\n"),
-            403 => @memcpy(data[0..14], "HTTP/1.1 403\r\n"),
-            404 => @memcpy(data[0..14], "HTTP/1.1 404\r\n"),
-            405 => @memcpy(data[0..14], "HTTP/1.1 405\r\n"),
-            406 => @memcpy(data[0..14], "HTTP/1.1 406\r\n"),
-            407 => @memcpy(data[0..14], "HTTP/1.1 407\r\n"),
-            408 => @memcpy(data[0..14], "HTTP/1.1 408\r\n"),
-            409 => @memcpy(data[0..14], "HTTP/1.1 409\r\n"),
-            410 => @memcpy(data[0..14], "HTTP/1.1 410\r\n"),
-            411 => @memcpy(data[0..14], "HTTP/1.1 411\r\n"),
-            412 => @memcpy(data[0..14], "HTTP/1.1 412\r\n"),
-            413 => @memcpy(data[0..14], "HTTP/1.1 413\r\n"),
-            414 => @memcpy(data[0..14], "HTTP/1.1 414\r\n"),
-            415 => @memcpy(data[0..14], "HTTP/1.1 415\r\n"),
-            416 => @memcpy(data[0..14], "HTTP/1.1 416\r\n"),
-            417 => @memcpy(data[0..14], "HTTP/1.1 417\r\n"),
-            418 => @memcpy(data[0..14], "HTTP/1.1 418\r\n"),
-            421 => @memcpy(data[0..14], "HTTP/1.1 421\r\n"),
-            422 => @memcpy(data[0..14], "HTTP/1.1 422\r\n"),
-            423 => @memcpy(data[0..14], "HTTP/1.1 423\r\n"),
-            424 => @memcpy(data[0..14], "HTTP/1.1 424\r\n"),
-            425 => @memcpy(data[0..14], "HTTP/1.1 425\r\n"),
-            426 => @memcpy(data[0..14], "HTTP/1.1 426\r\n"),
-            428 => @memcpy(data[0..14], "HTTP/1.1 428\r\n"),
-            429 => @memcpy(data[0..14], "HTTP/1.1 429\r\n"),
-            431 => @memcpy(data[0..14], "HTTP/1.1 431\r\n"),
-            451 => @memcpy(data[0..14], "HTTP/1.1 451\r\n"),
-            500 => @memcpy(data[0..14], "HTTP/1.1 500\r\n"),
-            501 => @memcpy(data[0..14], "HTTP/1.1 501\r\n"),
-            502 => @memcpy(data[0..14], "HTTP/1.1 502\r\n"),
-            503 => @memcpy(data[0..14], "HTTP/1.1 503\r\n"),
-            504 => @memcpy(data[0..14], "HTTP/1.1 504\r\n"),
-            505 => @memcpy(data[0..14], "HTTP/1.1 505\r\n"),
-            506 => @memcpy(data[0..14], "HTTP/1.1 506\r\n"),
-            507 => @memcpy(data[0..14], "HTTP/1.1 507\r\n"),
-            508 => @memcpy(data[0..14], "HTTP/1.1 508\r\n"),
-            510 => @memcpy(data[0..14], "HTTP/1.1 510\r\n"),
-            511 => @memcpy(data[0..14], "HTTP/1.1 511\r\n"),
+            100 => @memcpy(data[0..15], "HTTP/1.1 100 \r\n"),
+            101 => @memcpy(data[0..15], "HTTP/1.1 101 \r\n"),
+            102 => @memcpy(data[0..15], "HTTP/1.1 102 \r\n"),
+            103 => @memcpy(data[0..15], "HTTP/1.1 103 \r\n"),
+            200 => @memcpy(data[0..15], "HTTP/1.1 200 \r\n"),
+            201 => @memcpy(data[0..15], "HTTP/1.1 201 \r\n"),
+            202 => @memcpy(data[0..15], "HTTP/1.1 202 \r\n"),
+            203 => @memcpy(data[0..15], "HTTP/1.1 203 \r\n"),
+            204 => @memcpy(data[0..15], "HTTP/1.1 204 \r\n"),
+            205 => @memcpy(data[0..15], "HTTP/1.1 205 \r\n"),
+            206 => @memcpy(data[0..15], "HTTP/1.1 206 \r\n"),
+            207 => @memcpy(data[0..15], "HTTP/1.1 207 \r\n"),
+            208 => @memcpy(data[0..15], "HTTP/1.1 208 \r\n"),
+            226 => @memcpy(data[0..15], "HTTP/1.1 226 \r\n"),
+            300 => @memcpy(data[0..15], "HTTP/1.1 300 \r\n"),
+            301 => @memcpy(data[0..15], "HTTP/1.1 301 \r\n"),
+            302 => @memcpy(data[0..15], "HTTP/1.1 302 \r\n"),
+            303 => @memcpy(data[0..15], "HTTP/1.1 303 \r\n"),
+            304 => @memcpy(data[0..15], "HTTP/1.1 304 \r\n"),
+            305 => @memcpy(data[0..15], "HTTP/1.1 305 \r\n"),
+            306 => @memcpy(data[0..15], "HTTP/1.1 306 \r\n"),
+            307 => @memcpy(data[0..15], "HTTP/1.1 307 \r\n"),
+            308 => @memcpy(data[0..15], "HTTP/1.1 308 \r\n"),
+            400 => @memcpy(data[0..15], "HTTP/1.1 400 \r\n"),
+            401 => @memcpy(data[0..15], "HTTP/1.1 401 \r\n"),
+            402 => @memcpy(data[0..15], "HTTP/1.1 402 \r\n"),
+            403 => @memcpy(data[0..15], "HTTP/1.1 403 \r\n"),
+            404 => @memcpy(data[0..15], "HTTP/1.1 404 \r\n"),
+            405 => @memcpy(data[0..15], "HTTP/1.1 405 \r\n"),
+            406 => @memcpy(data[0..15], "HTTP/1.1 406 \r\n"),
+            407 => @memcpy(data[0..15], "HTTP/1.1 407 \r\n"),
+            408 => @memcpy(data[0..15], "HTTP/1.1 408 \r\n"),
+            409 => @memcpy(data[0..15], "HTTP/1.1 409 \r\n"),
+            410 => @memcpy(data[0..15], "HTTP/1.1 410 \r\n"),
+            411 => @memcpy(data[0..15], "HTTP/1.1 411 \r\n"),
+            412 => @memcpy(data[0..15], "HTTP/1.1 412 \r\n"),
+            413 => @memcpy(data[0..15], "HTTP/1.1 413 \r\n"),
+            414 => @memcpy(data[0..15], "HTTP/1.1 414 \r\n"),
+            415 => @memcpy(data[0..15], "HTTP/1.1 415 \r\n"),
+            416 => @memcpy(data[0..15], "HTTP/1.1 416 \r\n"),
+            417 => @memcpy(data[0..15], "HTTP/1.1 417 \r\n"),
+            418 => @memcpy(data[0..15], "HTTP/1.1 418 \r\n"),
+            421 => @memcpy(data[0..15], "HTTP/1.1 421 \r\n"),
+            422 => @memcpy(data[0..15], "HTTP/1.1 422 \r\n"),
+            423 => @memcpy(data[0..15], "HTTP/1.1 423 \r\n"),
+            424 => @memcpy(data[0..15], "HTTP/1.1 424 \r\n"),
+            425 => @memcpy(data[0..15], "HTTP/1.1 425 \r\n"),
+            426 => @memcpy(data[0..15], "HTTP/1.1 426 \r\n"),
+            428 => @memcpy(data[0..15], "HTTP/1.1 428 \r\n"),
+            429 => @memcpy(data[0..15], "HTTP/1.1 429 \r\n"),
+            431 => @memcpy(data[0..15], "HTTP/1.1 431 \r\n"),
+            451 => @memcpy(data[0..15], "HTTP/1.1 451 \r\n"),
+            500 => @memcpy(data[0..15], "HTTP/1.1 500 \r\n"),
+            501 => @memcpy(data[0..15], "HTTP/1.1 501 \r\n"),
+            502 => @memcpy(data[0..15], "HTTP/1.1 502 \r\n"),
+            503 => @memcpy(data[0..15], "HTTP/1.1 503 \r\n"),
+            504 => @memcpy(data[0..15], "HTTP/1.1 504 \r\n"),
+            505 => @memcpy(data[0..15], "HTTP/1.1 505 \r\n"),
+            506 => @memcpy(data[0..15], "HTTP/1.1 506 \r\n"),
+            507 => @memcpy(data[0..15], "HTTP/1.1 507 \r\n"),
+            508 => @memcpy(data[0..15], "HTTP/1.1 508 \r\n"),
+            510 => @memcpy(data[0..15], "HTTP/1.1 510 \r\n"),
+            511 => @memcpy(data[0..15], "HTTP/1.1 511 \r\n"),
             else => |s| {
                 const HTTP1_1 = "HTTP/1.1 ";
                 const l = HTTP1_1.len;
                 @memcpy(data[0..l], HTTP1_1);
                 pos = l + writeInt(data[l..], @as(u32, s));
-                data[pos] = '\r';
-                data[pos + 1] = '\n';
-                pos += 2;
+                @memcpy(data[pos..][0..3], " \r\n");
+                pos += 3;
             },
         }
 
@@ -587,7 +586,7 @@ test "response: write" {
         var res = ctx.response();
         res.status = 401;
         try res.write();
-        try ctx.expect("HTTP/1.1 401\r\nContent-Length: 0\r\n\r\n");
+        try ctx.expect("HTTP/1.1 401 \r\nContent-Length: 0\r\n\r\n");
     }
 
     {
@@ -596,7 +595,7 @@ test "response: write" {
         res.status = 200;
         res.body = "hello";
         try res.write();
-        try ctx.expect("HTTP/1.1 200\r\nContent-Length: 5\r\n\r\nhello");
+        try ctx.expect("HTTP/1.1 200 \r\nContent-Length: 5\r\n\r\nhello");
     }
 }
 
@@ -607,7 +606,7 @@ test "response: content_type" {
     var res = ctx.response();
     res.content_type = httpz.ContentType.WEBP;
     try res.write();
-    try ctx.expect("HTTP/1.1 200\r\nContent-Type: image/webp\r\nContent-Length: 0\r\n\r\n");
+    try ctx.expect("HTTP/1.1 200 \r\nContent-Type: image/webp\r\nContent-Length: 0\r\n\r\n");
 }
 
 test "response: write header_buffer_size" {
@@ -621,7 +620,7 @@ test "response: write header_buffer_size" {
             var res = ctx.response();
             res.status = 792;
             try res.write();
-            try ctx.expect("HTTP/1.1 792\r\nContent-Length: 0\r\n\r\n");
+            try ctx.expect("HTTP/1.1 792 \r\nContent-Length: 0\r\n\r\n");
         }
     }
 
@@ -638,7 +637,7 @@ test "response: write header_buffer_size" {
             res.header("b-hdr", "b-val");
             res.header("c-header11", "cv");
             try res.write();
-            try ctx.expect("HTTP/1.1 401\r\na-header: a-value\r\nb-hdr: b-val\r\nc-header11: cv\r\nContent-Length: 0\r\n\r\n");
+            try ctx.expect("HTTP/1.1 401 \r\na-header: a-value\r\nb-hdr: b-val\r\nc-header11: cv\r\nContent-Length: 0\r\n\r\n");
         }
     }
 
@@ -655,7 +654,7 @@ test "response: write header_buffer_size" {
             res.header("c-header11", "cv");
             res.body = "hello world!";
             try res.write();
-            try ctx.expect("HTTP/1.1 8\r\na-header: a-value\r\nb-hdr: b-val\r\nc-header11: cv\r\nContent-Length: 12\r\n\r\nhello world!");
+            try ctx.expect("HTTP/1.1 8 \r\na-header: a-value\r\nb-hdr: b-val\r\nc-header11: cv\r\nContent-Length: 12\r\n\r\nhello world!");
         }
     }
 }
@@ -668,7 +667,7 @@ test "response: header" {
         var res = ctx.response();
         res.header("Key1", "Value1");
         try res.write();
-        try ctx.expect("HTTP/1.1 200\r\nKey1: Value1\r\nContent-Length: 0\r\n\r\n");
+        try ctx.expect("HTTP/1.1 200 \r\nKey1: Value1\r\nContent-Length: 0\r\n\r\n");
     }
 
     {
@@ -682,7 +681,7 @@ test "response: header" {
         t.allocator.free(k);
         t.allocator.free(v);
         try res.write();
-        try ctx.expect("HTTP/1.1 200\r\nKey2: Value2\r\nContent-Length: 0\r\n\r\n");
+        try ctx.expect("HTTP/1.1 200 \r\nKey2: Value2\r\nContent-Length: 0\r\n\r\n");
     }
 }
 
@@ -705,7 +704,7 @@ test "response: json fuzz" {
             try res.json(body, .{});
             try res.write();
 
-            const expected = try std.fmt.allocPrint(t.arena.allocator(), "HTTP/1.1 200\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n\"{s}\"", .{ expected_encoded_length, body });
+            const expected = try std.fmt.allocPrint(t.arena.allocator(), "HTTP/1.1 200 \r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n\"{s}\"", .{ expected_encoded_length, body });
             try ctx.expect(expected);
         }
     }
@@ -730,7 +729,7 @@ test "response: writer fuzz" {
             try std.json.stringify(body, .{}, res.writer());
             try res.write();
 
-            const expected = try std.fmt.allocPrint(t.arena.allocator(), "HTTP/1.1 204\r\nContent-Length: {d}\r\n\r\n\"{s}\"", .{ expected_encoded_length, body });
+            const expected = try std.fmt.allocPrint(t.arena.allocator(), "HTTP/1.1 204 \r\nContent-Length: {d}\r\n\r\n\"{s}\"", .{ expected_encoded_length, body });
             try ctx.expect(expected);
         }
     }
@@ -757,7 +756,7 @@ test "response: direct writer" {
     try writer.writeByte(']');
 
     try res.write();
-    try ctx.expect("HTTP/1.1 200\r\nContent-Length: 9\r\n\r\n[123,456]");
+    try ctx.expect("HTTP/1.1 200 \r\nContent-Length: 9\r\n\r\n[123,456]");
 }
 
 test "response: written" {
@@ -769,7 +768,7 @@ test "response: written" {
 
     res.body = "abc";
     try res.write();
-    try ctx.expect("HTTP/1.1 200\r\nContent-Length: 3\r\n\r\nabc");
+    try ctx.expect("HTTP/1.1 200 \r\nContent-Length: 3\r\n\r\nabc");
 
     // write again, without a res.reset, nothing gets written
     res.body = "yo!";

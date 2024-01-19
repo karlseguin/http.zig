@@ -572,7 +572,7 @@ test "httpz: invalid request" {
     try stream.writeAll("TEA / HTTP/1.1\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 400\r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
 }
 
 test "httpz: invalid request path" {
@@ -581,7 +581,7 @@ test "httpz: invalid request path" {
     try stream.writeAll("TEA /helo\rn\nWorld:test HTTP/1.1\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 400\r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
 }
 
 test "httpz: invalid header name" {
@@ -590,7 +590,7 @@ test "httpz: invalid header name" {
     try stream.writeAll("GET / HTTP/1.1\r\nOver: 9000\r\nHel\tlo:World\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 400\r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
 }
 
 test "httpz: no route" {
@@ -599,7 +599,7 @@ test "httpz: no route" {
     try stream.writeAll("GET / HTTP/1.1\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 404\r\nContent-Length: 9\r\n\r\nNot Found", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 404 \r\nContent-Length: 9\r\n\r\nNot Found", testReadAll(stream, &buf));
 }
 
 test "httpz: no route with custom notFound handler" {
@@ -608,7 +608,7 @@ test "httpz: no route with custom notFound handler" {
     try stream.writeAll("GET /not_found HTTP/1.1\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 404\r\nCtx: 3\r\nContent-Length: 10\r\n\r\nwhere lah?", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 404 \r\nCtx: 3\r\nContent-Length: 10\r\n\r\nwhere lah?", testReadAll(stream, &buf));
 }
 
 test "httpz: unhandled exception" {
@@ -620,7 +620,7 @@ test "httpz: unhandled exception" {
     try stream.writeAll("GET /fail HTTP/1.1\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 500\r\nContent-Length: 21\r\n\r\nInternal Server Error", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 500 \r\nContent-Length: 21\r\n\r\nInternal Server Error", testReadAll(stream, &buf));
 }
 
 test "httpz: unhandled exception with custom error handler" {
@@ -636,7 +636,7 @@ test "httpz: unhandled exception with custom error handler" {
     try stream.writeAll("GET /fail HTTP/1.1\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 500\r\nCtx: 3\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 500 \r\nCtx: 3\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", testReadAll(stream, &buf));
 }
 
 test "httpz: route params" {
@@ -645,7 +645,7 @@ test "httpz: route params" {
     try stream.writeAll("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 200\r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", testReadAll(stream, &buf));
 }
 
 test "httpz: request and response headers" {
@@ -654,7 +654,7 @@ test "httpz: request and response headers" {
     try stream.writeAll("GET /test/headers HTTP/1.1\r\nHeader-Name: Header-Value\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 200\r\nCtx: 3\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 200 \r\nCtx: 3\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", testReadAll(stream, &buf));
 }
 
 test "httpz: content-length body" {
@@ -663,7 +663,7 @@ test "httpz: content-length body" {
     try stream.writeAll("GET /test/body/cl HTTP/1.1\r\nHeader-Name: Header-Value\r\nContent-Length: 4\r\n\r\nabcz");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 200\r\nEcho-Body: abcz\r\nContent-Length: 0\r\n\r\n", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 200 \r\nEcho-Body: abcz\r\nContent-Length: 0\r\n\r\n", testReadAll(stream, &buf));
 }
 
 test "httpz: json response" {
@@ -672,7 +672,7 @@ test "httpz: json response" {
     try stream.writeAll("GET /test/json HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 201\r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 201 \r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", testReadAll(stream, &buf));
 }
 
 test "httpz: query" {
@@ -681,7 +681,7 @@ test "httpz: query" {
     try stream.writeAll("GET /test/query?fav=keemun%20te%61%21 HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 200\r\nContent-Length: 11\r\n\r\nkeemun tea!", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 11\r\n\r\nkeemun tea!", testReadAll(stream, &buf));
 }
 
 test "httpz: custom dispatcher" {
@@ -690,7 +690,7 @@ test "httpz: custom dispatcher" {
     try stream.writeAll("HEAD /test/dispatcher HTTP/1.1\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 200\r\ndispatcher: test-dispatcher-1\r\nContent-Length: 6\r\n\r\naction", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 200 \r\ndispatcher: test-dispatcher-1\r\nContent-Length: 6\r\n\r\naction", testReadAll(stream, &buf));
 }
 
 test "httpz: router groups" {
