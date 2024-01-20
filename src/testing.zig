@@ -192,7 +192,7 @@ pub fn parseWithAllocator(allocator: Allocator, data: []u8) !Testing.Response {
 	var it = std.mem.split(u8, raw, "\r\n");
 	if (it.next()) |line| {
 		header_length = line.len + 2;
-		status = try std.fmt.parseInt(u16, line[9..], 10);
+		status = try std.fmt.parseInt(u16, line[9..12], 10);
 	} else {
 		return error.InvalidResponseLine;
 	}

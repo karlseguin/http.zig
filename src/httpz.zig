@@ -448,7 +448,7 @@ test "httpz: invalid request" {
 	defer srv.deinit();
 	testRequest(u32, &srv, stream);
 
-	try t.expectString("HTTP/1.1 400\r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received.items);
+	try t.expectString("HTTP/1.1 400 \r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received.items);
 }
 
 
@@ -461,7 +461,7 @@ test "httpz: invalid request path" {
 	defer srv.deinit();
 	testRequest(u32, &srv, stream);
 
-	try t.expectString("HTTP/1.1 400\r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received.items);
+	try t.expectString("HTTP/1.1 400 \r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received.items);
 }
 
 test "httpz: invalid header name" {
@@ -473,7 +473,7 @@ test "httpz: invalid header name" {
 	defer srv.deinit();
 	testRequest(u32, &srv, stream);
 
-	try t.expectString("HTTP/1.1 400\r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received.items);
+	try t.expectString("HTTP/1.1 400 \r\nContent-Length: 15\r\n\r\nInvalid Request", stream.received.items);
 }
 
 test "httpz: no route" {
@@ -485,7 +485,7 @@ test "httpz: no route" {
 	defer srv.deinit();
 	testRequest(u32, &srv, stream);
 
-	try t.expectString("HTTP/1.1 404\r\nContent-Length: 9\r\n\r\nNot Found", stream.received.items);
+	try t.expectString("HTTP/1.1 404 \r\nContent-Length: 9\r\n\r\nNot Found", stream.received.items);
 }
 
 test "httpz: no route with custom notFound handler" {
@@ -498,7 +498,7 @@ test "httpz: no route with custom notFound handler" {
 	srv.notFound(testNotFound);
 	testRequest(u32, &srv, stream);
 
-	try t.expectString("HTTP/1.1 404\r\nCtx: 3\r\nContent-Length: 10\r\n\r\nwhere lah?", stream.received.items);
+	try t.expectString("HTTP/1.1 404 \r\nCtx: 3\r\nContent-Length: 10\r\n\r\nwhere lah?", stream.received.items);
 }
 
 test "httpz: unhandled exception" {
@@ -514,7 +514,7 @@ test "httpz: unhandled exception" {
 	srv.router().get("/fail", testFail);
 	testRequest(u32, &srv, stream);
 
-	try t.expectString("HTTP/1.1 500\r\nContent-Length: 21\r\n\r\nInternal Server Error", stream.received.items);
+	try t.expectString("HTTP/1.1 500 \r\nContent-Length: 21\r\n\r\nInternal Server Error", stream.received.items);
 }
 
 test "httpz: unhandled exception with custom error handler" {
@@ -531,7 +531,7 @@ test "httpz: unhandled exception with custom error handler" {
 	srv.router().get("/fail", testFail);
 	testRequest(u32, &srv, stream);
 
-	try t.expectString("HTTP/1.1 500\r\nCtx: 4\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", stream.received.items);
+	try t.expectString("HTTP/1.1 500 \r\nCtx: 4\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", stream.received.items);
 }
 
 test "httpz: route params" {
@@ -544,7 +544,7 @@ test "httpz: route params" {
 	srv.router().all("/api/:version/users/:UserId", testParams);
 	testRequest(u32, &srv, stream);
 
-	try t.expectString("HTTP/1.1 200\r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", stream.received.items);
+	try t.expectString("HTTP/1.1 200 \r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", stream.received.items);
 }
 
 test "httpz: request and response headers" {
@@ -557,7 +557,7 @@ test "httpz: request and response headers" {
 	srv.router().get("/test/headers", testHeaders);
 	testRequest(u32, &srv, stream);
 
-	try t.expectString("HTTP/1.1 200\r\nCtx: 88\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", stream.received.items);
+	try t.expectString("HTTP/1.1 200 \r\nCtx: 88\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", stream.received.items);
 }
 
 test "httpz: content-length body" {
@@ -570,7 +570,7 @@ test "httpz: content-length body" {
 	srv.router().get("/test/body/cl", testCLBody);
 	testRequest(u32, &srv, stream);
 
-	try t.expectString("HTTP/1.1 200\r\nEcho-Body: abcz\r\nContent-Length: 0\r\n\r\n", stream.received.items);
+	try t.expectString("HTTP/1.1 200 \r\nEcho-Body: abcz\r\nContent-Length: 0\r\n\r\n", stream.received.items);
 }
 
 test "httpz: json response" {
@@ -583,7 +583,7 @@ test "httpz: json response" {
 	srv.router().get("/test/json", testJsonRes);
 	testRequest(void, &srv, stream);
 
-	try t.expectString("HTTP/1.1 201\r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", stream.received.items);
+	try t.expectString("HTTP/1.1 201 \r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", stream.received.items);
 }
 
 test "httpz: query" {
@@ -596,7 +596,7 @@ test "httpz: query" {
 	srv.router().get("/test/query", testReqQuery);
 	testRequest(void, &srv, stream);
 
-	try t.expectString("HTTP/1.1 200\r\nContent-Length: 11\r\n\r\nkeemun tea!", stream.received.items);
+	try t.expectString("HTTP/1.1 200 \r\nContent-Length: 11\r\n\r\nkeemun tea!", stream.received.items);
 }
 
 test "httpz: custom dispatcher" {
@@ -610,7 +610,7 @@ test "httpz: custom dispatcher" {
 
 	_ = stream.add("HEAD /test/dispatcher HTTP/1.1\r\n\r\n");
 	testRequest(void, &srv, stream);
-	try t.expectString("HTTP/1.1 200\r\ndispatcher: test-dispatcher-1\r\nContent-Length: 6\r\n\r\naction", stream.received.items);
+	try t.expectString("HTTP/1.1 200 \r\ndispatcher: test-dispatcher-1\r\nContent-Length: 6\r\n\r\naction", stream.received.items);
 }
 
 test "httpz: router groups" {
