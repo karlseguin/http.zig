@@ -403,6 +403,21 @@ pub const Response = struct {
 			self.res.pos = pos + n;
 		}
 
+		pub fn writeBytesNTimes(self: Writer, bytes: []const u8, n: usize) !void {
+			const l = bytes.len * n;
+			try self.ensureSpace(l);
+
+			var pos = self.res.pos;
+			const buffer = self.res.writer_buffer;
+
+			for (0..n) |_| {
+				const end_pos = pos + bytes.len;
+				@memcpy(buffer[pos..end_pos], bytes);
+				pos = end_pos;
+			}
+			self.res.pos = l;
+		}
+
 		pub fn writeAll(self: Writer, data: []const u8) !void {
 			try self.ensureSpace(data.len);
 			const pos = self.res.pos;
