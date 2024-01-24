@@ -101,7 +101,6 @@ pub const Context = struct {
             .address = std.net.Address.initIp4([_]u8{ 127, 0, 0, 200 }, 0),
             .req_state = req_state,
             .res_state = res_state,
-            .websocket = undefined,
             .next = null,
             .prev = null,
             .timeout = 0,

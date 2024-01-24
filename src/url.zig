@@ -143,25 +143,7 @@ pub const Url = struct {
     }
 
     pub fn isValid(url: []const u8) bool {
-        var i: usize = 0;
-        if (std.simd.suggestVectorLength(u8)) |block_len| {
-            const Block = @Vector(block_len, u8);
-
-            // anything less than this should be encoded
-            const min: Block = @splat(32);
-
-            // anything more than this should be encoded
-            const max: Block = @splat(126);
-
-            while (i > block_len) {
-                const block: Block = url[i..][0..block_len].*;
-                if (@reduce(.Or, block < min) or @reduce(.Or, block > max)) {
-                    return false;
-                }
-                i += block_len;
-            }
-        }
-        for (url[i..]) |c| {
+        for (url) |c| {
             if (c < 32 or c > 126) {
                 return false;
             }

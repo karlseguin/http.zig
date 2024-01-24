@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-pub const websocket = @import("websocket");
 
 const Thread = std.Thread;
 pub const testing = @import("testing.zig");
@@ -282,18 +281,6 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
             const allocator = self.allocator;
 
-            const ws_config = config.websocket orelse Config.Websocket{};
-            var ws = try websocket.Server.init(allocator, .{
-                .max_size = ws_config.max_size,
-                .buffer_size = ws_config.buffer_size,
-                .handle_ping = ws_config.handle_ping,
-                .handle_pong = ws_config.handle_pong,
-                .handle_close = ws_config.handle_close,
-                .large_buffer_pool_count = ws_config.large_buffer_pool_count,
-                .large_buffer_size = ws_config.large_buffer_size,
-            });
-            defer ws.deinit(allocator);
-
             const signal = try os.pipe();
 
             const worker_count = config.workers.count orelse 2;
@@ -315,7 +302,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             }
 
             for (0..workers.len) |i| {
-                workers[i] = try Worker.init(allocator, self, &ws, &config);
+                workers[i] = try Worker.init(allocator, self, &config);
                 threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], socket, signal[0] });
                 started += 1;
             }
@@ -457,44 +444,6 @@ var context_server: *ServerCtx(u32, u32) = undefined;
 var cors_server: *ServerCtx(u32, u32) = undefined;
 var reuse_server: *ServerCtx(void, void) = undefined;
 
-pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, context: anytype) !bool {
-    const key = ensureWebsocketRequest(req) orelse return false;
-
-    const conn = res.conn;
-    const stream = conn.stream;
-    try conn.blocking();
-    res.disown();
-
-    try websocket.Handshake.reply(key, stream);
-
-    const thread = try std.Thread.spawn(.{}, websocketHandler, .{ H, conn.websocket, stream, context });
-    thread.detach();
-    return true;
-}
-
-fn ensureWebsocketRequest(req: *Request) ?[]const u8 {
-    const upgrade = req.header("upgrade") orelse return null;
-    if (std.ascii.eqlIgnoreCase(upgrade, "websocket") == false) return null;
-
-    const version = req.header("sec-websocket-version") orelse return null;
-    if (std.ascii.eqlIgnoreCase(version, "13") == false) return null;
-
-    // firefox will send multiple values for this header
-    const connection = req.header("connection") orelse return null;
-    if (std.ascii.indexOfIgnoreCase(connection, "upgrade") == null) return null;
-
-    return req.header("sec-websocket-key");
-}
-
-fn websocketHandler(comptime H: type, server: *websocket.Server, stream: std.net.Stream, context: anytype) void {
-    errdefer stream.close();
-    std.os.maybeIgnoreSigpipe();
-
-    var conn = server.newConn(stream);
-    var handler = H.init(&conn, context) catch return;
-    server.handle(H, &handler, &conn);
-}
-
 test {
     // this will leak since the server will run until the process exits. If we use
     // our testing allocator, it'll report the leak.
@@ -503,7 +452,6 @@ test {
         default_server = try leaking_allocator.create(ServerCtx(void, void));
         default_server.* = try Server().init(leaking_allocator, .{ .port = 5992 });
         var router = default_server.router();
-        router.get("/test/ws", testWS);
         router.get("/test/json", testJsonRes);
         router.get("/test/query", testReqQuery);
         router.get("/test/stream", testEventStream);
@@ -851,44 +799,6 @@ test "httpz: event stream" {
     try t.expectString("a message", res.body);
 }
 
-test "websocket: invalid request" {
-    const stream = testStream(5992);
-    defer stream.close();
-    try stream.writeAll("GET /test/ws HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
-
-    var res = testReadParsed(stream);
-    defer res.deinit();
-    try t.expectString("invalid websocket", res.body);
-}
-
-test "websocket: upgrade" {
-    const stream = testStream(5992);
-    defer stream.close();
-    try stream.writeAll("GET /test/ws HTTP/1.1\r\nContent-Length: 0\r\n");
-    try stream.writeAll("upgrade: WEBsocket\r\n");
-    try stream.writeAll("Sec-Websocket-verSIon: 13\r\n");
-    try stream.writeAll("ConnectioN: abc,upgrade,123\r\n");
-    try stream.writeAll("SEC-WEBSOCKET-KeY: a-secret-key\r\n\r\n");
-
-    var res = testReadHeader(stream);
-    defer res.deinit();
-    try t.expectEqual(101, res.status);
-    try t.expectString("websocket", res.headers.get("Upgrade").?);
-    try t.expectString("upgrade", res.headers.get("Connection").?);
-    try t.expectString("55eM2SNGu+68v5XXrr982mhPFkU=", res.headers.get("Sec-Websocket-Accept").?);
-
-    try stream.writeAll(&websocket.frameText("over 9000!"));
-    try stream.writeAll(&websocket.frameBin("close"));
-
-    var buf: [20]u8 = undefined;
-    const n = try stream.read(&buf);
-    try t.expectEqual(12, n);
-    try t.expectEqual(129, buf[0]);
-    try t.expectEqual(10, buf[1]);
-    try t.expectString("over 9000!", buf[2..12]);
-}
-
-
 fn testFail(_: u32, _: *Request, _: *Response) !void {
     return error.TestUnhandledError;
 }
@@ -906,12 +816,6 @@ fn testHeaders(ctx: u32, req: *Request, res: *Response) !void {
 
 fn testCLBody(_: u32, req: *Request, res: *Response) !void {
     res.header("Echo-Body", req.body().?);
-}
-
-fn testWS(req: *Request, res: *Response) !void {
-    if (try upgradeWebsocket(TestWSHandler, req, res, TestWSHandler.Context{ .id = 339 }) == false) {
-        res.body = "invalid websocket";
-    }
 }
 
 fn testJsonRes(_: *Request, res: *Response) !void {
@@ -1058,33 +962,6 @@ fn testReadHeader(stream: std.net.Stream) testing.Testing.Response {
     }
     unreachable;
 }
-
-const TestWSHandler = struct {
-    ctx: TestWSHandler.Context,
-    conn: *websocket.Conn,
-
-    const Context = struct {
-        id: i32,
-    };
-
-    pub fn init(conn: *websocket.Conn, ctx: TestWSHandler.Context) !TestWSHandler {
-        return .{
-            .ctx = ctx,
-            .conn = conn,
-        };
-    }
-
-    pub fn handle(self: *TestWSHandler, msg: websocket.Message) !void {
-        if (msg.type == .binary) {
-            self.conn.close();
-        } else {
-            try self.conn.write(msg.data);
-        }
-    }
-
-    pub fn close(_: *TestWSHandler) void {}
-};
-
 
 const TestUser = struct {
     id: []const u8,

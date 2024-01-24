@@ -2,7 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const httpz = @import("httpz.zig");
-const websocket = httpz.websocket;
 
 const Config = httpz.Config;
 const Request = httpz.Request;
@@ -54,11 +53,11 @@ pub fn Worker(comptime S: type) type {
             else => @compileError("This branch requires access to kqueue or epoll. Consider using the \"blocking\" branch instead."),
         };
 
-        pub fn init(allocator: Allocator, server: S, ws: *websocket.Server, config: *const Config) !Self {
+        pub fn init(allocator: Allocator, server: S, config: *const Config) !Self {
             const loop = try Loop.init();
             errdefer loop.deinit();
 
-            const manager = try Manager.init(allocator, ws, config);
+            const manager = try Manager.init(allocator, config);
             errdefer manager.deinit();
 
             return .{
@@ -396,14 +395,11 @@ pub const Conn = struct {
     // application as req.arena and res.arena.
     arena: *std.heap.ArenaAllocator,
 
-    // Reference to our websocket server
-    websocket: *websocket.Server,
-
     // Workers maintain their active conns in a linked list. The link list is intrusive.
     next: ?*Conn,
     prev: ?*Conn,
 
-    fn init(allocator: Allocator, buffer_pool: *BufferPool, ws: *websocket.Server, config: *const Config) !Conn {
+    fn init(allocator: Allocator, buffer_pool: *BufferPool, config: *const Config) !Conn {
         const arena = try allocator.create(std.heap.ArenaAllocator);
         errdefer allocator.destroy(arena);
 
@@ -419,7 +415,6 @@ pub const Conn = struct {
             .arena = arena,
             .close = false,
             .state = .active,
-            .websocket = ws,
             .io_mode = .nonblocking,
             .poll_mode = .read,
             .stream = undefined,
@@ -501,7 +496,7 @@ const Manager = struct {
     timeout_request: u32,
     timeout_keepalive: u32,
 
-    fn init(allocator: Allocator, ws: *websocket.Server, config: *const Config) !Manager {
+    fn init(allocator: Allocator, config: *const Config) !Manager {
         const buffer_pool = try allocator.create(BufferPool);
         errdefer allocator.destroy(buffer_pool);
 
@@ -510,7 +505,7 @@ const Manager = struct {
         buffer_pool.* = try BufferPool.init(allocator, large_buffer_count, large_buffer_size);
         errdefer buffer_pool.deinit();
 
-        const conn_pool = try ConnPool.init(allocator, buffer_pool, ws, config);
+        const conn_pool = try ConnPool.init(allocator, buffer_pool, config);
 
         return .{
             .len = 0,
@@ -650,10 +645,9 @@ const ConnPool = struct {
     allocator: Allocator,
     config: *const Config,
     buffer_pool: *BufferPool,
-    websocket: *websocket.Server,
     mem_pool: std.heap.MemoryPool(Conn),
 
-    fn init(allocator: Allocator, buffer_pool: *BufferPool, ws: *websocket.Server, config: *const Config) !ConnPool {
+    fn init(allocator: Allocator, buffer_pool: *BufferPool,  config: *const Config) !ConnPool {
         const min = config.workers.min_conn orelse config.workers.max_conn orelse 32;
 
         var conns = try allocator.alloc(*Conn, min);
@@ -672,7 +666,7 @@ const ConnPool = struct {
         for (0..min) |i| {
             const conn = try mem_pool.create();
             errdefer mem_pool.destroy(conn);
-            conn.* = try Conn.init(allocator, buffer_pool, ws, config);
+            conn.* = try Conn.init(allocator, buffer_pool, config);
 
             conns[i] = conn;
             initialized += 1;
@@ -680,7 +674,6 @@ const ConnPool = struct {
 
         return .{
             .conns = conns,
-            .websocket = ws,
             .config = config,
             .available = min,
             .allocator = allocator,
@@ -710,7 +703,7 @@ const ConnPool = struct {
 
         const conn = try self.mem_pool.create();
         errdefer self.mem_pool.destroy(conn);
-        conn.* = try Conn.init(self.allocator, self.buffer_pool, self.websocket, self.config);
+        conn.* = try Conn.init(self.allocator, self.buffer_pool, self.config);
         return conn;
     }
 
@@ -1013,7 +1006,7 @@ test "ConnPool" {
     var bp = try BufferPool.init(t.allocator, 2, 64);
     defer bp.deinit();
 
-    var p = try ConnPool.init(t.allocator, &bp, undefined, &.{
+    var p = try ConnPool.init(t.allocator, &bp, &.{
         .workers = .{ .min_conn = 2 },
         .request = .{ .buffer_size = 64 },
     });
