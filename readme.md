@@ -20,6 +20,8 @@ The `blocking` branch uses a naive thread-per-connection. It is simpler and shou
 
 More details are [available here](https://www.aolium.com/karlseguin/f75427ac-699e-35f1-dec8-32d54a4f5700).
 
+Please use the [zig-0.11](https://github.com/karlseguin/http.zig/tree/zig-0.11) for use with Zig 0.11. This is similar to the master branch but is compatible with Zig 0.11. It does not include websocket support however.
+
 # Usage
 
 ## Simple Use Case
