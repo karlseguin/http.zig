@@ -793,7 +793,7 @@ Service Side Events can be enabled by calling `res.startEventStream()`. On succe
 // Can set headers
 res.header("Custom-Header", "Custom-Value");
 
-const stream = res.startEventStream();
+const stream = try res.startEventStream();
 // do not use res or req from this point on
 while (true) {
     // some event loop
