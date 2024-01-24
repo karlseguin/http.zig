@@ -188,6 +188,21 @@ pub const Response = struct {
             self.state.body_len = pos + n;
         }
 
+        pub fn writeBytesNTimes(self: Writer, bytes: []const u8, n: usize) !void {
+            const l = bytes.len * n;
+            try self.ensureSpace(l);
+
+            var pos = self.state.body_len;
+            var buf = self.state.body_buffer.?.data;
+
+            for (0..n) |_| {
+                const end_pos = pos + bytes.len;
+                @memcpy(buf[pos..end_pos], bytes);
+                pos = end_pos;
+            }
+            self.state.body_len = l;
+        }
+
         pub fn writeAll(self: Writer, data: []const u8) !void {
             try self.ensureSpace(data.len);
             const pos = self.state.body_len;
