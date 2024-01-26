@@ -848,7 +848,7 @@ test "httpz: event stream" {
     try t.expectString("text/event-stream", res.headers.get("Content-Type").?);
     try t.expectString("no-cache", res.headers.get("Cache-Control").?);
     try t.expectString("keep-alive", res.headers.get("Connection").?);
-    try t.expectString("a message", res.body);
+    try t.expectString("helloa message", res.body);
 }
 
 test "websocket: invalid request" {
@@ -921,9 +921,17 @@ fn testJsonRes(_: *Request, res: *Response) !void {
 
 fn testEventStream(_: *Request, res: *Response) !void {
     res.status = 818;
-    const stream = try res.startEventStream();
-    try stream.writeAll("a message");
+    try res.startEventStream(StreamContext{.data = "hello"}, StreamContext.handle);
 }
+
+const StreamContext = struct {
+    data: []const u8,
+
+    fn handle(self: StreamContext, stream: std.net.Stream) void {
+        stream.writeAll(self.data) catch unreachable;
+        stream.writeAll("a message") catch unreachable;
+    }
+};
 
 fn testReqQuery(req: *Request, res: *Response) !void {
     res.status = 200;

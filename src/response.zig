@@ -99,7 +99,7 @@ pub const Response = struct {
         self.headers.add(n, v);
     }
 
-    pub fn startEventStream(self: *Response) !Stream {
+    pub fn startEventStream(self: *Response, ctx: anytype, comptime handler: fn(@TypeOf(ctx),  std.net.Stream) void) !void {
         self.content_type = .EVENTS;
         self.headers.add("Cache-Control", "no-cache");
         self.headers.add("Connection", "keep-alive");
@@ -112,8 +112,10 @@ pub const Response = struct {
         try state.prepareForWrite(self);
         try stream.writeAll(state.header_buffer.data[0..state.header_len]);
 
-        self.written = true;
-        return stream;
+        self.disown();
+
+        const thread = try std.Thread.spawn(.{}, handler, .{ctx, stream});
+        thread.detach();
     }
 
     // App wants to force the response to be written. Unfortunately, for the time

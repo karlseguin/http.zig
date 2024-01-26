@@ -787,17 +787,22 @@ try std.testing.expectEqual(@as(u16, 200), res.status);
 This implementation may never be fully HTTP/1.1 compliant, as it is built with the assumption that it will sit behind a reverse proxy that is tolerant of non-compliant upstreams (e.g. nginx). (One example I know of is that the server doesn't include the mandatory Date header in the response.)
 
 # Server Side Events
-Service Side Events can be enabled by calling `res.startEventStream()`. On success, this will return an `httpz.Stream` (which is a `std.net.Stream` or a mock object during testing). The stream will remain valid for the duration of the action, but `req` and `res` should no longer be used. `res.body` must not be set (directly or indirectly) prior to calling `startEventStream`.
+Server Side Events can be enabled by calling `res.startEventStream()`. This method takes an arbitrary context and a function pointer. The provided function will be executed in a new thread, receiving the provided context and an `std.net.Stream`. Headers can be added (via `res.headers.add`) before calling `startEventStream()`. `res.body` must not be set (directly or indirectly).
+
+Calling `startEventStream()` automatically sets the `Content-Type`, `Cache-Control` and `Connection` header.
 
 ```zig
-// Can set headers
-res.header("Custom-Header", "Custom-Value");
+fn handler(_: *Request, res: *Response) !void {
+    try res.startEventStream(StreamContext{}, StreamContext.handle);
+}
 
-const stream = try res.startEventStream();
-// do not use res or req from this point on
-while (true) {
-    // some event loop
-    try stream.writeAll("event: ....");
+const StreamContext = struct {
+    fn handle(self: StreamContext, stream: std.net.Stream) void {
+        while (true) {
+            // some event loop
+            stream.writeAll("event: ....") catch return;
+        }
+    }
 }
 ```
 
