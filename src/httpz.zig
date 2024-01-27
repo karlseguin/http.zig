@@ -888,6 +888,28 @@ test "websocket: upgrade" {
     try t.expectString("over 9000!", buf[2..12]);
 }
 
+test "httpz: keepalive" {
+    const stream = testStream(5993);
+    defer stream.close();
+    try stream.writeAll("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
+
+    var buf: [100]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", testReadAll(stream, &buf));
+
+    try stream.writeAll("GET /api/v2/users/123 HTTP/1.1\r\n\r\n");
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 19\r\n\r\nversion=v2,user=123", testReadAll(stream, &buf));
+}
+
+test "httpz: request in chunks" {
+    const stream = testStream(5993);
+    defer stream.close();
+    try stream.writeAll("GET /api/v2/use");
+    std.time.sleep(std.time.ns_per_ms * 10);
+    try stream.writeAll("rs/11 HTTP/1.1\r\n\r\n");
+
+    var buf: [100]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 18\r\n\r\nversion=v2,user=11", testReadAll(stream, &buf));
+}
 
 fn testFail(_: u32, _: *Request, _: *Response) !void {
     return error.TestUnhandledError;

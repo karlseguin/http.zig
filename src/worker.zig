@@ -81,12 +81,12 @@ pub fn Worker(comptime S: type) type {
             std.os.maybeIgnoreSigpipe();
             const manager = &self.manager;
 
-            self.loop.addRead(listener, 0) catch |err| {
+            self.loop.monitorAccept(listener) catch |err| {
                 log.err("Failed to add monitor to listening socket: {}", .{err});
                 return;
             };
 
-            self.loop.addRead(signal, 1) catch |err| {
+            self.loop.monitorSignal(signal) catch |err| {
                 log.err("Failed to add monitor to signal pipe: {}", .{err});
                 return;
             };
@@ -121,11 +121,18 @@ pub fn Worker(comptime S: type) type {
                     };
 
                     switch (result) {
-                        .keepalive => manager.keepalive(conn),
+                        .keepalive => blk: {
+                            self.loop.monitorRead(conn, true) catch {
+                                manager.close(conn);
+                                break :blk;
+                            };
+                            conn.poll_mode = .read;
+                            manager.keepalive(conn);
+                        },
                         .close => manager.close(conn),
                         .wait_for_socket => {},
                         .disown => {
-                            if (self.loop.remove(conn.stream.handle)) {
+                            if (self.loop.remove(conn)) {
                                 manager.disown(conn);
                             } else |_| {
                                 manager.close(conn);
@@ -158,6 +165,10 @@ pub fn Worker(comptime S: type) type {
 
             if (done == false) {
                 // we need to wait for more data
+                self.loop.monitorRead(conn, true) catch |err| {
+                    log.err("Unknown loop error: {}", .{err});
+                    return .close;
+                };
                 return .wait_for_socket;
             }
 
@@ -218,12 +229,8 @@ pub fn Worker(comptime S: type) type {
                         return .close;
                     }
 
-                    if (conn.poll_mode != .write) {
-                        // first time we've hit WouldBlock trying to write this response.
-                        // enable write notifications for the socket.
-                        conn.poll_mode = .write;
-                        try self.loop.writeMode(stream.handle, @intFromPtr(conn));
-                    }
+                    conn.poll_mode = .write;
+                    try self.loop.monitorWrite(conn);
 
                     state.pos = pos;
                     state.stage = stage;
@@ -253,14 +260,6 @@ pub fn Worker(comptime S: type) type {
                 // This connection is going to be closed. Don't waste time putting it
                 // back in read mode.
                 return .close;
-            }
-
-            if (conn.poll_mode == .write) {
-                // We got a WouldBlock writing to the socket so we put the connection
-                // in write mode. Since we intend to keep this connection open (for
-                // keepalive), we need to put it back into read mode.
-                conn.poll_mode = .read;
-                try self.loop.readMode(stream.handle, @intFromPtr(conn));
             }
 
             return .keepalive;
@@ -293,7 +292,7 @@ pub fn Worker(comptime S: type) type {
                 conn.stream = .{ .handle = socket };
                 conn.address = address;
 
-                try self.loop.addRead(socket, @intFromPtr(conn));
+                try self.loop.monitorRead(conn, false);
                 len += 1;
             }
         }
@@ -808,78 +807,29 @@ const KQueue = struct {
         std.os.close(self.q);
     }
 
-    fn addRead(self: *KQueue, fd: os.fd_t, data: usize) !void {
-        try self.change(.{
-            .ident = @intCast(fd),
-            .filter = os.system.EVFILT_READ,
-            .flags = os.system.EV_ADD,
-            .fflags = 0,
-            .data = 0,
-            .udata = data,
-        });
+    fn monitorAccept(self: *KQueue, fd: c_int) !void {
+        try self.change(fd, 0, os.system.EVFILT_READ, os.system.EV_ADD);
     }
 
-    fn writeMode(self: *KQueue, fd: os.fd_t, data: usize) !void {
-        try self.change(.{
-            .ident = @intCast(fd),
-            .filter = os.system.EVFILT_WRITE,
-            .flags = os.system.EV_ADD | os.system.EV_ENABLE,
-            .fflags = 0,
-            .data = 0,
-            .udata = data,
-        });
-
-        try self.change(.{
-            .ident = @intCast(fd),
-            .filter = os.system.EVFILT_READ,
-            .flags = os.system.EV_ADD | os.system.EV_DISABLE,
-            .fflags = 0,
-            .data = 0,
-            .udata = 0,
-        });
+    fn monitorSignal(self: *KQueue, fd: c_int) !void {
+        try self.change(fd, 1, os.system.EVFILT_READ, os.system.EV_ADD);
     }
 
-    fn readMode(self: *KQueue, fd: os.fd_t, data: usize) !void {
-        try self.change(.{
-            .ident = @intCast(fd),
-            .filter = os.system.EVFILT_READ,
-            .flags = os.system.EV_ADD | os.system.EV_ENABLE,
-            .fflags = 0,
-            .data = 0,
-            .udata = data,
-        });
-
-        try self.change(.{
-            .ident = @intCast(fd),
-            .filter = os.system.EVFILT_WRITE,
-            .flags = os.system.EV_ADD | os.system.EV_DISABLE,
-            .fflags = 0,
-            .data = 0,
-            .udata = 0,
-        });
+    fn monitorRead(self: *KQueue, conn: *Conn, comptime rearm: bool) !void {
+        _ = rearm; // used by epoll
+        try self.change(conn.stream.handle, @intFromPtr(conn), os.system.EVFILT_READ, os.system.EV_ADD | os.system.EV_ENABLE | os.system.EV_DISPATCH);
     }
 
-    fn remove(self: *KQueue, fd: os.fd_t) !void {
-        try self.change(.{
-            .ident = @intCast(fd),
-            .filter = os.system.EVFILT_READ,
-            .flags = os.system.EV_DELETE,
-            .fflags = 0,
-            .data = 0,
-            .udata = 0,
-        });
-
-        try self.change(.{
-            .ident = @intCast(fd),
-            .filter = os.system.EVFILT_WRITE,
-            .flags = os.system.EV_DELETE,
-            .fflags = 0,
-            .data = 0,
-            .udata = 0,
-        });
+    fn monitorWrite(self: *KQueue, conn: *Conn) !void {
+        try self.change(conn.stream.handle, @intFromPtr(conn), os.system.EVFILT_WRITE, os.system.EV_ADD | os.system.EV_ENABLE | os.system.EV_DISPATCH);
     }
 
-    fn change(self: *KQueue, event: Kevent) !void {
+    fn remove(self: *KQueue, conn: *Conn) !void {
+        try self.change(conn.stream.handle, 0, os.system.EVFILT_READ, os.system.EV_DELETE);
+        try self.change(conn.stream.handle, 0, os.system.EVFILT_WRITE, os.system.EV_DELETE);
+    }
+
+    fn change(self: *KQueue, fd: os.fd_t, data: usize, filter: i16, flags: u16) !void {
         var change_count = self.change_count;
         var change_buffer = &self.change_buffer;
 
@@ -888,7 +838,14 @@ const KQueue = struct {
             _ = try std.os.kevent(self.q, change_buffer, &[_]Kevent{}, null);
             change_count = 0;
         }
-        change_buffer[change_count] = event;
+        change_buffer[change_count] = .{
+            .ident = @intCast(fd),
+            .filter = filter,
+            .flags = flags,
+            .fflags = 0,
+            .data = 0,
+            .udata = data,
+        };
         self.change_count = change_count + 1;
     }
 
@@ -937,23 +894,32 @@ const EPoll = struct {
         std.os.close(self.q);
     }
 
-    fn addRead(self: *EPoll, fd: os.fd_t, user_data: usize) !void {
-        var event = os.linux.epoll_event{ .events = os.linux.EPOLL.IN, .data = .{ .ptr = user_data } };
+    fn monitorAccept(self: *EPoll, fd: c_int) !void {
+        var event = os.linux.epoll_event{ .events = os.linux.EPOLL.IN, .data = .{ .ptr = 0 } };
         return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_ADD, fd, &event);
     }
 
-    fn writeMode(self: *EPoll, fd: os.fd_t, user_data: usize) !void {
-        var event = os.linux.epoll_event{ .events = os.linux.EPOLL.OUT, .data = .{ .ptr = user_data } };
-        return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_MOD, fd, &event);
+    fn monitorSignal(self: *EPoll, fd: c_int) !void {
+        var event = os.linux.epoll_event{ .events = os.linux.EPOLL.IN, .data = .{ .ptr = 1 } };
+        return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_ADD, fd, &event);
     }
 
-    fn readMode(self: *EPoll, fd: os.fd_t, user_data: usize) !void {
-        var event = os.linux.epoll_event{ .events = os.linux.EPOLL.IN, .data = .{ .ptr = user_data } };
-        return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_MOD, fd, &event);
+    fn monitorRead(self: *EPoll, conn: *Conn, comptime rearm: bool) !void {
+        const op = if (rearm) os.linux.EPOLL.CTL_MOD else os.linux.EPOLL.CTL_ADD;
+        var event = os.linux.epoll_event{ .events = os.linux.EPOLL.IN | os.linux.EPOLL.ONESHOT, .data = .{ .ptr = @intFromPtr(conn) } };
+        return std.os.epoll_ctl(self.q, op, conn.stream.handle, &event);
     }
 
-    fn remove(self: *EPoll, fd: os.fd_t) !void {
-        return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_DEL, fd, null);
+    // socket always begins with a call to monitorRead(conn, false)
+    // so any subsequent call for this socket has to be a modification. Thus,
+    // modifyWrite doesn't need a "rearm" flag - it would always be true.
+    fn monitorWrite(self: *EPoll, conn: *Conn) !void {
+        var event = os.linux.epoll_event{ .events = os.linux.EPOLL.ONESHOT, .data = .{ .ptr = @intFromPtr(conn) } };
+        return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_MOD, conn.stream.handle, &event);
+    }
+
+    fn remove(self: *EPoll, conn: *Conn) !void {
+        return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_DEL, conn.stream.handle, null);
     }
 
     fn wait(self: *EPoll, timeout_sec: ?i32) !Iterator {
