@@ -396,8 +396,9 @@ The original casing of both the key and the name are preserved.
 To iterate over all fields, use:
 
 ```zig
-for (req.fd.keys[0..req.fd.len], 0..) |name, i| {
-    const value = req.fd.values[i];
+const fd = try req.formData();
+for (fd.keys[0..fd.len], fd.values[0..fd.len]) |name, field| {
+    //
 }
 ```
 
@@ -416,12 +417,14 @@ To iterate over all fields, use:
 
 ```zig
 const fd = try req.multiFormData();
-for (fd.keys[0..fd.len],fd.values[0..fd.len]) |name, field| {
+for (fd.keys[0..fd.len], fd.values[0..fd.len]) |name, field| {
     // access the value via field.value
 }
 ```
 
 Once this function is called, `req.formData()` will no longer work (because the body is assumed parsed).
+
+Advance warning: This is one of the few methods that can modify the request in-place. For most people this won't be an issue, but if you use `req.body()` and `req.multiFormData()`, say to log the raw body, the content-disposition field names are escaped in-place. It's still save to use `req.body()` but any  content-disposation name that was escaped will be a little off.
 
 ## httpz.Response
 The following fields are the most useful:
