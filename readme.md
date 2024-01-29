@@ -385,7 +385,7 @@ if (try req.jsonObject()) |t| {
 ```
 
 ### Form Data
-The body of the request, if any, can be parsed as a x-www-form-urlencoded value  using `req.formData()`.
+The body of the request, if any, can be parsed as a "x-www-form-urlencoded "value  using `req.formData()`. The `request.max_form_count` configuration value must be set to the maximum number of form fields to support. This defaults to 0.
 
 This behaves similarly to `query()`.
 
@@ -400,6 +400,28 @@ for (req.fd.keys[0..req.fd.len], 0..) |name, i| {
     const value = req.fd.values[i];
 }
 ```
+
+Once this function is called, `req.multiFormData()` will no longer work (because the body is assumed parsed).
+
+### Multi Part Form Data
+Similar to the above, `req.multiFormData()` can be called to parse requests with a "multipart/form-data" content type. The `request.max_multiform_count` configuration value must be set to the maximum number of form fields to support. This defaults to 0.
+
+This is a different API than `formData` because the return type is different. Rather than a simple string=>value type, the multi part form data value consists of a "value" and other optional parameters, such as filename (TODO).
+
+On first call, the `multiFormData` function attempts to parse the body. The parsed value is internally cached, so subsequent calls to `multiFormData()` are fast and cannot fail.
+
+The original casing of both the key and the name are preserved.
+
+To iterate over all fields, use:
+
+```zig
+const fd = try req.multiFormData();
+for (fd.keys[0..fd.len],fd.values[0..fd.len]) |name, field| {
+    // access the value via field.value
+}
+```
+
+Once this function is called, `req.formData()` will no longer work (because the body is assumed parsed).
 
 ## httpz.Response
 The following fields are the most useful:
@@ -632,10 +654,16 @@ try httpz.listen(allocator, &router, .{
         .max_query_count: usize = 32,
 
         // Maxium number of x-www-form-urlencoded fields to support.
-        // Additional parameters will be silenty ignored. If you're not
-        // using the request.formData function (say, because you're only
-        // consuming JSON), setting this to 0 can save a bit of memory.
-        .max_form_count: usize = 32,
+        // Additional parameters will be silenty ignored. This must be
+        // set to a value greater than 0 (the default) if you're going
+        // to use the req.formData() method.
+        .max_form_count: usize = 0,
+
+        // Maxium number of multipart/form-data fields to support.
+        // Additional parameters will be silenty ignored. This must be
+        // set to a value greater than 0 (the default) if you're going
+        // to use the req.multiFormData() method.
+        .max_multiform_count: usize = 0,
     },
 
     // various options for tweaking response object
