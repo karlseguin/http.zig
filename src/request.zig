@@ -877,6 +877,7 @@ test "request: header too big" {
 }
 
 test "request: parse method" {
+    defer t.reset();
     {
         try expectParseError(error.UnknownMethod, "GETT ", .{});
         try expectParseError(error.UnknownMethod, " PUT ", .{});
@@ -884,48 +885,42 @@ test "request: parse method" {
 
     {
         const r = try testParse("GET / HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(http.Method.GET, r.method);
     }
 
     {
         const r = try testParse("PUT / HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(http.Method.PUT, r.method);
     }
 
     {
         const r = try testParse("POST / HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(http.Method.POST, r.method);
     }
 
     {
         const r = try testParse("HEAD / HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(http.Method.HEAD, r.method);
     }
 
     {
         const r = try testParse("PATCH / HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(http.Method.PATCH, r.method);
     }
 
     {
         const r = try testParse("DELETE / HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(http.Method.DELETE, r.method);
     }
 
     {
         const r = try testParse("OPTIONS / HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(http.Method.OPTIONS, r.method);
     }
 }
 
 test "request: parse request target" {
+    defer t.reset();
     {
         try expectParseError(error.InvalidRequestTarget, "GET NOPE", .{});
         try expectParseError(error.InvalidRequestTarget, "GET nope ", .{});
@@ -937,30 +932,27 @@ test "request: parse request target" {
 
     {
         const r = try testParse("PUT / HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectString("/", r.url.raw);
     }
 
     {
         const r = try testParse("PUT /api/v2 HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectString("/api/v2", r.url.raw);
     }
 
     {
         const r = try testParse("DELETE /API/v2?hack=true&over=9000%20!! HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectString("/API/v2?hack=true&over=9000%20!!", r.url.raw);
     }
 
     {
         const r = try testParse("PUT * HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectString("*", r.url.raw);
     }
 }
 
 test "request: parse protocol" {
+    defer t.reset();
     {
         try expectParseError(error.UnknownProtocol, "GET / http/1.1\r\n", .{});
         try expectParseError(error.UnsupportedProtocol, "GET / HTTP/2.0\r\n", .{});
@@ -968,31 +960,28 @@ test "request: parse protocol" {
 
     {
         const r = try testParse("PUT / HTTP/1.0\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(http.Protocol.HTTP10, r.protocol);
     }
 
     {
         const r = try testParse("PUT / HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(http.Protocol.HTTP11, r.protocol);
     }
 }
 
 test "request: parse headers" {
+    defer t.reset();
     {
         try expectParseError(error.InvalidHeaderLine, "GET / HTTP/1.1\r\nHost\r\n", .{});
     }
 
     {
         const r = try testParse("PUT / HTTP/1.0\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(0, r.headers.len);
     }
 
     {
         var r = try testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\n\r\n", .{});
-        defer t.reset();
 
         try t.expectEqual(1, r.headers.len);
         try t.expectString("pondzpondz.com", r.headers.get("host").?);
@@ -1000,8 +989,6 @@ test "request: parse headers" {
 
     {
         var r = try testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nMisc:  Some-Value\r\nAuthorization:none\r\n\r\n", .{});
-        defer t.reset();
-
         try t.expectEqual(3, r.headers.len);
         try t.expectString("pondzpondz.com", r.header("host").?);
         try t.expectString("Some-Value", r.header("misc").?);
@@ -1010,47 +997,43 @@ test "request: parse headers" {
 }
 
 test "request: canKeepAlive" {
+    defer t.reset();
     {
         // implicitly keepalive for 1.1
         var r = try testParse("GET / HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(true, r.canKeepAlive());
     }
 
     {
         // explicitly keepalive for 1.1
         var r = try testParse("GET / HTTP/1.1\r\nConnection: keep-alive\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(true, r.canKeepAlive());
     }
 
     {
         // explicitly not keepalive for 1.1
         var r = try testParse("GET / HTTP/1.1\r\nConnection: close\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(false, r.canKeepAlive());
     }
 }
 
 test "request: query" {
+    defer t.reset();
     {
         // none
         var r = try testParse("PUT / HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(0, (try r.query()).len);
     }
 
     {
         // none with path
         var r = try testParse("PUT /why/would/this/matter HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         try t.expectEqual(0, (try r.query()).len);
     }
 
     {
         // value-less
         var r = try testParse("PUT /?a HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         const query = try r.query();
         try t.expectEqual(1, query.len);
         try t.expectString("", query.get("a").?);
@@ -1060,7 +1043,6 @@ test "request: query" {
     {
         // single
         var r = try testParse("PUT /?a=1 HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         const query = try r.query();
         try t.expectEqual(1, query.len);
         try t.expectString("1", query.get("a").?);
@@ -1070,7 +1052,6 @@ test "request: query" {
     {
         // multiple
         var r = try testParse("PUT /path?Teg=Tea&it%20%20IS=over%209000%24&ha%09ck HTTP/1.1\r\n\r\n", .{});
-        defer t.reset();
         const query = try r.query();
         try t.expectEqual(3, query.len);
         try t.expectString("Tea", query.get("Teg").?);
@@ -1080,6 +1061,7 @@ test "request: query" {
 }
 
 test "request: body content-length" {
+    defer t.reset();
     {
         // too big
         try expectParseError(error.BodyTooBig, "POST / HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{ .max_body_size = 9 });
@@ -1088,7 +1070,6 @@ test "request: body content-length" {
     {
         // no body
         var r = try testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{ .max_body_size = 10 });
-        defer t.reset();
         try t.expectEqual(null, r.body());
         try t.expectEqual(null, r.body());
     }
@@ -1096,7 +1077,6 @@ test "request: body content-length" {
     {
         // fits into static buffer
         var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{});
-        defer t.reset();
         try t.expectString("Over 9000!", r.body().?);
         try t.expectString("Over 9000!", r.body().?);
     }
@@ -1104,7 +1084,6 @@ test "request: body content-length" {
     {
         // Requires dynamic buffer
         var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 11\r\n\r\nOver 9001!!", .{ .buffer_size = 40 });
-        defer t.reset();
         try t.expectString("Over 9001!!", r.body().?);
         try t.expectString("Over 9001!!", r.body().?);
     }
@@ -1112,9 +1091,10 @@ test "request: body content-length" {
 
 // the query and body both (can) occupy space in our static buffer
 test "request: query & body" {
+    defer t.reset();
+
     // query then body
     var r = try testParse("POST /?search=keemun%20tea HTTP/1.0\r\nContent-Length: 10\r\n\r\nOver 9000!", .{});
-    defer t.reset();
     try t.expectString("keemun tea", (try r.query()).get("search").?);
     try t.expectString("Over 9000!", r.body().?);
 
@@ -1123,6 +1103,7 @@ test "request: query & body" {
 }
 
 test "body: json" {
+    defer t.reset();
     const Tea = struct {
         type: []const u8,
     };
@@ -1135,7 +1116,6 @@ test "body: json" {
     {
         // no body
         var r = try testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{ .max_body_size = 10 });
-        defer t.reset();
         try t.expectEqual(null, try r.json(Tea));
         try t.expectEqual(null, try r.json(Tea));
     }
@@ -1143,13 +1123,13 @@ test "body: json" {
     {
         // parses json
         var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
-        defer t.reset();
         try t.expectString("keemun", (try r.json(Tea)).?.type);
         try t.expectString("keemun", (try r.json(Tea)).?.type);
     }
 }
 
 test "body: jsonValue" {
+    defer t.reset();
     {
         // too big
         try expectParseError(error.BodyTooBig, "POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{ .max_body_size = 16 });
@@ -1158,7 +1138,6 @@ test "body: jsonValue" {
     {
         // no body
         var r = try testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{ .max_body_size = 10 });
-        defer t.reset();
         try t.expectEqual(null, try r.jsonValue());
         try t.expectEqual(null, try r.jsonValue());
     }
@@ -1166,13 +1145,13 @@ test "body: jsonValue" {
     {
         // parses json
         var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
-        defer t.reset();
         try t.expectString("keemun", (try r.jsonValue()).?.object.get("type").?.string);
         try t.expectString("keemun", (try r.jsonValue()).?.object.get("type").?.string);
     }
 }
 
 test "body: jsonObject" {
+    defer t.reset();
     {
         // too big
         try expectParseError(error.BodyTooBig, "POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{ .max_body_size = 16 });
@@ -1181,7 +1160,6 @@ test "body: jsonObject" {
     {
         // no body
         var r = try testParse("PUT / HTTP/1.0\r\nHost: pondzpondz.com\r\nContent-Length: 0\r\n\r\n", .{ .max_body_size = 10 });
-        defer t.reset();
         try t.expectEqual(null, try r.jsonObject());
         try t.expectEqual(null, try r.jsonObject());
     }
@@ -1189,7 +1167,6 @@ test "body: jsonObject" {
     {
         // not an object
         var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 7\r\n\r\n\"hello\"", .{});
-        defer t.reset();
         try t.expectEqual(null, try r.jsonObject());
         try t.expectEqual(null, try r.jsonObject());
     }
@@ -1197,13 +1174,13 @@ test "body: jsonObject" {
     {
         // parses json
         var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 17\r\n\r\n{\"type\":\"keemun\"}", .{});
-        defer t.reset();
         try t.expectString("keemun", (try r.jsonObject()).?.get("type").?.string);
         try t.expectString("keemun", (try r.jsonObject()).?.get("type").?.string);
     }
 }
 
 test "body: formData" {
+    defer t.reset();
     {
         // too big
         try expectParseError(error.BodyTooBig, "POST / HTTP/1.0\r\nContent-Length: 22\r\n\r\nname=test", .{ .max_body_size = 21 });
@@ -1211,7 +1188,6 @@ test "body: formData" {
 
     {
         // no body
-        defer t.reset();
         var r = try testParse("POST / HTTP/1.0\r\n\r\nContent-Length: 0\r\n\r\n", .{ .max_body_size = 10 });
         const formData = try r.formData();
         try t.expectEqual(null, formData.get("name"));
@@ -1220,9 +1196,7 @@ test "body: formData" {
 
     {
         // parses formData
-        defer t.reset();
         var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 9\r\n\r\nname=test", .{.max_form_count = 2});
-
         const formData = try r.formData();
         try t.expectString("test", formData.get("name").?);
         try t.expectString("test", formData.get("name").?);
@@ -1230,7 +1204,6 @@ test "body: formData" {
 
     {
         // multiple inputs
-        defer t.reset();
         var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 25\r\n\r\nname=test1&password=test2", .{.max_form_count = 2});
 
         const formData = try r.formData();
@@ -1243,7 +1216,6 @@ test "body: formData" {
 
     {
         // test decoding
-        defer t.reset();
         var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 44\r\n\r\ntest=%21%40%23%24%25%5E%26*%29%28-%3D%2B%7C+", .{.max_form_count = 2});
 
         const formData = try r.formData();
@@ -1253,13 +1225,14 @@ test "body: formData" {
 }
 
 test "body: multiFormData" {
+    defer t.reset();
+
     {
         // no body
         var r = try testParse(buildRequest(&.{
             "POST / HTTP/1.0",
             "Content-Type: multipart/form-data; boundary=BX1"
         }, &.{}), .{.max_multiform_count = 5});
-        defer t.reset();
         const formData = try r.multiFormData();
         try t.expectEqual(0, formData.len);
     }
@@ -1276,7 +1249,6 @@ test "body: multiFormData" {
             "---90x--\r\n"
         }), .{.max_multiform_count = 5});
 
-        defer t.reset();
         const formData = try r.multiFormData();
         try t.expectString("the-desc", formData.get("description").?.value);
         try t.expectString("the-desc", formData.get("description").?.value);
@@ -1294,7 +1266,6 @@ test "body: multiFormData" {
             "---90x--\r\n"
         }), .{.max_multiform_count = 5});
 
-        defer t.reset();
         const formData = try r.multiFormData();
         try t.expectString("the-desc", formData.get("description").?.value);
         try t.expectString("the-desc", formData.get("description").?.value);
@@ -1316,7 +1287,6 @@ test "body: multiFormData" {
             "------99900AB--\r\n"
         }), .{.max_multiform_count = 5});
 
-        defer t.reset();
         const formData = try r.multiFormData();
         try t.expectEqual(2, formData.len);
         try t.expectString("Value - 1", formData.get("fie\" ?l\\d").?.value);
@@ -1347,9 +1317,9 @@ test "body: multiFormData" {
 }
 
 test "body: multiFormData invalid" {
+    defer t.reset();
     {
         // large boudary
-        defer t.reset();
         var r = try testParse(buildRequest(&.{
             "POST / HTTP/1.0",
             "Content-Type: multipart/form-data; boundary=12345678901234567890123456789012345678901234567890123456789012345678901"
@@ -1359,7 +1329,6 @@ test "body: multiFormData invalid" {
 
     {
         // no closing quote
-        defer t.reset();
         var r = try testParse(buildRequest(&.{
             "POST / HTTP/1.0",
             "Content-Type: multipart/form-data; boundary=\"123"
@@ -1396,7 +1365,6 @@ test "body: multiFormData invalid" {
 
     {
         // missing name end quote
-        defer t.reset();
         var r = try testParse(buildRequest(&.{
             "POST / HTTP/1.0",
             "Content-Type: multipart/form-data; boundary=-90x"
@@ -1411,7 +1379,6 @@ test "body: multiFormData invalid" {
 
     {
         // missing missing newline
-        defer t.reset();
         var r = try testParse(buildRequest(&.{
             "POST / HTTP/1.0",
             "Content-Type: multipart/form-data; boundary=-90x"
@@ -1426,7 +1393,6 @@ test "body: multiFormData invalid" {
 
     {
         // missing missing newline x2
-        defer t.reset();
         var r = try testParse(buildRequest(&.{
             "POST / HTTP/1.0",
             "Content-Type: multipart/form-data; boundary=-90x"
