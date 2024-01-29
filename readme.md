@@ -320,9 +320,9 @@ Header names are lowercase. Values maintain their original casing.
 To iterate over all headers, use:
 
 ```zig
-for (req.headers.keys[0..req.headers.len], 0..) |name, i| {
-    // name is the header name
-    const value = req.headers.values[i];
+const headers = req.headers;
+for (headers.keys[0..headers.len], headers.values[0..headers.len]) |name, value| {
+    
 }
 ```
 
@@ -345,8 +345,9 @@ The original casing of both the key and the name are preserved.
 To iterate over all query parameters, use:
 
 ```zig
-for (req.qs.keys[0..req.qs.len], 0..) |name, i| {
-    const value = req.qs.values[i];
+const qs = req.qs;
+for (qs.keys[0..qs.len], qs.values[0..qs.len]) |name, value| {
+    
 }
 ```
 
