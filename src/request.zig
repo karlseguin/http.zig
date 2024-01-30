@@ -334,9 +334,10 @@ pub const Request = struct {
         value: MultiFormKeyValue.Value,
     };
 
+    // I'm sorry
     fn parseMultiPartEntry(entry: []const u8) !MultiPartField {
         var pos: usize = 0;
-        var name: ?[]const u8 = null;
+        var attributes: ?ContentDispostionAttributes = null;
 
         while (true) {
             const end_line_pos = std.mem.indexOfScalarPos(u8, entry, pos, '\n') orelse return error.InvalidMultiPartEncoding;
@@ -360,7 +361,9 @@ pub const Request = struct {
             }
 
             // constCast is safe here because we know this ultilately comes from one of our buffers
-            name = try getMultipartFieldName(@constCast(trimLeadingSpace(value["form-data;".len ..])));
+            const value_start = "form-data;".len;
+            const value_end = value.len - 1; // remove the trailing \r
+            attributes = try getContentDispotionAttributes(@constCast(trimLeadingSpace(value[value_start..value_end])));
         }
 
         const value = entry[pos..];
@@ -368,19 +371,40 @@ pub const Request = struct {
             return error.InvalidMultiPartEncoding;
         }
 
+        const attr = attributes orelse return error.InvalidMultiPartEncoding;
+
         return .{
-            .name = name orelse return error.InvalidMultiPartEncoding,
-            .value = .{.value = value[0..value.len - 2]},
+            .name = attr.name,
+            .value = .{
+                .value = value[0..value.len - 2],
+                .filename = attr.filename,
+            },
         };
     }
 
-    fn getMultipartFieldName(fields: []u8) ![]const u8 {
-        var pos: usize = 0;
-        while (true) {
-            const sep = std.mem.indexOfScalarPos(u8, fields, pos, '=') orelse return error.InvalidMultiPartEncoding;
-            const field_name = trimLeadingSpace(fields[pos..sep]);
+    const ContentDispostionAttributes = struct {
+        name: []const u8,
+        filename: ?[]const u8 = null,
+    };
 
-            const is_name_field = std.mem.eql(u8, field_name, "name");
+    // I'm sorry
+    fn getContentDispotionAttributes(fields: []u8) !ContentDispostionAttributes{
+        var pos: usize = 0;
+
+        var name: ?[]const u8 = null;
+        var filename: ?[]const u8 = null;
+
+        while (pos < fields.len) {
+            {
+                const b = fields[pos];
+                if (b == ';' or b == ' ' or b == '\t') {
+                    pos += 1;
+                    continue;
+                }
+            }
+
+            const sep = std.mem.indexOfScalarPos(u8, fields, pos, '=') orelse return error.InvalidMultiPartEncoding;
+            const field_name = fields[pos..sep];
 
             // skip the equal
             const value_start = sep + 1;
@@ -388,60 +412,59 @@ pub const Request = struct {
                 return error.InvalidMultiPartEncoding;
             }
 
-            if (fields[value_start] == '"') {
-                if (fields.len == value_start) {
-                    return error.InvalidMultiPartEncoding;
-                }
-
-                var read_pos: usize = value_start + 1;
-                var write_pos = read_pos;
-                while (read_pos < fields.len) {
-                    switch (fields[read_pos]) {
+            var value: []const u8 = undefined;
+            if (fields[value_start] != '"') {
+                const value_end = std.mem.indexOfScalarPos(u8, fields, pos, ';') orelse fields.len;
+                pos = value_end;
+                value = fields[value_start..value_end];
+            } else blk: {
+                // skip the double quote
+                pos = value_start + 1;
+                var write_pos = pos;
+                while (pos < fields.len) {
+                    switch (fields[pos]) {
                         '\\' => {
-                            if (read_pos == fields.len) {
+                            if (pos == fields.len) {
                                 return error.InvalidMultiPartEncoding;
                             }
                             // supposedly MSIE doesn't always escape \, so if the \ isn't escape
                             // one of the special characters, it must be a single \. This is what Go does.
-                            switch (fields[read_pos + 1]) {
+                            switch (fields[pos + 1]) {
                                 // from Go's mime parser func isTSpecial(r rune) bool
                                 '(', ')', '<', '>', '@', ',', ';', ':', '"', '/', '[', ']', '?', '=' => |n| {
                                     fields[write_pos] = n;
-                                    read_pos += 1;
+                                    pos += 1;
                                 },
                                 else => fields[write_pos] = '\\',
                             }
 
                         },
                         '"' => {
-                            return fields[value_start + 1..write_pos];
+                            pos += 1;
+                            value = fields[value_start + 1..write_pos];
+                            break :blk;
                         },
                         else => |b| fields[write_pos] = b,
                     }
-                    read_pos += 1;
+                    pos += 1;
                     write_pos += 1;
                 }
-                // TODO: check for semicolor or end ??
-                pos = read_pos + 1;
-            } else {
-                const value_end = std.mem.indexOfScalarPos(u8, fields, pos, ';') orelse blk: {
-                    if (is_name_field == false) {
-                        // the last field, and it isn't a name
-                        return error.InvalidMultiPartEncoding;
-                    }
-                    if (fields[fields.len - 1] != '\r') {
-                        return error.InvalidMultiPartEncoding;
-                    }
-                    // strip out the trailing \r
-                    break :blk fields.len - 1;
-                };
-                if (is_name_field) {
-                    return fields[value_start..value_end];
-                }
-                pos = value_end + 1;
+                return error.InvalidMultiPartEncoding;
+            }
+
+            if (std.mem.eql(u8, field_name, "name")) {
+                name = value;
+            } else if (std.mem.eql(u8, field_name, "filename")) {
+                filename = value;
             }
         }
+
+        return .{
+            .name = name orelse return error.InvalidMultiPartEncoding,
+            .filename = filename,
+        };
     }
+
 };
 
 // All the upfront memory allocation that we can do. Each worker keeps a pool
@@ -1224,7 +1247,7 @@ test "body: formData" {
     }
 }
 
-test "body: multiFormData" {
+test "body: multiFormData valid" {
     defer t.reset();
 
     {
@@ -1255,6 +1278,24 @@ test "body: multiFormData" {
     }
 
     {
+        // parses single field with filename
+        var r = try testParse(buildRequest(&.{
+            "POST / HTTP/1.0",
+            "Content-Type: multipart/form-data; boundary=-90x"
+        }, &.{
+            "---90x\r\n",
+            "Content-Disposition: form-data; filename=\"file1.zig\"; name=file\r\n\r\n",
+            "some binary data\r\n",
+            "---90x--\r\n"
+        }), .{.max_multiform_count = 5});
+
+        const formData = try r.multiFormData();
+        const field = formData.get("file").?;
+        try t.expectString("some binary data", field.value);
+        try t.expectString("file1.zig", field.filename.?);
+    }
+
+    {
         // quoted boundary
         var r = try testParse(buildRequest(&.{
             "POST / HTTP/1.0",
@@ -1266,9 +1307,11 @@ test "body: multiFormData" {
             "---90x--\r\n"
         }), .{.max_multiform_count = 5});
 
+
         const formData = try r.multiFormData();
-        try t.expectString("the-desc", formData.get("description").?.value);
-        try t.expectString("the-desc", formData.get("description").?.value);
+        const field = formData.get("description").?;
+        try t.expectEqual(null, field.filename);
+        try t.expectString("the-desc", field.value);
     }
 
     {
@@ -1282,15 +1325,21 @@ test "body: multiFormData" {
             "content-disposition: form-data; name=\"fie\\\" \\?l\\d\"\r\n\r\n",
             "Value - 1\r\n",
             "------99900AB\r\n",
-            "Content-Disposition: form-data; filename=another; name=field2\r\n\r\n",
+            "Content-Disposition: form-data; filename=another.zip; name=field2\r\n\r\n",
             "Value - 2\r\n",
             "------99900AB--\r\n"
         }), .{.max_multiform_count = 5});
 
         const formData = try r.multiFormData();
         try t.expectEqual(2, formData.len);
-        try t.expectString("Value - 1", formData.get("fie\" ?l\\d").?.value);
-        try t.expectString("Value - 2", formData.get("field2").?.value);
+
+        const field1 = formData.get("fie\" ?l\\d").?;
+        try t.expectEqual(null, field1.filename);
+        try t.expectString("Value - 1", field1.value);
+
+        const field2 = formData.get("field2").?;
+        try t.expectString("Value - 2", field2.value);
+        try t.expectString("another.zip", field2.filename.?);
     }
 
     {

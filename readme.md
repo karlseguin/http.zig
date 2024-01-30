@@ -408,7 +408,7 @@ Once this function is called, `req.multiFormData()` will no longer work (because
 ### Multi Part Form Data
 Similar to the above, `req.multiFormData()` can be called to parse requests with a "multipart/form-data" content type. The `request.max_multiform_count` configuration value must be set to the maximum number of form fields to support. This defaults to 0.
 
-This is a different API than `formData` because the return type is different. Rather than a simple string=>value type, the multi part form data value consists of a "value" and other optional parameters, such as filename (TODO).
+This is a different API than `formData` because the return type is different. Rather than a simple string=>value type, the multi part form data value consists of a `value: []const u8` and a `filename: ?[]const u8`.
 
 On first call, the `multiFormData` function attempts to parse the body. The parsed value is internally cached, so subsequent calls to `multiFormData()` are fast and cannot fail.
 
@@ -420,6 +420,7 @@ To iterate over all fields, use:
 const fd = try req.multiFormData();
 for (fd.keys[0..fd.len], fd.values[0..fd.len]) |name, field| {
     // access the value via field.value
+    // and field.filename (an optional)
 }
 ```
 

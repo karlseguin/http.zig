@@ -59,8 +59,7 @@ pub const MultiFormKeyValue = struct {
 
    pub const Value = struct {
         value: []const u8,
-        // TODO: filename
-        // TODO: content_type
+        filename: ?[]const u8 = null,
     };
 
     pub fn init(allocator: Allocator, max: usize) !MultiFormKeyValue {
