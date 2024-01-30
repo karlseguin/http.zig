@@ -7,6 +7,7 @@ const websocket = http.websocket;
 const Url = @import("url.zig").Url;
 const Params = @import("params.zig").Params;
 const KeyValue = @import("key_value.zig").KeyValue;
+const MultiFormKeyValue = @import("key_value.zig").MultiFormKeyValue;
 
 const Reader = std.io.Reader;
 const Allocator = std.mem.Allocator;
@@ -30,6 +31,8 @@ pub const Config = struct {
 	max_header_count: ?usize = null,
 	max_param_count: ?usize = null,
 	max_query_count: ?usize = null,
+	max_form_count: ?usize = null,
+	max_multiform_count: ?usize = null,
 };
 
 pub const Request = struct {
@@ -72,6 +75,15 @@ pub const Request = struct {
 	// The query string lookup.
 	qs: KeyValue,
 
+	// cannot use an optional on fd, because it's pre-allocated so always exists
+	fd_read: bool = false,
+
+	// The formData lookup.
+	fd: KeyValue,
+
+	// The multiFormData lookup.
+	mfd: MultiFormKeyValue,
+
 	// Where in static we currently are. This is needed so that we can tell if
 	// the body can be read directly in static or not (if there's enough space).
 	pos: usize,
@@ -108,6 +120,8 @@ pub const Request = struct {
 		self.websocket = ws;
 		self.max_body_size = config.max_body_size orelse 1_048_576;
 		self.qs = try KeyValue.init(allocator, config.max_query_count orelse 32);
+		self.fd = try KeyValue.init(allocator, config.max_form_count orelse 0);
+		self.mfd = try MultiFormKeyValue.init(allocator, config.max_multiform_count orelse 0);
 
 		self.static = try allocator.alloc(u8, config.buffer_size orelse 65_8536);
 		self.headers = try KeyValue.init(allocator, config.max_header_count orelse 32);
@@ -129,6 +143,8 @@ pub const Request = struct {
 
 	pub fn deinit(self: *Self, allocator: Allocator) void {
 		self.qs.deinit(allocator);
+		self.fd.deinit(allocator);
+		self.mfd.deinit(allocator);
 		self.params.deinit(allocator);
 		self.headers.deinit(allocator);
 		allocator.free(self.static);
@@ -140,6 +156,10 @@ pub const Request = struct {
 
 		self.qs_read = false;
 		self.qs.reset();
+
+		self.fd_read = false;
+		self.fd.reset();
+		self.mfd.reset();
 
 		self.params.reset();
 		self.headers.reset();
@@ -198,7 +218,6 @@ pub const Request = struct {
 
 		self.bd_read = true;
 		const stream = self.stream;
-
 		if (self.header("content-length")) |cl| {
 			const length = atoi(cl) orelse return error.InvalidContentLength;
 			if (length == 0) {
@@ -241,6 +260,8 @@ pub const Request = struct {
 			buffer = buffer[0..length];
 			self.bd = buffer;
 			return buffer;
+		} else {
+			self.bd = null;
 		}
 		// TODO: support chunked encoding
 		return self.bd;
@@ -262,6 +283,20 @@ pub const Request = struct {
 			.object => |o| return o,
 			else => return null,
 		}
+	}
+
+	pub fn formData(self: *Request) !KeyValue {
+		if (self.fd_read) {
+			return self.fd;
+		}
+			return self.parseFormData();
+	}
+
+	pub fn multiFormData(self: *Request) !MultiFormKeyValue {
+		if (self.fd_read) {
+			return self.mfd;
+		}
+		return self.parseMultiFormData();
 	}
 
 	fn parseMethod(self: *Self, stream: Stream, buf: []u8) !ParseResult {
@@ -468,8 +503,8 @@ pub const Request = struct {
 
 		var qs = &self.qs;
 		var pos = self.pos;
-		const allocator = self.arena;
 		var buffer = self.static[pos..];
+		const allocator = self.arena;
 
 		var it = std.mem.split(u8, raw, "&");
 		while (it.next()) |pair| {
@@ -552,27 +587,288 @@ pub const Request = struct {
 			http.Protocol.HTTP10 => return false, // TODO: support this in the cases where it can be
 		};
 	}
+
+	fn parseFormData(self: *Request) !KeyValue {
+		const b = (try self.body()) orelse "";
+		if (b.len == 0) {
+			self.fd_read = true;
+			return self.fd;
+		}
+
+		var fd = &self.fd;
+		var pos = self.pos;
+		var buf = self.static[pos..];
+		const allocator = self.arena;
+
+		var it = std.mem.splitScalar(u8, b, '&');
+		while (it.next()) |pair| {
+			if (std.mem.indexOfScalarPos(u8, pair, 0, '=')) |sep| {
+				const key_res = try Url.unescape(allocator, buf, pair[0..sep]);
+				if (key_res.buffered) {
+					const n = key_res.value.len;
+					pos += n;
+					buf = buf[n..];
+				}
+
+				const value_res = try Url.unescape(allocator, buf, pair[sep + 1 ..]);
+				if (value_res.buffered) {
+					const n = value_res.value.len;
+					pos += n;
+					buf = buf[n..];
+				}
+
+				fd.add(key_res.value, value_res.value);
+			} else {
+				const key_res = try Url.unescape(allocator, buf, pair);
+				if (key_res.buffered) {
+					buf = buf[key_res.value.len..];
+				}
+				fd.add(key_res.value, "");
+			}
+		}
+
+		self.pos = pos;
+		self.fd_read = true;
+		return self.fd;
+	}
+
+	fn parseMultiFormData(self: *Request,) !MultiFormKeyValue {
+		const body_ = (try self.body()) orelse "";
+		if (body_.len == 0) {
+			self.fd_read = true;
+			return self.mfd;
+		}
+
+		const content_type = blk: {
+			if (self.header("content-type")) |content_type| {
+				if (std.ascii.startsWithIgnoreCase(content_type, "multipart/form-data")) {
+					break :blk content_type;
+				}
+			}
+			return error.NotMultipartForm;
+		};
+
+		// Max boundary length is 70. Plus the two leading dashes (--)
+		var boundary_buf: [72]u8 = undefined;
+		const boundary = blk: {
+			const directive = content_type["multipart/form-data".len..];
+			for (directive, 0..) |b, i| loop: {
+				if (b != ' ' and b != ';') {
+					if (std.ascii.startsWithIgnoreCase(directive[i..], "boundary=")) {
+						const raw_boundary = directive["boundary=".len + i..];
+						if (raw_boundary.len > 0 and raw_boundary.len <= 70) {
+							boundary_buf[0] = '-';
+							boundary_buf[1] = '-';
+							if (raw_boundary[0] == '"') {
+								if (raw_boundary.len > 2 and raw_boundary[raw_boundary.len - 1] == '"') {
+									// it's really -2, since we need to strip out the two quotes
+									// but buf is already at + 2, so they cancel out.
+									const end = raw_boundary.len;
+									@memcpy(boundary_buf[2..end], raw_boundary[1..raw_boundary.len - 1]);
+									break :blk boundary_buf[0..end];
+								}
+							} else {
+								const end = 2 + raw_boundary.len;
+								@memcpy(boundary_buf[2..end], raw_boundary);
+								break :blk boundary_buf[0..end];
+							}
+						}
+					}
+					// not valid, break out of the loop so we can return
+					// an error.InvalidMultiPartFormDataHeader
+					break :loop;
+				}
+			}
+			return error.InvalidMultiPartFormDataHeader;
+		};
+
+		var mfd = &self.mfd;
+		var entry_it = std.mem.splitSequence(u8, body_, boundary);
+
+		{
+			// We expect the body to begin with a boundary
+			const first = entry_it.next() orelse {
+				self.fd_read = true;
+				return self.mfd;
+			};
+			if (first.len != 0) {
+				return error.InvalidMultiPartEncoding;
+			}
+		}
+
+		while (entry_it.next()) |entry| {
+			// body ends with -- after a final boundary
+			if (entry.len == 4 and entry[0] == '-' and entry[1] == '-' and entry[2] == '\r' and entry[3] == '\n') {
+				break;
+			}
+
+			if (entry.len < 2 or entry[0] != '\r' or entry[1] != '\n') return error.InvalidMultiPartEncoding;
+
+			// [2..] to skip our boundary's trailing line terminator
+			const field = try parseMultiPartEntry(entry[2..]);
+			mfd.add(field.name, field.value);
+		}
+
+		self.fd_read = true;
+		return self.mfd;
+	}
+
+	const MultiPartField = struct {
+		name: []const u8,
+		value: MultiFormKeyValue.Value,
+	};
+
+	// I'm sorry
+	fn parseMultiPartEntry(entry: []const u8) !MultiPartField {
+		var pos: usize = 0;
+		var attributes: ?ContentDispostionAttributes = null;
+
+		while (true) {
+			const end_line_pos = std.mem.indexOfScalarPos(u8, entry, pos, '\n') orelse return error.InvalidMultiPartEncoding;
+			const line = entry[pos..end_line_pos];
+
+			pos = end_line_pos + 1;
+			if (line.len == 0 or line[line.len - 1] != '\r') return error.InvalidMultiPartEncoding;
+
+			if (line.len == 1) {
+				break;
+			}
+
+			// we need to look for the name
+			if (std.ascii.startsWithIgnoreCase(line, "content-disposition:") == false) {
+				continue;
+			}
+
+			const value =  trimLeadingSpace(line["content-disposition:".len ..]);
+			if (std.ascii.startsWithIgnoreCase(value, "form-data;") == false) {
+				return error.InvalidMultiPartEncoding;
+			}
+
+			// constCast is safe here because we know this ultilately comes from one of our buffers
+			const value_start = "form-data;".len;
+			const value_end = value.len - 1; // remove the trailing \r
+			attributes = try getContentDispotionAttributes(@constCast(trimLeadingSpace(value[value_start..value_end])));
+		}
+
+		const value = entry[pos..];
+		if (value.len < 2 or value[value.len - 2] != '\r' or value[value.len - 1] != '\n') {
+			return error.InvalidMultiPartEncoding;
+		}
+
+		const attr = attributes orelse return error.InvalidMultiPartEncoding;
+
+		return .{
+			.name = attr.name,
+			.value = .{
+				.value = value[0..value.len - 2],
+				.filename = attr.filename,
+			},
+		};
+	}
+
+	const ContentDispostionAttributes = struct {
+		name: []const u8,
+		filename: ?[]const u8 = null,
+	};
+
+	// I'm sorry
+	fn getContentDispotionAttributes(fields: []u8) !ContentDispostionAttributes{
+		var pos: usize = 0;
+
+		var name: ?[]const u8 = null;
+		var filename: ?[]const u8 = null;
+
+		while (pos < fields.len) {
+			{
+				const b = fields[pos];
+				if (b == ';' or b == ' ' or b == '\t') {
+					pos += 1;
+					continue;
+				}
+			}
+
+			const sep = std.mem.indexOfScalarPos(u8, fields, pos, '=') orelse return error.InvalidMultiPartEncoding;
+			const field_name = fields[pos..sep];
+
+			// skip the equal
+			const value_start = sep + 1;
+			if (value_start == fields.len) {
+				return error.InvalidMultiPartEncoding;
+			}
+
+			var value: []const u8 = undefined;
+			if (fields[value_start] != '"') {
+				const value_end = std.mem.indexOfScalarPos(u8, fields, pos, ';') orelse fields.len;
+				pos = value_end;
+				value = fields[value_start..value_end];
+			} else blk: {
+				// skip the double quote
+				pos = value_start + 1;
+				var write_pos = pos;
+				while (pos < fields.len) {
+					switch (fields[pos]) {
+						'\\' => {
+							if (pos == fields.len) {
+								return error.InvalidMultiPartEncoding;
+							}
+							// supposedly MSIE doesn't always escape \, so if the \ isn't escape
+							// one of the special characters, it must be a single \. This is what Go does.
+							switch (fields[pos + 1]) {
+								// from Go's mime parser func isTSpecial(r rune) bool
+								'(', ')', '<', '>', '@', ',', ';', ':', '"', '/', '[', ']', '?', '=' => |n| {
+									fields[write_pos] = n;
+									pos += 1;
+								},
+								else => fields[write_pos] = '\\',
+							}
+
+						},
+						'"' => {
+							pos += 1;
+							value = fields[value_start + 1..write_pos];
+							break :blk;
+						},
+						else => |b| fields[write_pos] = b,
+					}
+					pos += 1;
+					write_pos += 1;
+				}
+				return error.InvalidMultiPartEncoding;
+			}
+
+			if (std.mem.eql(u8, field_name, "name")) {
+				name = value;
+			} else if (std.mem.eql(u8, field_name, "filename")) {
+				filename = value;
+			}
+		}
+
+		return .{
+			.name = name orelse return error.InvalidMultiPartEncoding,
+			.filename = filename,
+		};
+	}
 };
 
 const ALLOWED_HEADER_NAME_BYTES: [255]bool = blk: {
-  var all = std.mem.zeroes([255]bool);
-  for ('a'..('z'+1)) |b| all[b] = true;
-  for ('A'..('Z'+1)) |b| all[b] = true;
-  for ('0'..('9'+1)) |b| all[b] = true;
-  all['-'] = true;
-  all['_'] = true;
-  break :blk all;
+	var all = std.mem.zeroes([255]bool);
+	for ('a'..('z'+1)) |b| all[b] = true;
+	for ('A'..('Z'+1)) |b| all[b] = true;
+	for ('0'..('9'+1)) |b| all[b] = true;
+	all['-'] = true;
+	all['_'] = true;
+	break :blk all;
 };
 
 const ALLOWED_HEADER_VALUE_BYTES: [255]bool = blk: {
-  var all = std.mem.zeroes([255]bool);
-  for ('a'..('z'+1)) |b| all[b] = true;
-  for ('A'..('Z'+1)) |b| all[b] = true;
-  for ('0'..('9'+1)) |b| all[b] = true;
-  for ([_]u8{':', ';', '.', ',', '\\', '/', '"', '\'', '?', '!', '(', ')', '{', '}', '[', ']', '@', '<', '>', '=', '-', '+', '*', '#', '$', '&', '`', '|', '~', '^', '%'}) |b| {
-    all[b] = true;
-  }
-  break :blk all;
+	var all = std.mem.zeroes([255]bool);
+	for ('a'..('z'+1)) |b| all[b] = true;
+	for ('A'..('Z'+1)) |b| all[b] = true;
+	for ('0'..('9'+1)) |b| all[b] = true;
+	for ([_]u8{':', ';', '.', ',', '\\', '/', '"', '\'', '?', '!', '(', ')', '{', '}', '[', ']', '@', '<', '>', '=', '-', '+', '*', '#', '$', '&', '`', '|', '~', '^', '%'}) |b| {
+	all[b] = true;
+	}
+	break :blk all;
 };
 
 
@@ -1003,6 +1299,272 @@ test "body: jsonObject" {
 	}
 }
 
+test "body: formData" {
+	{
+		// too big
+		const r = testParse("POST / HTTP/1.0\r\nContent-Length: 22\r\n\r\nname=test", .{ .max_body_size = 21 });
+		defer testCleanup(r);
+		try t.expectError(Error.BodyTooBig, r.formData());
+	}
+
+	{
+		// no body
+		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 0\r\n\r\n", .{ .max_body_size = 10 });
+		defer testCleanup(r);
+		const formData = try r.formData();
+		try t.expectEqual(null, formData.get("name"));
+		try t.expectEqual(null, formData.get("name"));
+	}
+
+	{
+		// parses formData
+		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 9\r\n\r\nname=test", .{.max_form_count = 2});
+		defer testCleanup(r);
+		const formData1 = try r.formData();
+		try t.expectString("test", formData1.get("name").?);
+
+		const formData2 = try r.formData();
+		try t.expectString("test", formData2.get("name").?);
+	}
+
+	{
+		// multiple inputs
+		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 25\r\n\r\nname=test1&password=test2", .{.max_form_count = 2});
+		defer testCleanup(r);
+
+		const formData = try r.formData();
+		try t.expectString("test1", formData.get("name").?);
+		try t.expectString("test2", formData.get("password").?);
+	}
+
+	{
+		// test decoding
+		var r = testParse("POST / HTTP/1.0\r\nContent-Length: 44\r\n\r\ntest=%21%40%23%24%25%5E%26*%29%28-%3D%2B%7C+", .{.max_form_count = 2});
+		defer testCleanup(r);
+		const formData = try r.formData();
+		try t.expectString("!@#$%^&*)(-=+| ", formData.get("test").?);
+	}
+}
+
+test "body: multiFormData valid" {
+	defer t.reset();
+	{
+		// no body
+		var r = testParse(buildRequest(&.{
+			"POST / HTTP/1.0",
+			"Content-Type: multipart/form-data; boundary=BX1"
+		}, &.{}), .{.max_multiform_count = 5});
+		defer testCleanup(r);
+		const formData = try r.multiFormData();
+		try t.expectEqual(0, formData.len);
+	}
+
+	{
+		// parses single field
+		var r = testParse(buildRequest(&.{
+			"POST / HTTP/1.0",
+			"Content-Type: multipart/form-data; boundary=-90x"
+		}, &.{
+			"---90x\r\n",
+			"Content-Disposition: form-data; name=\"description\"\r\n\r\n",
+			"the-desc\r\n",
+			"---90x--\r\n"
+		}), .{.max_multiform_count = 5});
+		defer testCleanup(r);
+
+		const formData = try r.multiFormData();
+		try t.expectString("the-desc", formData.get("description").?.value);
+		try t.expectString("the-desc", formData.get("description").?.value);
+	}
+
+	{
+		// parses single field with filename
+		var r = testParse(buildRequest(&.{
+			"POST / HTTP/1.0",
+			"Content-Type: multipart/form-data; boundary=-90x"
+		}, &.{
+			"---90x\r\n",
+			"Content-Disposition: form-data; filename=\"file1.zig\"; name=file\r\n\r\n",
+			"some binary data\r\n",
+			"---90x--\r\n"
+		}), .{.max_multiform_count = 5});
+		defer testCleanup(r);
+
+		const formData = try r.multiFormData();
+		const field = formData.get("file").?;
+		try t.expectString("some binary data", field.value);
+		try t.expectString("file1.zig", field.filename.?);
+	}
+
+	{
+		// quoted boundary
+		var r = testParse(buildRequest(&.{
+			"POST / HTTP/1.0",
+			"Content-Type: multipart/form-data; boundary=\"-90x\""
+		}, &.{
+			"---90x\r\n",
+			"Content-Disposition: form-data; name=\"description\"\r\n\r\n",
+			"the-desc\r\n",
+			"---90x--\r\n"
+		}), .{.max_multiform_count = 5});
+		defer testCleanup(r);
+
+		const formData = try r.multiFormData();
+		const field = formData.get("description").?;
+		try t.expectEqual(null, field.filename);
+		try t.expectString("the-desc", field.value);
+	}
+
+	{
+		// multiple fields
+		var r = testParse(buildRequest(&.{
+			"GET /something HTTP/1.1",
+			"Content-Type: multipart/form-data; boundary=----99900AB"
+		}, &.{
+			"------99900AB\r\n",
+			"content-type: text/plain; charset=utf-8\r\n",
+			"content-disposition: form-data; name=\"fie\\\" \\?l\\d\"\r\n\r\n",
+			"Value - 1\r\n",
+			"------99900AB\r\n",
+			"Content-Disposition: form-data; filename=another.zip; name=field2\r\n\r\n",
+			"Value - 2\r\n",
+			"------99900AB--\r\n"
+		}), .{.max_multiform_count = 5});
+		defer testCleanup(r);
+
+		const formData = try r.multiFormData();
+		try t.expectEqual(2, formData.len);
+
+		const field1 = formData.get("fie\" ?l\\d").?;
+		try t.expectEqual(null, field1.filename);
+		try t.expectString("Value - 1", field1.value);
+
+		const field2 = formData.get("field2").?;
+		try t.expectString("Value - 2", field2.value);
+		try t.expectString("another.zip", field2.filename.?);
+	}
+
+	{
+		// enforce limit
+		var r = testParse(buildRequest(&.{
+			"GET /something HTTP/1.1",
+			"Content-Type: multipart/form-data; boundary=----99900AB"
+		}, &.{
+			"------99900AB\r\n",
+			"Content-Type: text/plain; charset=utf-8\r\n",
+			"Content-Disposition: form-data; name=\"fie\\\" \\?l\\d\"\r\n\r\n",
+			"Value - 1\r\n",
+			"------99900AB\r\n",
+			"Content-Disposition: form-data; filename=another; name=field2\r\n\r\n",
+			"Value - 2\r\n",
+			"------99900AB--\r\n"
+		}), .{.max_multiform_count = 1});
+		defer testCleanup(r);
+
+		const formData = try r.multiFormData();
+		try t.expectEqual(1, formData.len);
+		try t.expectString("Value - 1", formData.get("fie\" ?l\\d").?.value);
+	}
+}
+
+test "body: multiFormData invalid" {
+	defer t.reset();
+	{
+		// large boudary
+		var r = testParse(buildRequest(&.{
+			"POST / HTTP/1.0",
+			"Content-Type: multipart/form-data; boundary=12345678901234567890123456789012345678901234567890123456789012345678901"
+		}, &.{"garbage"}), .{});
+		defer testCleanup(r);
+		try t.expectError(error.InvalidMultiPartFormDataHeader, r.multiFormData());
+	}
+
+	{
+		// no closing quote
+		var r = testParse(buildRequest(&.{
+			"POST / HTTP/1.0",
+			"Content-Type: multipart/form-data; boundary=\"123"
+		}, &.{"garbage"}), .{});
+		defer testCleanup(r);
+		try t.expectError(error.InvalidMultiPartFormDataHeader, r.multiFormData());
+	}
+
+	{
+		// no content-dispostion field header
+		var r = testParse(buildRequest(&.{
+			"POST / HTTP/1.0",
+			"Content-Type: multipart/form-data; boundary=-90x"
+		}, &.{
+			"---90x\r\n",
+			"the-desc\r\n",
+			"---90x--\r\n"
+		}), .{.max_multiform_count = 5});
+		defer testCleanup(r);
+		try t.expectError(error.InvalidMultiPartEncoding, r.multiFormData());
+	}
+
+	{
+		// no content dispotion naem
+		var r = testParse(buildRequest(&.{
+			"POST / HTTP/1.0",
+			"Content-Type: multipart/form-data; boundary=-90x"
+		}, &.{
+			"---90x\r\n",
+			"Content-Disposition: form-data; x=a",
+			"the-desc\r\n",
+			"---90x--\r\n"
+		}), .{.max_multiform_count = 5});
+		defer testCleanup(r);
+		try t.expectError(error.InvalidMultiPartEncoding, r.multiFormData());
+	}
+
+	{
+		// missing name end quote
+		var r = testParse(buildRequest(&.{
+			"POST / HTTP/1.0",
+			"Content-Type: multipart/form-data; boundary=-90x"
+		}, &.{
+			"---90x\r\n",
+			"Content-Disposition: form-data; name=\"hello\r\n\r\n",
+			"the-desc\r\n",
+			"---90x--\r\n"
+		}), .{.max_multiform_count = 5});
+		defer testCleanup(r);
+		try t.expectError(error.InvalidMultiPartEncoding, r.multiFormData());
+	}
+
+	{
+		// missing missing newline
+		var r = testParse(buildRequest(&.{
+			"POST / HTTP/1.0",
+			"Content-Type: multipart/form-data; boundary=-90x"
+		}, &.{
+			"---90x\r\n",
+			"Content-Disposition: form-data; name=hello\r\n",
+			"the-desc\r\n",
+			"---90x--\r\n"
+		}), .{.max_multiform_count = 5});
+		defer testCleanup(r);
+		try t.expectError(error.InvalidMultiPartEncoding, r.multiFormData());
+	}
+
+	{
+		// missing missing newline x2
+		var r = testParse(buildRequest(&.{
+			"POST / HTTP/1.0",
+			"Content-Type: multipart/form-data; boundary=-90x"
+		}, &.{
+			"---90x\r\n",
+			"Content-Disposition: form-data; name=hello",
+			"the-desc\r\n",
+			"---90x--\r\n"
+		}), .{.max_multiform_count = 5});
+		defer testCleanup(r);
+		try t.expectError(error.InvalidMultiPartEncoding, r.multiFormData());
+	}
+}
+
+
 // our t.Stream already simulates random TCP fragmentation.
 test "request: fuzz" {
 	// We have a bunch of data to allocate for testing, like header names and
@@ -1205,4 +1767,34 @@ fn randomMethod(random: std.rand.Random) []const u8 {
 		6 => "HEAD",
 		else => unreachable,
 	};
+}
+
+fn buildRequest(header: []const []const u8, body: []const []const u8) []const u8 {
+	var header_len: usize = 0;
+	for (header) |h| {
+		header_len += h.len;
+	}
+
+	var body_len: usize = 0;
+	for (body) |b| {
+		body_len += b.len;
+	}
+
+	var arr = std.ArrayList(u8).init(t.arena);
+	// 100 for the Content-Length that we'll add and all the \r\n
+	arr.ensureTotalCapacity(header_len + body_len + 100) catch unreachable;
+
+	for (header) |h| {
+		arr.appendSlice(h) catch unreachable;
+		arr.appendSlice("\r\n") catch unreachable;
+	}
+	arr.appendSlice("Content-Length: ") catch unreachable;
+	std.fmt.formatInt(body_len, 10, .lower, .{}, arr.writer()) catch unreachable;
+	arr.appendSlice("\r\n\r\n") catch unreachable;
+
+	for (body) |b| {
+		arr.appendSlice(b) catch unreachable;
+	}
+
+	return arr.items;
 }

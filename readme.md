@@ -375,6 +375,50 @@ if (try req.jsonObject()) |t| {
 }
 ```
 
+
+### Form Data
+The body of the request, if any, can be parsed as a "x-www-form-urlencoded "value  using `req.formData()`. The `request.max_form_count` configuration value must be set to the maximum number of form fields to support. This defaults to 0.
+
+This behaves similarly to `query()`.
+
+On first call, the `formData` function attempts to parse the body. This can require memory allocations to unescape encoded values. The parsed value is internally cached, so subsequent calls to `formData()` are fast and cannot fail.
+
+The original casing of both the key and the name are preserved.
+
+To iterate over all fields, use:
+
+```zig
+const fd = try req.formData();
+for (fd.keys[0..fd.len], fd.values[0..fd.len]) |name, field| {
+    //
+}
+```
+
+Once this function is called, `req.multiFormData()` will no longer work (because the body is assumed parsed).
+
+### Multi Part Form Data
+Similar to the above, `req.multiFormData()` can be called to parse requests with a "multipart/form-data" content type. The `request.max_multiform_count` configuration value must be set to the maximum number of form fields to support. This defaults to 0.
+
+This is a different API than `formData` because the return type is different. Rather than a simple string=>value type, the multi part form data value consists of a `value: []const u8` and a `filename: ?[]const u8`.
+
+On first call, the `multiFormData` function attempts to parse the body. The parsed value is internally cached, so subsequent calls to `multiFormData()` are fast and cannot fail.
+
+The original casing of both the key and the name are preserved.
+
+To iterate over all fields, use:
+
+```zig
+const fd = try req.multiFormData();
+for (fd.keys[0..fd.len], fd.values[0..fd.len]) |name, field| {
+    // access the value via field.value
+    // and field.filename (an optional)
+}
+```
+
+Once this function is called, `req.formData()` will no longer work (because the body is assumed parsed).
+
+Advance warning: This is one of the few methods that can modify the request in-place. For most people this won't be an issue, but if you use `req.body()` and `req.multiFormData()`, say to log the raw body, the content-disposition field names are escaped in-place. It's still save to use `req.body()` but any  content-disposation name that was escaped will be a little off.
+
 ## httpz.Response
 The following fields are the most useful:
 

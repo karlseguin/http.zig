@@ -54,8 +54,61 @@ pub const KeyValue = struct {
 	}
 };
 
+pub const MultiFormKeyValue = struct {
+		len: usize,
+		keys: [][]const u8,
+		values: []Value,
+
+	 pub const Value = struct {
+				value: []const u8,
+				filename: ?[]const u8 = null,
+		};
+
+		pub fn init(allocator: Allocator, max: usize) !MultiFormKeyValue {
+				const keys = try allocator.alloc([]const u8, max);
+				const values = try allocator.alloc(Value, max);
+				return .{
+						.len = 0,
+						.keys = keys,
+						.values = values,
+				};
+		}
+
+		pub fn deinit(self: *MultiFormKeyValue, allocator: Allocator) void {
+				allocator.free(self.keys);
+				allocator.free(self.values);
+		}
+
+		pub fn add(self: *MultiFormKeyValue, key: []const u8, value: Value) void {
+				const len = self.len;
+				var keys = self.keys;
+				if (len == keys.len) {
+						return;
+				}
+
+				keys[len] = key;
+				self.values[len] = value;
+				self.len = len + 1;
+		}
+
+		pub fn get(self: MultiFormKeyValue, needle: []const u8) ?Value {
+				const keys = self.keys[0..self.len];
+				for (keys, 0..) |key, i| {
+						if (mem.eql(u8, key, needle)) {
+								return self.values[i];
+						}
+				}
+
+				return null;
+		}
+
+		pub fn reset(self: *MultiFormKeyValue) void {
+				self.len = 0;
+		}
+};
+
 const t = @import("t.zig");
-test "key_value: get" {
+test "KeyValue: get" {
 	const allocator = t.allocator;
 	var kv = try KeyValue.init(allocator, 2);
 	var key = "content-type".*;
@@ -72,7 +125,7 @@ test "key_value: get" {
 	// allocator.free(key);
 }
 
-test "key_value: ignores beyond max" {
+test "KeyValue: ignores beyond max" {
 	var kv = try KeyValue.init(t.allocator, 2);
 	var n1 = "content-length".*;
 	kv.add(&n1, "cl");
@@ -88,4 +141,37 @@ test "key_value: ignores beyond max" {
 	try t.expectEqual(@as(?[]const u8, null), kv.get("authorization"));
 
 	kv.deinit(t.allocator);
+}
+
+test "MultiFormKeyValue: get" {
+		var kv = try MultiFormKeyValue.init(t.allocator, 2);
+		defer kv.deinit(t.allocator);
+
+		var key = "username".*;
+		kv.add(&key, .{.value = "leto"});
+
+		try t.expectEqual("leto", kv.get("username").?.value);
+
+		kv.reset();
+		try t.expectEqual(null, kv.get("username"));
+		kv.add(&key, .{.value = "leto2"});
+		try t.expectEqual("leto2", kv.get("username").?.value);
+}
+
+test "MultiFormKeyValue: ignores beyond max" {
+		var kv = try MultiFormKeyValue.init(t.allocator, 2);
+		defer kv.deinit(t.allocator);
+
+		var n1 = "username".*;
+		kv.add(&n1, .{.value = "leto"});
+
+		var n2 = "password".*;
+		kv.add(&n2, .{.value = "ghanima"});
+
+		var n3 = "other".*;
+		kv.add(&n3, .{.value = "hack"});
+
+		try t.expectEqual("leto", kv.get("username").?.value);
+		try t.expectEqual("ghanima", kv.get("password").?.value);
+		try t.expectEqual(null, kv.get("other"));
 }
