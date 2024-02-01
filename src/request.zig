@@ -118,6 +118,7 @@ pub const Request = struct {
         return buf.data[0..self.body_len];
     }
 
+    /// `name` should be full lowercase
     pub fn header(self: *const Request, name: []const u8) ?[]const u8 {
         return self.headers.get(name);
     }
