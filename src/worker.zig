@@ -608,7 +608,7 @@ const Manager = struct {
     }
 
     // Enforces timeouts, and returs when the next timeout should be checked.
-    fn prepreToWait(self: *Manager) ?u32 {
+    fn prepreToWait(self: *Manager) ?i32 {
         const now = timestamp();
         const next_active = self.enforceTimeout(self.active_list, now);
         const next_keepalive = self.enforceTimeout(self.keepalive_list, now);
@@ -624,7 +624,7 @@ const Manager = struct {
             return 1;
         }
 
-        return next - now;
+        return @intCast(next - now);
     }
 
     // lists are ordered from soonest to timeout to latest, as soon as we find
@@ -892,7 +892,7 @@ const KQueue = struct {
         self.change_count = change_count + 1;
     }
 
-    fn wait(self: *KQueue, timeout_sec: ?u32) !Iterator {
+    fn wait(self: *KQueue, timeout_sec: ?i32) !Iterator {
         const event_list = &self.event_list;
         const timeout: ?os.timespec = if (timeout_sec) |ts| os.timespec{ .tv_sec = ts, .tv_nsec = 0 } else null;
         const event_count = try std.os.kevent(self.q, self.change_buffer[0..self.change_count], event_list, if (timeout) |ts| &ts else null);
@@ -956,7 +956,7 @@ const EPoll = struct {
         return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_DEL, fd, null);
     }
 
-    fn wait(self: *EPoll, timeout_sec: ?u32) !Iterator {
+    fn wait(self: *EPoll, timeout_sec: ?i32) !Iterator {
         const event_list = &self.event_list;
         const event_count = blk: while (true) {
             const rc = os.linux.syscall6(
@@ -964,7 +964,7 @@ const EPoll = struct {
                 @as(usize, @bitCast(@as(isize, self.q))),
                 @intFromPtr(event_list.ptr),
                 event_list.len,
-                if (timeout_sec) |ts| @intFromPtr(&os.timespec{ .tv_sec = ts, .tv_nsec = 0 }) else 0,
+                if (timeout_sec) |ts| @intFromPtr(&os.timespec{ .tv_sec = @intCast(ts), .tv_nsec = 0 }) else 0,
                 0,
                 @sizeOf(os.linux.sigset_t),
             );
