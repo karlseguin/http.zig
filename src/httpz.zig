@@ -20,6 +20,7 @@ const Allocator = std.mem.Allocator;
 const log = std.log.scoped(.httpz);
 
 const Conn = @import("worker.zig").Conn;
+const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
 // don't like using CPU detection since hyperthread cores are marketing.
 const DEFAULT_WORKERS = 2;
@@ -210,7 +211,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         _errorHandler: ErrorHandlerAction(G),
         _notFoundHandler: Action(G),
         _cond: Thread.Condition,
-        _thread_pool: *ThreadPool,
+        _thread_pool: *ThreadPool(Self.handler),
         _signals: [][2]fd_t,
         _max_request_per_connection: u64,
 
@@ -230,7 +231,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 var_config.address = "127.0.0.1";
             }
 
-            const thread_pool = try ThreadPool.init(allocator, config.thread_pool);
+            var thread_pool = try ThreadPool(Self.handler).init(allocator, .{});
             errdefer thread_pool.deinit(allocator);
 
             const signals = try allocator.alloc([2]fd_t, config.workers.count orelse DEFAULT_WORKERS);
@@ -411,8 +412,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         pub fn handle(self: *Self, worker: *Worker, conn: *Conn) !void {
             // this is executing in the worker's thread, we want to move it
             // to our threadpool asap
-            // try self._thread_pool.spawn(Self.handler, .{self, worker, conn});
-            self.handler(worker, conn);
+            try self._thread_pool.spawn(.{self, worker, conn});
         }
 
         fn handler(self: *Self, worker: *Worker, conn: *Conn) void {
@@ -490,103 +490,6 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             }
             return self._notFoundHandler(self.ctx, req, res);
         }
-
-        const ThreadPool = struct {
-            stop: bool,
-            push: usize,
-            pull: usize,
-            pending: []Args,
-            threads: []Thread,
-            mutex: Thread.Mutex,
-            sem: Thread.Semaphore,
-            cond: Thread.Condition,
-            pending_end: usize,
-
-            const Args = struct {
-                conn: *Conn,
-                server: *Self,
-                worker: *Worker,
-            };
-
-            fn init(allocator: Allocator, config: Config.ThreadPool) !*ThreadPool {
-                const pending = try allocator.alloc(Args, config.backlog orelse 128);
-                errdefer allocator.free(pending);
-
-                const threads = try allocator.alloc(Thread, config.count orelse 4);
-                errdefer allocator.free(threads);
-
-                const thread_pool = try allocator.create(ThreadPool);
-                errdefer allocator.destroy(thread_pool);
-
-                thread_pool.* = .{
-                    .pull = 0,
-                    .push = 0,
-                    .cond = .{},
-                    .mutex = .{},
-                    .stop = false,
-                    .threads = threads,
-                    .pending = pending,
-                    .pending_end = pending.len - 1,
-                    .sem = .{.permits = pending.len},
-                };
-
-                var started: usize = 0;
-                errdefer {
-                    thread_pool.stop = true;
-                    thread_pool.cond.broadcast();
-                    for (0..started) |i| {
-                        threads[i].join();
-                    }
-                }
-
-                for (0..threads.len) |i| {
-                    threads[i] = try Thread.spawn(.{}, ThreadPool.worker, .{ thread_pool });
-                    threads[i].detach();
-                    started += 1;
-                }
-
-                return thread_pool;
-            }
-
-            fn deinit(self: *ThreadPool, allocator: Allocator) void {
-                self.stop = true;
-                self.cond.broadcast();
-                for (self.threads) |thrd| {
-                    thrd.join();
-                }
-                allocator.free(self.threads);
-                allocator.destroy(self);
-            }
-
-            fn spawn(self: *ThreadPool, args: Args) !void {
-                self.sem.wait();
-                self.mutex.lock();
-                const push = self.push;
-                self.pending[push] = args;
-                self.push = if (push == self.pending_end) 0 else push + 1;
-                self.mutex.unlock();
-                self.cond.signal();
-            }
-
-            fn worker(self: *ThreadPool) void {
-                while (true) {
-                    self.mutex.lock();
-                    while (self.pull == self.push) {
-                        self.cond.wait(&self.mutex);
-                        if (self.stop) {
-                            self.mutex.unlock();
-                            return;
-                        }
-                    }
-                    const pull = self.pull;
-                    const args = self.pending[pull];
-                    self.pull = if (pull == self.pending_end) 0 else pull + 1;
-                    self.mutex.unlock();
-                    self.sem.post();
-                    Self.handler(args.server, args.worker, args.conn);
-                }
-            }
-        };
     };
 }
 
