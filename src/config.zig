@@ -11,6 +11,12 @@ pub const Config = struct {
     timeout: Timeout = .{},
     cors: ?CORS = null,
     websocket: ?Websocket = null,
+    thread_pool: ThreadPool = .{},
+
+    pub const ThreadPool = struct {
+        count: ?u16 = null,
+        backlog: ?u32 = null,
+    };
 
     pub const Worker = struct {
         count: ?u16 = null,

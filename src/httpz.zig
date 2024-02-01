@@ -2,7 +2,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 pub const websocket = @import("websocket");
 
-const Thread = std.Thread;
 pub const testing = @import("testing.zig");
 
 pub const routing = @import("router.zig");
@@ -15,7 +14,17 @@ pub const Response = response.Response;
 pub const Url = @import("url.zig").Url;
 pub const Config = @import("config.zig").Config;
 
+const fd_t = std.os.fd_t;
+const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
+const log = std.log.scoped(.httpz);
+
+const Conn = @import("worker.zig").Conn;
+
+// don't like using CPU detection since hyperthread cores are marketing.
+const DEFAULT_WORKERS = 2;
+
+const MAX_REQUEST_COUNT = 4_294_967_295;
 
 pub const Protocol = enum {
     HTTP10,
@@ -201,6 +210,9 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         _errorHandler: ErrorHandlerAction(G),
         _notFoundHandler: Action(G),
         _cond: Thread.Condition,
+        _thread_pool: *ThreadPool,
+        _signals: [][2]fd_t,
+        _max_request_per_connection: u64,
 
         const Self = @This();
         const Worker = @import("worker.zig").Worker(*Self);
@@ -218,20 +230,31 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 var_config.address = "127.0.0.1";
             }
 
+            const thread_pool = try ThreadPool.init(allocator, config.thread_pool);
+            errdefer thread_pool.deinit(allocator);
+
+            const signals = try allocator.alloc([2]fd_t, config.workers.count orelse DEFAULT_WORKERS);
+            errdefer allocator.free(signals);
+
             return .{
                 .ctx = ctx,
                 .config = var_config,
                 .allocator = allocator,
                 ._cond = .{},
+                ._signals = signals,
                 ._errorHandler = erh,
                 ._notFoundHandler = nfh,
+                ._thread_pool = thread_pool,
                 ._router = try Router(G, R).init(allocator, dd, ctx),
                 ._cors_origin = if (config.cors) |cors| cors.origin else null,
+                ._max_request_per_connection = config.timeout.request_count orelse MAX_REQUEST_COUNT,
             };
         }
 
         pub fn deinit(self: *Self) void {
+            self.allocator.free(self._signals);
             self._router.deinit(self.allocator);
+            self._thread_pool.deinit(self.allocator);
         }
 
         pub fn listen(self: *Self) !void {
@@ -294,19 +317,16 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             });
             defer ws.deinit(allocator);
 
-            const signal = try os.pipe();
-
-            const worker_count = config.workers.count orelse 2;
+            var signals = self._signals;
+            const worker_count = config.workers.count orelse DEFAULT_WORKERS;
             const workers = try allocator.alloc(Worker, worker_count);
             const threads = try allocator.alloc(Thread, worker_count);
 
             var started: usize = 0;
 
             defer {
-                // should cause the workers to unblock
-                os.close(signal[1]);
-
                 for (0..started) |i| {
+                    os.close(signals[i][1]);
                     threads[i].join();
                     workers[i].deinit();
                 }
@@ -315,8 +335,13 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             }
 
             for (0..workers.len) |i| {
-                workers[i] = try Worker.init(allocator, self, &ws, &config);
-                threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], socket, signal[0] });
+                signals[i] = try os.pipe();
+                errdefer os.close(signals[i][1]);
+
+                workers[i] = try Worker.init(allocator, i, self, &ws, &config);
+                errdefer workers[i].deinit();
+
+                threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], socket, signals[i][0] });
                 started += 1;
             }
 
@@ -382,32 +407,51 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             return error.CannotDispatch;
         }
 
-        pub const HandleResult = enum {
-            close,
-            disown,
-            write_and_close,
-            write_and_keepalive,
-        };
 
-        pub fn handle(self: Self, req: *Request, res: *Response) HandleResult {
+        pub fn handle(self: *Self, worker: *Worker, conn: *Conn) !void {
+            // this is executing in the worker's thread, we want to move it
+            // to our threadpool asap
+            // try self._thread_pool.spawn(Self.handler, .{self, worker, conn});
+            self.handler(worker, conn);
+        }
+
+        fn handler(self: *Self, worker: *Worker, conn: *Conn) void {
+            const aa = conn.arena.allocator();
+            var req = Request.init(aa, conn);
+            var res = Response.init(aa, conn);
+
             const dispatchable_action = self._router.route(req.method, req.url.path, &req.params);
-            self.dispatch(dispatchable_action, req, res) catch |err| {
+            self.dispatch(dispatchable_action, &req, &res) catch |err| {
                 if (comptime G == void) {
-                    self._errorHandler(req, res, err);
+                    self._errorHandler(&req, &res, err);
                 } else {
                     const ctx = if (dispatchable_action) |da| da.ctx else self.ctx;
-                    self._errorHandler(ctx, req, res, err);
+                    self._errorHandler(ctx, &req, &res, err);
                 }
             };
 
-            if (!req.canKeepAlive()) {
-                return .write_and_close;
-            }
             if (res.disowned) {
-                return .disown;
+                conn.handover = .disown;
+            } else  {
+                const request_count_limit = conn.request_count == self._max_request_per_connection;
+                if (res.written == true) {
+                    conn.handover = if (request_count_limit == false and req.canKeepAlive()) .keepalive else .close;
+                } else {
+                    conn.res_state.prepareForWrite(&res) catch |err| {
+                        log.err("Failed to prepare response for writing: {}", .{err});
+                        conn.handover = .close;
+                    };
+                    conn.handover = if (request_count_limit == false and req.canKeepAlive()) .write_and_keepalive else .write_and_close;
+                }
             }
 
-            return .write_and_keepalive;
+            const signal = self._signals[worker.id][1];
+            const buf = std.mem.asBytes(&@intFromPtr(conn));
+
+            var to_write: usize = @sizeOf(usize);
+            while (to_write > 0) {
+                to_write -= std.os.write(signal, buf) catch @panic("TODO");
+            }
         }
 
         inline fn dispatch(self: Self, dispatchable_action: ?DispatchableAction(G, R), req: *Request, res: *Response) !void {
@@ -446,6 +490,103 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             }
             return self._notFoundHandler(self.ctx, req, res);
         }
+
+        const ThreadPool = struct {
+            stop: bool,
+            push: usize,
+            pull: usize,
+            pending: []Args,
+            threads: []Thread,
+            mutex: Thread.Mutex,
+            sem: Thread.Semaphore,
+            cond: Thread.Condition,
+            pending_end: usize,
+
+            const Args = struct {
+                conn: *Conn,
+                server: *Self,
+                worker: *Worker,
+            };
+
+            fn init(allocator: Allocator, config: Config.ThreadPool) !*ThreadPool {
+                const pending = try allocator.alloc(Args, config.backlog orelse 128);
+                errdefer allocator.free(pending);
+
+                const threads = try allocator.alloc(Thread, config.count orelse 4);
+                errdefer allocator.free(threads);
+
+                const thread_pool = try allocator.create(ThreadPool);
+                errdefer allocator.destroy(thread_pool);
+
+                thread_pool.* = .{
+                    .pull = 0,
+                    .push = 0,
+                    .cond = .{},
+                    .mutex = .{},
+                    .stop = false,
+                    .threads = threads,
+                    .pending = pending,
+                    .pending_end = pending.len - 1,
+                    .sem = .{.permits = pending.len},
+                };
+
+                var started: usize = 0;
+                errdefer {
+                    thread_pool.stop = true;
+                    thread_pool.cond.broadcast();
+                    for (0..started) |i| {
+                        threads[i].join();
+                    }
+                }
+
+                for (0..threads.len) |i| {
+                    threads[i] = try Thread.spawn(.{}, ThreadPool.worker, .{ thread_pool });
+                    threads[i].detach();
+                    started += 1;
+                }
+
+                return thread_pool;
+            }
+
+            fn deinit(self: *ThreadPool, allocator: Allocator) void {
+                self.stop = true;
+                self.cond.broadcast();
+                for (self.threads) |thrd| {
+                    thrd.join();
+                }
+                allocator.free(self.threads);
+                allocator.destroy(self);
+            }
+
+            fn spawn(self: *ThreadPool, args: Args) !void {
+                self.sem.wait();
+                self.mutex.lock();
+                const push = self.push;
+                self.pending[push] = args;
+                self.push = if (push == self.pending_end) 0 else push + 1;
+                self.mutex.unlock();
+                self.cond.signal();
+            }
+
+            fn worker(self: *ThreadPool) void {
+                while (true) {
+                    self.mutex.lock();
+                    while (self.pull == self.push) {
+                        self.cond.wait(&self.mutex);
+                        if (self.stop) {
+                            self.mutex.unlock();
+                            return;
+                        }
+                    }
+                    const pull = self.pull;
+                    const args = self.pending[pull];
+                    self.pull = if (pull == self.pending_end) 0 else pull + 1;
+                    self.mutex.unlock();
+                    self.sem.post();
+                    Self.handler(args.server, args.worker, args.conn);
+                }
+            }
+        };
     };
 }
 

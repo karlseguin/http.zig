@@ -22,10 +22,11 @@ const net = std.net;
 const log = std.log.scoped(.httpz);
 
 const MAX_TIMEOUT = 2_147_483_647;
-const MAX_REQUEST_COUNT = 4_294_967_295;
 
 pub fn Worker(comptime S: type) type {
     return struct {
+        id: usize,
+
         server: S,
 
         // KQueue or Epoll, depending on the platform
@@ -44,7 +45,8 @@ pub fn Worker(comptime S: type) type {
 
         config: *const Config,
 
-        max_request_per_connection: u64,
+        signal_pos: usize,
+        signal_buf: [@sizeOf(usize) * 8]u8,
 
         const Self = @This();
 
@@ -54,7 +56,7 @@ pub fn Worker(comptime S: type) type {
             else => @compileError("This branch requires access to kqueue or epoll. Consider using the \"blocking\" branch instead."),
         };
 
-        pub fn init(allocator: Allocator, server: S, ws: *websocket.Server, config: *const Config) !Self {
+        pub fn init(allocator: Allocator, id: usize, server: S, ws: *websocket.Server, config: *const Config) !Self {
             const loop = try Loop.init();
             errdefer loop.deinit();
 
@@ -62,13 +64,15 @@ pub fn Worker(comptime S: type) type {
             errdefer manager.deinit();
 
             return .{
+                .id = id,
                 .loop = loop,
                 .config = config,
                 .server = server,
                 .manager = manager,
+                .signal_pos = 0,
+                .signal_buf = undefined,
                 .allocator = allocator,
                 .max_conn = config.workers.max_conn orelse 512,
-                .max_request_per_connection = config.timeout.request_count orelse MAX_REQUEST_COUNT,
             };
         }
 
@@ -86,10 +90,26 @@ pub fn Worker(comptime S: type) type {
                 return;
             };
 
-            self.loop.monitorSignal(signal) catch |err| {
-                log.err("Failed to add monitor to signal pipe: {}", .{err});
-                return;
-            };
+            {
+                // setup our signal
+
+                // First, we make it non blocking
+                const flags = os.fcntl(signal, os.F.GETFL, 0)  catch |err| {
+                    log.err("Failed to make get signal file flags: {}", .{err});
+                    return;
+                };
+
+                _ = os.fcntl(signal, os.F.SETFL, flags | os.O.NONBLOCK) catch |err| {
+                    log.err("Failed to make signal nonblocking: {}", .{err});
+                    return;
+                };
+
+                // Next we register it in our event loop
+                self.loop.monitorSignal(signal) catch |err| {
+                    log.err("Failed to add monitor to signal pipe: {}", .{err});
+                    return;
+                };
+            }
 
             while (true) {
                 const timeout = manager.prepreToWait();
@@ -103,14 +123,17 @@ pub fn Worker(comptime S: type) type {
                     if (data == 0) {
                         self.accept(listener) catch |err| {
                             log.err("Failed to accept connection: {}", .{err});
-                            std.time.sleep(std.time.ns_per_s);
+                            std.time.sleep(std.time.ns_per_ms * 10);
                         };
                         continue;
                     }
 
                     if (data == 1) {
-                        // our control signal, we're being told to stop,
-                        return;
+                        if (self.processSignal(signal)) {
+                            // signal was closed, we're being told to shutdown
+                            return;
+                        }
+                        continue;
                     }
 
                     const conn: *align(8) Conn = @ptrFromInt(data);
@@ -119,34 +142,47 @@ pub fn Worker(comptime S: type) type {
                         .read => self.handleRequest(conn),
                         .write => self.write(conn) catch .close,
                     };
-
-                    switch (result) {
-                        .keepalive => blk: {
-                            self.loop.monitorRead(conn, true) catch {
-                                manager.close(conn);
-                                break :blk;
-                            };
-                            conn.poll_mode = .read;
-                            manager.keepalive(conn);
-                        },
-                        .close => manager.close(conn),
-                        .wait_for_socket => {},
-                        .disown => {
-                            if (self.loop.remove(conn)) {
-                                manager.disown(conn);
-                            } else |_| {
-                                manager.close(conn);
-                            }
-                        },
-                    }
+                    self.handleResult(result, conn);
                 }
+            }
+        }
+
+        fn accept(self: *Self, listener: os.fd_t) !void {
+            const max_conn = self.max_conn;
+
+            var manager = &self.manager;
+            var len = manager.len;
+
+            while (len < max_conn) {
+                var address: std.net.Address = undefined;
+                var address_len: os.socklen_t = @sizeOf(std.net.Address);
+
+                const socket = os.accept(listener, &address.any, &address_len, os.SOCK.CLOEXEC) catch |err| {
+                    // When available, we use SO_REUSEPORT_LB or SO_REUSEPORT, so WouldBlock
+                    // should not be possible in those cases, but if it isn't available
+                    // this error should be ignored as it means another thread picked it up.
+                    return if (err == error.WouldBlock) {} else err;
+                };
+                errdefer os.close(socket);
+
+                // set non blocking
+                const flags = (try os.fcntl(socket, os.F.GETFL, 0)) | os.O.NONBLOCK;
+                _ = try os.fcntl(socket, os.F.SETFL, flags);
+
+                var conn = try manager.new();
+                conn.socket_flags = flags;
+                conn.stream = .{ .handle = socket };
+                conn.address = address;
+
+                try self.loop.monitorRead(conn, false);
+                len += 1;
             }
         }
 
         const HandleResult = enum {
             close,
-            disown,
             keepalive,
+            executing,
             wait_for_socket,
         };
 
@@ -155,10 +191,10 @@ pub fn Worker(comptime S: type) type {
 
             const done = conn.req_state.parse(stream) catch |err| {
                 switch (err) {
-                    error.HeaderTooBig => self.writeError(conn, 431, "Request header is too big"),
-                    error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => self.writeError(conn, 400, "Invalid Request"),
+                    error.HeaderTooBig => return self.writeError(conn, 431, "Request header is too big"),
+                    error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => return self.writeError(conn, 400, "Invalid Request"),
                     error.BrokenPipe, error.ConnectionClosed, error.ConnectionResetByPeer => {},
-                    else => log.err("Unknown read/parse error: {}", .{err}),
+                    else => return self.serverError(conn, "unknown read/parse error: {}", err),
                 }
                 return .close;
             };
@@ -166,40 +202,85 @@ pub fn Worker(comptime S: type) type {
             if (done == false) {
                 // we need to wait for more data
                 self.loop.monitorRead(conn, true) catch |err| {
-                    log.err("Unknown loop error: {}", .{err});
-                    return .close;
+                    return self.serverError(conn, "unknown event loop error: {}", err);
                 };
                 return .wait_for_socket;
             }
 
-            const aa = conn.arena.allocator();
-
-            var req = Request.init(aa, conn);
-            var res = Response.init(aa, conn);
-            const result = self.server.handle(&req, &res);
-
-            switch (result) {
-                .write_and_keepalive => if (conn.request_count == self.max_request_per_connection) {
-                    conn.close = true;
-                    res.keepalive = false;
-                },
-                .write_and_close => {
-                    conn.close = true;
-                    res.keepalive = false;
-                },
-                .close => return .close,
-                .disown => return .disown,
-            }
-
-            if (res.written) {
-                return if (conn.close) .close else .keepalive;
-            }
-
-            conn.res_state.prepareForWrite(&res) catch |err| {
-                log.err("Failed to prepare response for writing: {}", .{err});
-                return .close;
+            self.server.handle(self, conn) catch |err| {
+                return self.serverError(conn, "handler executor: {}", err);
             };
-            return self.write(conn) catch .close;
+            return .executing;
+        }
+
+        fn processSignal(self: *Self, signal: os.fd_t) bool {
+            const s_t = @sizeOf(usize);
+
+            const start = self.signal_pos;
+            const buf = &self.signal_buf;
+
+            const n = os.read(signal, buf[start..]) catch |err| switch (err) {
+                error.WouldBlock => return false,
+                else => 0,
+            };
+
+            if (n == 0) {
+                // assume closed, indicating a shutdown
+                return true;
+            }
+
+            const pos = start + n;
+            const data_len = pos - start;
+            const connections = data_len / s_t;
+
+            for (0..connections) |i| {
+                const data_start = start + (i * s_t);
+                const data_end = data_start + s_t;
+                const conn: *Conn = @ptrFromInt(@as(*usize, @alignCast(@ptrCast(buf[data_start..data_end]))).*);
+                self.processHandover(conn);
+            }
+
+            const partial_len = @mod(data_len, s_t);
+            const partial_start = pos - partial_len;
+            for (0..partial_len) |i| {
+                buf[i] = buf[partial_start + i];
+            }
+            self.signal_pos = partial_len;
+            return false;
+        }
+
+        fn processHandover(self: *Self, conn: *Conn) void {
+            switch (conn.handover) {
+                .write_and_close, .write_and_keepalive => {
+                    const result = self.write(conn) catch .close;
+                    self.handleResult(result, conn);
+                },
+                .close => self.manager.close(conn),
+                .keepalive => self.manager.keepalive(conn),
+                .disown => {
+                    if (self.loop.remove(conn)) {
+                        self.manager.disown(conn);
+                    } else |_| {
+                        self.manager.close(conn);
+                    }
+                },
+            }
+        }
+
+        fn handleResult(self: *Self, result: HandleResult, conn: *Conn) void {
+            var manager = &self.manager;
+            switch (result) {
+                .keepalive => blk: {
+                    self.loop.monitorRead(conn, true) catch {
+                        manager.close(conn);
+                        break :blk;
+                    };
+                    conn.poll_mode = .read;
+                    manager.keepalive(conn);
+                },
+                .close => manager.close(conn),
+                .wait_for_socket, .executing => {},
+            }
         }
 
         fn write(self: *Self, conn: *Conn) !HandleResult {
@@ -265,39 +346,12 @@ pub fn Worker(comptime S: type) type {
             return .keepalive;
         }
 
-        fn accept(self: *Self, listener: os.fd_t) !void {
-            const max_conn = self.max_conn;
-
-            var manager = &self.manager;
-            var len = manager.len;
-
-            while (len < max_conn) {
-                var address: std.net.Address = undefined;
-                var address_len: os.socklen_t = @sizeOf(std.net.Address);
-
-                const socket = os.accept(listener, &address.any, &address_len, os.SOCK.CLOEXEC) catch |err| {
-                    // When available, we use SO_REUSEPORT_LB or SO_REUSEPORT, so WouldBlock
-                    // should not be possible in those cases, but if it isn't available
-                    // this error should be ignored as it means another thread picked it up.
-                    return if (err == error.WouldBlock) {} else err;
-                };
-                errdefer os.close(socket);
-
-                // set non blocking
-                const flags = (try os.fcntl(socket, os.F.GETFL, 0)) | os.O.NONBLOCK;
-                _ = try os.fcntl(socket, os.F.SETFL, flags);
-
-                var conn = try manager.new();
-                conn.socket_flags = flags;
-                conn.stream = .{ .handle = socket };
-                conn.address = address;
-
-                try self.loop.monitorRead(conn, false);
-                len += 1;
-            }
+        fn serverError(self: *Self, conn: *Conn, comptime log_fmt: []const u8, err: anyerror) HandleResult {
+            log.err("server error: " ++ log_fmt, .{err});
+            return self.writeError(conn, 500, "Internal Server Error");
         }
 
-        fn writeError(self: *Self, conn: *Conn, status: u16, msg: []const u8) void {
+        fn writeError(self: *Self, conn: *Conn, status: u16, msg: []const u8) HandleResult {
             const aa = conn.arena.allocator();
             var res = Response.init(aa, conn);
             res.status = status;
@@ -306,9 +360,18 @@ pub fn Worker(comptime S: type) type {
 
             conn.res_state.prepareForWrite(&res) catch |err| {
                 log.err("Failed to prepare error response for writing: {}", .{err});
-                return;
+                return .close;
             };
-            _ = self.write(conn) catch {};
+            return self.write(conn) catch .close;
+        }
+
+        pub fn disown(self: *Self, conn: *Conn) void {
+            // Called from the handler thread pool.
+            if (self.loop.remove(conn)) {
+                self.manager.disown(conn);
+            } else |_| {
+                self.manager.close(conn);
+            }
         }
     };
 }
@@ -355,11 +418,21 @@ pub const Conn = struct {
         keepalive,
     };
 
+    const Handover = enum {
+        disown,
+        close,
+        keepalive,
+        write_and_close,
+        write_and_keepalive,
+    };
+
     io_mode: IOMode,
 
     poll_mode: PollMode,
 
     state: State,
+
+    handover: Handover,
 
     // unix timestamp (seconds) where this connection should timeout
     timeout: u32,
@@ -415,6 +488,7 @@ pub const Conn = struct {
         errdefer res_state.deinit(allocator);
 
         return .{
+            .handover = .close,
             .arena = arena,
             .close = false,
             .state = .active,
@@ -825,8 +899,9 @@ const KQueue = struct {
     }
 
     fn remove(self: *KQueue, conn: *Conn) !void {
-        try self.change(conn.stream.handle, 0, os.system.EVFILT_READ, os.system.EV_DELETE);
-        try self.change(conn.stream.handle, 0, os.system.EVFILT_WRITE, os.system.EV_DELETE);
+        const fd = conn.stream.handle;
+        try self.change(fd, 0, os.system.EVFILT_READ, os.system.EV_DELETE);
+        try self.change(fd, 0, os.system.EVFILT_WRITE, os.system.EV_DELETE);
     }
 
     fn change(self: *KQueue, fd: os.fd_t, data: usize, filter: i16, flags: u16) !void {

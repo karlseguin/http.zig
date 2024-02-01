@@ -590,7 +590,11 @@ try httpz.listen(allocator, &router, .{
     // unix socket to listen on (mutually exlusive with host&port)
     .unix_path = null,
 
-    // configure the pool of request/response object pairs
+    // configure the workers which are responsible for:
+    // 1 - accepting connetions
+    // 2 - reading and parsing requests
+    // 3 - passing requests to the thread pool
+    // 4 - writing response
     .workers = .{
         // Number of worker threads
         .count = 2,
@@ -621,6 +625,19 @@ try httpz.listen(allocator, &router, .{
 
         // The size of each large buffer.
         .large_buffer_size = 65536,
+    },
+
+    // configures the threadpool which processes requests. The threadpool is 
+    // where your application code runs.
+    .thread_pool = .{
+        // Number threads. If you're handlers are doing a lot of i/o, a higher
+        // number might provide better throughput
+        .count = 4,
+
+        // The maximum number of pending requests that the thread pool will accept
+        // This applies back pressure to the above workers and ensures that, under load
+        // pending requests get precendence over processing new requests.
+        .backlog = 512,
     },
 
     // defaults to null

@@ -96,6 +96,7 @@ pub const Context = struct {
 
         const conn = aa.create(Conn) catch unreachable;
         conn.* = .{
+            .handover = .close,
             .state = .active,
             .stream = server,
             .address = std.net.Address.initIp4([_]u8{ 127, 0, 0, 200 }, 0),
