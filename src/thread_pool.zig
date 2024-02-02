@@ -4,8 +4,8 @@ const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
 
 pub const Opts = struct {
-    count: u32 = 2,
-    backlog: u32 = 500,
+    count: u32,
+    backlog: u32,
 };
 
 pub fn ThreadPool(comptime F: anytype) type {

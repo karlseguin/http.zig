@@ -637,7 +637,7 @@ try httpz.listen(allocator, &router, .{
         // The maximum number of pending requests that the thread pool will accept
         // This applies back pressure to the above workers and ensures that, under load
         // pending requests get precendence over processing new requests.
-        .backlog = 512,
+        .backlog = 500,
     },
 
     // defaults to null

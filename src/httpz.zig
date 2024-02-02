@@ -231,7 +231,10 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 var_config.address = "127.0.0.1";
             }
 
-            var thread_pool = try ThreadPool(Self.handler).init(allocator, .{});
+            var thread_pool = try ThreadPool(Self.handler).init(allocator, .{
+                .count = config.thread_pool.count orelse 4,
+                .backlog = config.thread_pool.backlog orelse 500,
+            });
             errdefer thread_pool.deinit(allocator);
 
             const signals = try allocator.alloc([2]fd_t, config.workers.count orelse DEFAULT_WORKERS);

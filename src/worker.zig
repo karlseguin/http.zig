@@ -46,7 +46,7 @@ pub fn Worker(comptime S: type) type {
         config: *const Config,
 
         signal_pos: usize,
-        signal_buf: [@sizeOf(usize) * 8]u8,
+        signal_buf: [@sizeOf(usize) * 64]u8,
 
         const Self = @This();
 
@@ -216,8 +216,8 @@ pub fn Worker(comptime S: type) type {
         fn processSignal(self: *Self, signal: os.fd_t) bool {
             const s_t = @sizeOf(usize);
 
-            const start = self.signal_pos;
             const buf = &self.signal_buf;
+            const start = self.signal_pos;
 
             const n = os.read(signal, buf[start..]) catch |err| switch (err) {
                 error.WouldBlock => return false,
@@ -230,17 +230,16 @@ pub fn Worker(comptime S: type) type {
             }
 
             const pos = start + n;
-            const data_len = pos - start;
-            const connections = data_len / s_t;
+            const connections = pos / s_t;
 
             for (0..connections) |i| {
-                const data_start = start + (i * s_t);
+                const data_start = (i * s_t);
                 const data_end = data_start + s_t;
                 const conn: *Conn = @ptrFromInt(@as(*usize, @alignCast(@ptrCast(buf[data_start..data_end]))).*);
                 self.processHandover(conn);
             }
 
-            const partial_len = @mod(data_len, s_t);
+            const partial_len = @mod(pos, s_t);
             const partial_start = pos - partial_len;
             for (0..partial_len) |i| {
                 buf[i] = buf[partial_start + i];
