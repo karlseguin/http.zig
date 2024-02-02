@@ -703,13 +703,12 @@ test "response: header" {
 }
 
 test "response: json fuzz" {
+    defer t.reset();
     var r = t.getRandom();
     const random = r.random();
 
     for (0..10) |_| {
-        defer t.reset();
-        const body = t.randomString(random, t.allocator, 1000);
-        defer t.allocator.free(body);
+        const body = t.randomString(random, t.arena.allocator(), 1000);
         const expected_encoded_length = body.len + 2; // wrapped in double quotes
 
         for (0..100) |i| {
