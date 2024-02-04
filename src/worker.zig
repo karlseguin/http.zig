@@ -684,7 +684,9 @@ const ConnPool = struct {
 
     fn deinit(self: *ConnPool) void {
         const allocator = self.allocator;
-        for (self.conns) |conn| {
+        // the rest of the conns are "checked out" and owned by the Manager
+        // whichi will free them.
+        for (self.conns[0..self.available]) |conn| {
             conn.deinit(allocator);
             self.mem_pool.destroy(conn);
         }
