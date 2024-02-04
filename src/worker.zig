@@ -255,7 +255,7 @@ pub fn Worker(comptime S: type) type {
                     self.handleResult(result, conn);
                 },
                 .close => self.manager.close(conn),
-                .keepalive => self.manager.keepalive(conn),
+                .keepalive => self.handleResult(.keepalive, conn),
                 .disown => {
                     if (self.loop.remove(conn)) {
                         self.manager.disown(conn);

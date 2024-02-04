@@ -565,6 +565,7 @@ test {
         context_server.notFound(testNotFound);
         var router = context_server.router();
         router.get("/", ctxEchoAction);
+        router.get("/write/*", ctxEchoActionWrite);
         router.get("/fail", testFail);
         router.post("/login", ctxEchoAction);
         router.get("/test/body/cl", testCLBody);
@@ -947,6 +948,18 @@ test "httpz: keepalive" {
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 19\r\n\r\nversion=v2,user=123", testReadAll(stream, &buf));
 }
 
+test "httpz: keepalive with explicit write" {
+    const stream = testStream(5993);
+    defer stream.close();
+    try stream.writeAll("GET /write/9001 HTTP/1.1\r\n\r\n");
+
+    var buf: [1000]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 45\r\n\r\n{\"ctx\":3,\"method\":\"GET\",\"path\":\"/write/9001\"}", testReadAll(stream, &buf));
+
+    try stream.writeAll("GET /write/123 HTTP/1.1\r\n\r\n");
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 44\r\n\r\n{\"ctx\":3,\"method\":\"GET\",\"path\":\"/write/123\"}", testReadAll(stream, &buf));
+}
+
 test "httpz: request in chunks" {
     const stream = testStream(5993);
     defer stream.close();
@@ -1050,6 +1063,18 @@ fn ctxEchoAction(ctx: u32, req: *Request, res: *Response) !void {
         .method = @tagName(req.method),
         .path = req.url.path,
     }, .{});
+}
+
+fn ctxEchoActionWrite(ctx: u32, req: *Request, res: *Response) !void {
+    var arr = std.ArrayList(u8).init(res.arena);
+    try std.json.stringify(.{
+        .ctx = ctx,
+        .method = @tagName(req.method),
+        .path = req.url.path,
+    }, .{}, arr.writer());
+
+    res.body = arr.items;
+    return res.write();
 }
 
 fn testWriter(req: *Request, res: *Response) !void {
@@ -1161,7 +1186,6 @@ const TestWSHandler = struct {
 
     pub fn close(_: *TestWSHandler) void {}
 };
-
 
 const TestUser = struct {
     id: []const u8,
