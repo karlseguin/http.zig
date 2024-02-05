@@ -417,7 +417,7 @@ for (fd.keys[0..fd.len], fd.values[0..fd.len]) |name, field| {
 
 Once this function is called, `req.formData()` will no longer work (because the body is assumed parsed).
 
-Advance warning: This is one of the few methods that can modify the request in-place. For most people this won't be an issue, but if you use `req.body()` and `req.multiFormData()`, say to log the raw body, the content-disposition field names are escaped in-place. It's still save to use `req.body()` but any  content-disposation name that was escaped will be a little off.
+Advance warning: This is one of the few methods that can modify the request in-place. For most people this won't be an issue, but if you use `req.body()` and `req.multiFormData()`, say to log the raw body, the content-disposition field names are escaped in-place. It's still save to use `req.body()` but any  content-disposition name that was escaped will be a little off.
 
 ## httpz.Response
 The following fields are the most useful:
@@ -524,7 +524,7 @@ admin_routs.delete("/users/:id", deleteUsers);
 
 The first parameter to `group` is a prefix to prepend to each route in the group. An empty prefix is acceptable.
 
-The second paremeter is the same configuration object given to the `getC`, `putC`, etc. routing variants. All configuration values are optional and, if omitted, the default configured value will be used.
+The second parameter is the same configuration object given to the `getC`, `putC`, etc. routing variants. All configuration values are optional and, if omitted, the default configured value will be used.
 
 ### Casing
 You **must** use a lowercase route. You can use any casing with parameter names, as long as you use that same casing when getting the parameter.
@@ -595,7 +595,7 @@ try httpz.listen(allocator, &router, .{
     // the interface address to bind to
     .address = "127.0.0.1",
 
-    // unix socket to listen on (mutually exlusive with host&port)
+    // unix socket to listen on (mutually exclusive with host&port)
     .unix_path = null,
 
     // configure the pool of request/response object pairs
@@ -646,6 +646,18 @@ try httpz.listen(allocator, &router, .{
         // the maximum number of query string parameters to accept.
         // Additional parameters will be silently ignored.
         .max_query_count: usize = 32,
+
+        // Maximum number of x-www-form-urlencoded fields to support.
+        // Additional parameters will be silently ignored. This must be
+        // set to a value greater than 0 (the default) if you're going
+        // to use the req.formData() method.
+        .max_form_count: usize = 0,
+
+        // Maximum number of multipart/form-data fields to support.
+        // Additional parameters will be silently ignored. This must be
+        // set to a value greater than 0 (the default) if you're going
+        // to use the req.multiFormData() method.
+        .max_multiform_count: usize = 0,
     }
     // various options for tweaking response object
     .response = .{
