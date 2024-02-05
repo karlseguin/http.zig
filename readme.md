@@ -259,7 +259,7 @@ fn dispatcher(global: *Global, action: httpz.Action(Context), req: *httpz.Reques
         // we shouldn't blindly trust this header!
         .user_id = req.header("user"),
     }
-    return action(context, contextreq, res);
+    return action(context, req, res);
 }
 
 fn logout(context: Context, req: *httpz.Request, res: *httpz.Response) !void {
@@ -426,7 +426,7 @@ for (fd.keys[0..fd.len], fd.values[0..fd.len]) |name, field| {
 
 Once this function is called, `req.formData()` will no longer work (because the body is assumed parsed).
 
-Advance warning: This is one of the few methods that can modify the request in-place. For most people this won't be an issue, but if you use `req.body()` and `req.multiFormData()`, say to log the raw body, the content-disposition field names are escaped in-place. It's still save to use `req.body()` but any  content-disposation name that was escaped will be a little off.
+Advance warning: This is one of the few methods that can modify the request in-place. For most people this won't be an issue, but if you use `req.body()` and `req.multiFormData()`, say to log the raw body, the content-disposition field names are escaped in-place. It's still save to use `req.body()` but any  content-disposition name that was escaped will be a little off.
 
 ## httpz.Response
 The following fields are the most useful:
@@ -440,7 +440,7 @@ The simplest way to set a body is to set `res.body` to a `[]const u8`. **However
 
 Therefore, `res.body` can be safely used with constant strings. It can also be used with content created with `res.arena` (explained in the next section).
 
-It is possible to call `res.write() !void` direclty from your code. This will put the socket into blocking mode and send the full response. This is an advanced feature. Calling `res.write()` again does nothing.
+It is possible to call `res.write() !void` directly from your code. This will put the socket into blocking mode and send the full response. This is an advanced feature. Calling `res.write()` again does nothing.
 
 ### Dynamic Content
 You can use the `res.arena` allocator to create dynamic content:
@@ -516,7 +516,7 @@ admin_routs.delete("/users/:id", deleteUsers);
 
 The first parameter to `group` is a prefix to prepend to each route in the group. An empty prefix is acceptable.
 
-The second paremeter is the same configuration object given to the `getC`, `putC`, etc. routing variants. All configuration values are optional and, if omitted, the default configured value will be used.
+The second parameter is the same configuration object given to the `getC`, `putC`, etc. routing variants. All configuration values are optional and, if omitted, the default configured value will be used.
 
 ### Casing
 You **must** use a lowercase route. You can use any casing with parameter names, as long as you use that same casing when getting the parameter.
@@ -587,11 +587,11 @@ try httpz.listen(allocator, &router, .{
     // Interface address to bind to
     .address = "127.0.0.1",
 
-    // unix socket to listen on (mutually exlusive with host&port)
+    // unix socket to listen on (mutually exclusive with host&port)
     .unix_path = null,
 
     // configure the workers which are responsible for:
-    // 1 - accepting connetions
+    // 1 - accepting connections
     // 2 - reading and parsing requests
     // 3 - passing requests to the thread pool
     // 4 - writing response
@@ -636,7 +636,7 @@ try httpz.listen(allocator, &router, .{
 
         // The maximum number of pending requests that the thread pool will accept
         // This applies back pressure to the above workers and ensures that, under load
-        // pending requests get precendence over processing new requests.
+        // pending requests get precedence over processing new requests.
         .backlog = 500,
     },
 
@@ -675,14 +675,14 @@ try httpz.listen(allocator, &router, .{
         // Additional parameters will be silently ignored.
         .max_query_count: usize = 32,
 
-        // Maxium number of x-www-form-urlencoded fields to support.
-        // Additional parameters will be silenty ignored. This must be
+        // Maximum number of x-www-form-urlencoded fields to support.
+        // Additional parameters will be silently ignored. This must be
         // set to a value greater than 0 (the default) if you're going
         // to use the req.formData() method.
         .max_form_count: usize = 0,
 
-        // Maxium number of multipart/form-data fields to support.
-        // Additional parameters will be silenty ignored. This must be
+        // Maximum number of multipart/form-data fields to support.
+        // Additional parameters will be silently ignored. This must be
         // set to a value greater than 0 (the default) if you're going
         // to use the req.multiFormData() method.
         .max_multiform_count: usize = 0,
