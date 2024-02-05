@@ -8,7 +8,7 @@ var index_file_contents: []u8 = undefined;
 // Started in main.zig which starts 3 servers, on 3 different ports, to showcase
 // small variations in using httpz.
 pub fn start(allocator: Allocator) !void {
-    var server = try httpz.Server().init(allocator, .{.address = "0.0.0.0"});
+    var server = try httpz.Server().init(allocator, .{});
     defer server.deinit();
     var router = server.router();
 
