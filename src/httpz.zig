@@ -929,11 +929,17 @@ test "websocket: upgrade" {
     try stream.writeAll(&websocket.frameBin("close"));
 
     var buf: [20]u8 = undefined;
-    const n = try stream.read(&buf);
-    try t.expectEqual(12, n);
-    try t.expectEqual(129, buf[0]);
-    try t.expectEqual(10, buf[1]);
-    try t.expectString("over 9000!", buf[2..12]);
+    {
+        const n = try stream.read(&buf);
+        try t.expectEqual(2, n);
+        try t.expectEqual(129, buf[0]);
+        try t.expectEqual(10, buf[1]);
+    }
+    {
+        const n = try stream.read(&buf);
+        try t.expectEqual(10, n);
+        try t.expectString("over 9000!", buf[0..n]);
+    }
 }
 
 test "httpz: keepalive" {
