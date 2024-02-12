@@ -46,7 +46,7 @@ pub fn Worker(comptime S: type) type {
         config: *const Config,
 
         signal_pos: usize,
-        signal_buf: [@sizeOf(usize) * 64]u8,
+        signal_buf: [64]usize,
 
         const Self = @This();
 
@@ -216,7 +216,8 @@ pub fn Worker(comptime S: type) type {
         fn processSignal(self: *Self, signal: os.fd_t) bool {
             const s_t = @sizeOf(usize);
 
-            const buf = &self.signal_buf;
+            const buflen = @typeInfo(@TypeOf(self.signal_buf)).Array.len * @sizeOf(usize);
+            const buf: *[buflen]u8 = @ptrCast(&self.signal_buf);
             const start = self.signal_pos;
 
             const n = os.read(signal, buf[start..]) catch |err| switch (err) {
