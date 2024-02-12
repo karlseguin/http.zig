@@ -928,18 +928,18 @@ test "websocket: upgrade" {
     try stream.writeAll(&websocket.frameText("over 9000!"));
     try stream.writeAll(&websocket.frameBin("close"));
 
+    var pos: usize = 0;
     var buf: [20]u8 = undefined;
-    {
-        const n = try stream.read(&buf);
-        try t.expectEqual(2, n);
-        try t.expectEqual(129, buf[0]);
-        try t.expectEqual(10, buf[1]);
+    while (pos < 12) {
+        const n = try stream.read(buf[pos..]);
+        if (n == 0) {
+            break;
+        }
+        pos += n;
     }
-    {
-        const n = try stream.read(&buf);
-        try t.expectEqual(10, n);
-        try t.expectString("over 9000!", buf[0..n]);
-    }
+    try t.expectEqual(129, buf[0]);
+    try t.expectEqual(10, buf[1]);
+    try t.expectString("over 9000!", buf[2..12]);
 }
 
 test "httpz: keepalive" {
