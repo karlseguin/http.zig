@@ -937,6 +937,8 @@ test "websocket: upgrade" {
         }
         pos += n;
     }
+
+    try t.expectEqual(12, pos);
     try t.expectEqual(129, buf[0]);
     try t.expectEqual(10, buf[1]);
     try t.expectString("over 9000!", buf[2..12]);

@@ -99,7 +99,7 @@ pub fn Worker(comptime S: type) type {
                     return;
                 };
 
-                _ = os.fcntl(signal, os.F.SETFL, flags | os.SOCK.NONBLOCK) catch |err| {
+                _ = os.fcntl(signal, os.F.SETFL, flags | @as(u32, @bitCast(std.os.O{ .NONBLOCK = true }))) catch |err| {
                     log.err("Failed to make signal nonblocking: {}", .{err});
                     return;
                 };
@@ -166,7 +166,7 @@ pub fn Worker(comptime S: type) type {
                 errdefer os.close(socket);
 
                 // set non blocking
-                const flags = (try os.fcntl(socket, os.F.GETFL, 0)) | os.SOCK.NONBLOCK;
+                const flags = (try os.fcntl(socket, os.F.GETFL, 0)) | @as(u32, @bitCast(std.os.O{ .NONBLOCK = true }));
                 _ = try os.fcntl(socket, os.F.SETFL, flags);
 
                 var conn = try manager.new();
@@ -542,7 +542,7 @@ pub const Conn = struct {
 
     pub fn blocking(self: *Conn) !void {
         if (self.io_mode == .blocking) return;
-        _ = try os.fcntl(self.stream.handle, os.F.SETFL, self.socket_flags & ~@as(u32, os.SOCK.NONBLOCK));
+        _ = try os.fcntl(self.stream.handle, os.F.SETFL, self.socket_flags & ~@as(u32, @bitCast(std.os.O{ .NONBLOCK = true })));
         self.io_mode = .blocking;
     }
 };
