@@ -310,8 +310,10 @@ pub fn Worker(comptime S: type) type {
                         return .close;
                     }
 
-                    conn.poll_mode = .write;
-                    try self.loop.monitorWrite(conn);
+                    if (conn.poll_mode != .write) {
+                        conn.poll_mode = .write;
+                        try self.loop.monitorWrite(conn);
+                    }
 
                     state.pos = pos;
                     state.stage = stage;
@@ -991,7 +993,7 @@ const EPoll = struct {
     // so any subsequent call for this socket has to be a modification. Thus,
     // modifyWrite doesn't need a "rearm" flag - it would always be true.
     fn monitorWrite(self: *EPoll, conn: *Conn) !void {
-        var event = os.linux.epoll_event{ .events = os.linux.EPOLL.ONESHOT, .data = .{ .ptr = @intFromPtr(conn) } };
+        var event = os.linux.epoll_event{ .events = os.linux.EPOLL.OUT | os.linux.EPOLL.ONESHOT, .data = .{ .ptr = @intFromPtr(conn) } };
         return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_MOD, conn.stream.handle, &event);
     }
 
