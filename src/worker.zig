@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 const httpz = @import("httpz.zig");
+const metrics = @import("metrics.zig");
 const websocket = httpz.websocket;
 
 const Config = httpz.Config;
@@ -112,7 +113,7 @@ pub fn Worker(comptime S: type) type {
             }
 
             while (true) {
-                const timeout = manager.prepreToWait();
+                const timeout = manager.prepareToWait();
                 var it = self.loop.wait(timeout) catch |err| {
                     log.err("Failed to wait on events: {}", .{err});
                     std.time.sleep(std.time.ns_per_s);
@@ -164,6 +165,7 @@ pub fn Worker(comptime S: type) type {
                     return if (err == error.WouldBlock) {} else err;
                 };
                 errdefer os.close(socket);
+                metrics.connection();
 
                 // set non blocking
                 const flags = (try os.fcntl(socket, os.F.GETFL, 0)) | @as(u32, @bitCast(std.os.O{ .NONBLOCK = true }));
@@ -191,8 +193,14 @@ pub fn Worker(comptime S: type) type {
 
             const done = conn.req_state.parse(stream) catch |err| {
                 switch (err) {
-                    error.HeaderTooBig => return self.writeError(conn, 431, "Request header is too big"),
-                    error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => return self.writeError(conn, 400, "Invalid Request"),
+                    error.HeaderTooBig => {
+                        metrics.invalidRequest();
+                        return self.writeError(conn, 431, "Request header is too big");
+                    },
+                    error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
+                        metrics.invalidRequest();
+                        return self.writeError(conn, 400, "Invalid Request");
+                    },
                     error.BrokenPipe, error.ConnectionClosed, error.ConnectionResetByPeer => {},
                     else => return self.serverError(conn, "unknown read/parse error: {}", err),
                 }
@@ -207,6 +215,7 @@ pub fn Worker(comptime S: type) type {
                 return .wait_for_socket;
             }
 
+            metrics.request();
             self.server.handle(self, conn) catch |err| {
                 return self.serverError(conn, "handler executor: {}", err);
             };
@@ -272,6 +281,7 @@ pub fn Worker(comptime S: type) type {
             switch (result) {
                 .keepalive => blk: {
                     self.loop.monitorRead(conn, true) catch {
+                        metrics.internalError();
                         manager.close(conn);
                         break :blk;
                     };
@@ -350,6 +360,7 @@ pub fn Worker(comptime S: type) type {
 
         fn serverError(self: *Self, conn: *Conn, comptime log_fmt: []const u8, err: anyerror) HandleResult {
             log.err("server error: " ++ log_fmt, .{err});
+            metrics.internalError();
             return self.writeError(conn, 500, "Internal Server Error");
         }
 
@@ -682,17 +693,30 @@ const Manager = struct {
         self.len -= 1;
     }
 
-    // Enforces timeouts, and returs when the next timeout should be checked.
-    fn prepreToWait(self: *Manager) ?i32 {
+    // Enforces timeouts, and returns when the next timeout should be checked.
+    fn prepareToWait(self: *Manager) ?i32 {
         const now = timestamp();
         const next_active = self.enforceTimeout(self.active_list, now);
         const next_keepalive = self.enforceTimeout(self.keepalive_list, now);
 
-        if (next_active == null and next_keepalive == null) {
+        {
+            const next_active_count = next_active.count;
+            if (next_active_count > 0) {
+                metrics.timeoutActive(next_active_count);
+            }
+            const next_keepalive_count = next_keepalive.count;
+            if (next_keepalive_count > 0) {
+                metrics.timeoutKeepalive(next_active_count);
+            }
+        }
+
+        const next_active_timeout = next_active.timeout;
+        const next_keepalive_timeout = next_keepalive.timeout;
+        if (next_active_timeout == null and next_keepalive_timeout == null) {
             return null;
         }
 
-        const next = @min(next_active orelse MAX_TIMEOUT, next_keepalive orelse MAX_TIMEOUT);
+        const next = @min(next_active_timeout orelse MAX_TIMEOUT, next_keepalive_timeout orelse MAX_TIMEOUT);
         if (next < now) {
             // can happen if a socket was just about to time out when enforceTimeout
             // was called
@@ -702,20 +726,27 @@ const Manager = struct {
         return @intCast(next - now);
     }
 
+    const TimeoutResult = struct {
+        count: usize,
+        timeout: ?u32,
+    };
+
     // lists are ordered from soonest to timeout to latest, as soon as we find
     // a connection that isn't timed out, we can break;
     // This returns the next timeout
-    fn enforceTimeout(self: *Manager, list: List(Conn), now: u32) ?u32 {
+    fn enforceTimeout(self: *Manager, list: List(Conn), now: u32) TimeoutResult {
         var conn = list.head;
+        var count: usize = 0;
         while (conn) |c| {
             const timeout = c.timeout;
             if (timeout > now) {
-                return timeout;
+                return .{.count = count, .timeout = timeout};
             }
+            count += 1;
             self.close(c);
             conn = c.next;
         }
-        return null;
+        return .{.count = count, .timeout = null};
     }
 };
 

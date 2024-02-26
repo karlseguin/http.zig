@@ -3,7 +3,9 @@ const std = @import("std");
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
     const dep_opts = .{ .target = target, .optimize = optimize };
+    const metrics_module = b.dependency("metrics", dep_opts).module("metrics");
     const websocket_module = b.dependency("websocket", dep_opts).module("websocket");
 
     // const websocket_module = b.addModule("websocket", .{
@@ -12,7 +14,10 @@ pub fn build(b: *std.Build) !void {
 
     const httpz_module = b.addModule("httpz", .{
         .root_source_file = .{ .path = "src/httpz.zig" },
-        .imports = &.{.{ .name = "websocket", .module = websocket_module }},
+        .imports = &.{
+            .{ .name = "metrics", .module = metrics_module },
+            .{ .name = "websocket", .module = websocket_module }
+        },
     });
 
     const exe = b.addExecutable(.{
@@ -22,6 +27,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     exe.root_module.addImport("httpz", httpz_module);
+    exe.root_module.addImport("metrics", metrics_module);
     exe.root_module.addImport("websocket", websocket_module);
     b.installArtifact(exe);
 
@@ -40,6 +46,7 @@ pub fn build(b: *std.Build) !void {
         .test_runner = "test_runner.zig",
     });
     tests.linkLibC();
+    tests.root_module.addImport("metrics", metrics_module);
     tests.root_module.addImport("websocket", websocket_module);
     const run_test = b.addRunArtifact(tests);
     run_test.has_side_effects = true;

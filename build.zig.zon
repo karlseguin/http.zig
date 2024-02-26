@@ -3,6 +3,10 @@
   .paths = .{""},
   .version = "0.0.0",
   .dependencies = .{
+    .metrics = .{
+      .url = "https://github.com/karlseguin/metrics.zig/archive/0ccd067cdeb96405c42c3d39dfe950092dfff514.tar.gz",
+      .hash = "1220317c0f112a157f1bfd9a92452fc397e87ec2927678167eeccbefb62559ad830e"
+    },
     .websocket = .{
       .url = "https://github.com/karlseguin/websocket.zig/archive/1f2c4a56c642dab52fe12cdda1bd3f56865d1f86.tar.gz",
       .hash = "1220ce168e550f8904364acd0a72f5cafd40caa08a50ba83aac50b97ba700d7bcf20"

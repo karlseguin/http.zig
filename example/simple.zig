@@ -25,6 +25,7 @@ pub fn start(allocator: Allocator) !void {
     router.get("/writer/hello/:name", writer);
     router.get("/static_file", staticFile);
     router.get("/cached_static_file", cachedStaticFile);
+    router.get("/metrics", metrics);
     try server.listen();
 }
 
@@ -36,6 +37,7 @@ fn index(_: *httpz.Request, res: *httpz.Response) !void {
         \\ <li><a href="/writer/hello/Ghanima">Path parameter + serialize json object</a>
         \\ <li><a href="/json/hello/Duncan">Path parameter + json writer</a>
         \\ <li><a href="/static_file">Static file</a>
+        \\ <li><a href="/metrics">Internal metrics</a>
         \\ <li><a href="/cached_static_file">Cached static file</a>
         \\ <li><a href="http://localhost:5883/increment">Global shared state</a>
     ;
@@ -66,6 +68,10 @@ fn writer(req: *httpz.Request, res: *httpz.Response) !void {
     try ws.objectField("name");
     try ws.write(name);
     try ws.endObject();
+}
+
+fn metrics(_: *httpz.Request, res: *httpz.Response) !void {
+    return httpz.writeMetrics(res.writer());
 }
 
 fn staticFile(_: *httpz.Request, res: *httpz.Response) !void {

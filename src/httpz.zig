@@ -27,6 +27,15 @@ const DEFAULT_WORKERS = 2;
 
 const MAX_REQUEST_COUNT = 4_294_967_295;
 
+const metrics = @import("metrics.zig");
+pub fn initializeMetrics(allocator: Allocator, comptime opts: metrics.RegistryOpts) !void {
+    return metrics.initialize(allocator, opts);
+}
+
+pub fn writeMetrics(writer: anytype) !void {
+    return metrics.write(writer);
+}
+
 pub const Protocol = enum {
     HTTP10,
     HTTP11,

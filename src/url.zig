@@ -1,4 +1,6 @@
 const std = @import("std");
+const metrics = @import("metrics.zig");
+
 const Allocator = std.mem.Allocator;
 
 const ENC_20 = @as(u16, @bitCast([2]u8{ '2', '0' }));
@@ -97,6 +99,7 @@ pub const Url = struct {
         var buffered = true;
         if (buffer.len < unescaped_len) {
             out = try allocator.alloc(u8, unescaped_len);
+            metrics.allocUnescape(unescaped_len);
             buffered = false;
         }
 

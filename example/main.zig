@@ -10,6 +10,10 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
+    // optional, to collect a few internal metrics
+    // there's a /metrics router in simple.zig which exposes this
+    try @import("httpz").initializeMetrics(allocator, .{});
+
     // This example starts 3 separate servers, each listening on a different
     // port.
 

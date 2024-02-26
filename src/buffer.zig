@@ -1,4 +1,5 @@
 const std = @import("std");
+const metrics = @import("metrics.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -82,8 +83,17 @@ pub const Pool = struct {
     }
 
     fn allocType(self: *Pool, allocator: Allocator, buffer_type: Buffer.Type, size: usize) !Buffer {
+        if (size > self.buffer_size) {
+            metrics.allocBufferLarge(size);
+            return .{
+                .type = buffer_type,
+                .data = try allocator.alloc(u8, size),
+            };
+        }
+
         const available = self.available;
-        if (size > self.buffer_size or available == 0) {
+        if (available == 0) {
+            metrics.allocBufferEmpty(size);
             return .{
                 .type = buffer_type,
                 .data = try allocator.alloc(u8, size),
