@@ -1,4 +1,3 @@
-const std = @import("std");
 const m = @import("metrics");
 
 // This is an advanced usage of metrics.zig, largely done because we aren't
