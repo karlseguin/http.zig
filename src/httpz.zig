@@ -27,13 +27,8 @@ const DEFAULT_WORKERS = 2;
 
 const MAX_REQUEST_COUNT = 4_294_967_295;
 
-const metrics = @import("metrics.zig");
-pub fn initializeMetrics(allocator: Allocator, comptime opts: metrics.RegistryOpts) !void {
-    return metrics.initialize(allocator, opts);
-}
-
 pub fn writeMetrics(writer: anytype) !void {
-    return metrics.write(writer);
+    return @import("metrics.zig").write(writer);
 }
 
 pub const Protocol = enum {
@@ -268,6 +263,15 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             self.allocator.free(self._signals);
             self._router.deinit(self.allocator);
             self._thread_pool.deinit(self.allocator);
+        }
+
+        pub fn dispatchUndefined(_: *Self) Dispatcher(G, R) {
+            return struct{
+                fn dispatch(ctx: G, action: Action(R), req: *Request, res: *Response) !void {
+                    _ = ctx;
+                    return action(undefined, req, res);
+                }
+            }.dispatch;
         }
 
         pub fn listen(self: *Self) !void {

@@ -1,61 +1,63 @@
 const std = @import("std");
 const m = @import("metrics");
 
-pub const RegistryOpts = m.RegistryOpts;
-
-// defaults to noop metrics, making this safe to use
-// whether or not initializeMetrics is called
-var metrics = m.initializeNoop(Metrics);
+// This is an advanced usage of metrics.zig, largely done because we aren't
+// using any vectored metrics and thus can do everything at comptime.
+var metrics = Metrics{
+    .connections = m.Counter(usize).Impl.init("httpz_connections", .{}),
+    .requests = m.Counter(usize).Impl.init("httpz_requests", .{}),
+    .timeout_active = m.Counter(usize).Impl.init("httpz_timeout_active", .{}),
+    .timeout_keepalive = m.Counter(usize).Impl.init("httpz_timeout_keepalive", .{}),
+    .alloc_buffer_empty = m.Counter(u64).Impl.init("httpz_alloc_buffer_empty", .{}),
+    .alloc_buffer_large = m.Counter(u64).Impl.init("httpz_alloc_buffer_large", .{}),
+    .alloc_unescape = m.Counter(u64).Impl.init("httpz_alloc_unescape", .{}),
+    .internal_error = m.Counter(usize).Impl.init("httpz_internal_error", .{}),
+    .invalid_request = m.Counter(usize).Impl.init("httpz_invalid_request", .{}),
+};
 
 const Metrics = struct {
     // number of connections
-    connections: m.Counter(usize),
+    connections: m.Counter(usize).Impl,
 
     // number of requests (which can be more than # of connections thanks to
     // keepalive)
-    requests: m.Counter(usize),
+    requests: m.Counter(usize).Impl,
 
     // number of connections that were timed out while service a request
-    timeout_active: m.Counter(usize),
+    timeout_active: m.Counter(usize).Impl,
 
     // number of connections that were timed out while in keepalive
-    timeout_keepalive: m.Counter(usize),
+    timeout_keepalive: m.Counter(usize).Impl,
 
     // size, in bytes, of dynamically allocated memory by our buffer pool,
     // caused by the large buffer pool being empty.
-    alloc_buffer_empty: m.Counter(u64),
+    alloc_buffer_empty: m.Counter(u64).Impl,
 
     // size, in bytes, of dynamically allocated memory by our buffer pool,
     // caused by the required memory being larger than the large buffer size
-    alloc_buffer_large: m.Counter(u64),
+    alloc_buffer_large: m.Counter(u64).Impl,
 
     // size, in bytes, of dynamically allocated memory used for unescaping URL
     // or form parameters
-    alloc_unescape: m.Counter(u64),
+    alloc_unescape: m.Counter(u64).Impl,
 
     // some internal processing error (should be 0!)
-    internal_error: m.Counter(usize),
+    internal_error: m.Counter(usize).Impl,
 
     // requests which could not be parsed
-    invalid_request: m.Counter(usize),
+    invalid_request: m.Counter(usize).Impl,
 };
 
-pub fn initialize(allocator: std.mem.Allocator, comptime opts: m.RegistryOpts) !void {
-    metrics = .{
-        .connections = try m.Counter(usize).init(allocator, "httpz_connections", .{}, opts),
-        .requests = try m.Counter(usize).init(allocator, "httpz_requests", .{}, opts),
-        .timeout_active = try m.Counter(usize).init(allocator, "httpz_timeout_active", .{}, opts),
-        .timeout_keepalive = try m.Counter(usize).init(allocator, "httpz_timeout_keepalive", .{}, opts),
-        .alloc_buffer_empty = try m.Counter(u64).init(allocator, "httpz_alloc_buffer_empty", .{}, opts),
-        .alloc_buffer_large = try m.Counter(u64).init(allocator, "httpz_alloc_buffer_large", .{}, opts),
-        .alloc_unescape = try m.Counter(u64).init(allocator, "httpz_alloc_unescape", .{}, opts),
-        .internal_error = try m.Counter(usize).init(allocator, "httpz_internal_error", .{}, opts),
-        .invalid_request = try m.Counter(usize).init(allocator, "httpz_invalid_request", .{}, opts),
-    };
-}
-
 pub fn write(writer: anytype) !void {
-  return m.write(metrics, writer);
+    try metrics.connections.write(writer);
+    try metrics.requests.write(writer);
+    try metrics.timeout_active.write(writer);
+    try metrics.timeout_keepalive.write(writer);
+    try metrics.alloc_buffer_empty.write(writer);
+    try metrics.alloc_buffer_large.write(writer);
+    try metrics.alloc_unescape.write(writer);
+    try metrics.internal_error.write(writer);
+    try metrics.invalid_request.write(writer);
 }
 
 pub fn allocBufferEmpty(size: u64) void {

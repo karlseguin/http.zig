@@ -269,6 +269,19 @@ fn logout(context: Context, req: *httpz.Request, res: *httpz.Response) !void {
 
 The per-request data, `Context` in the above example, is the first parameter and thus actions can optionally be called as methods on the structure.
 
+`server.undefinedDispatcher()` can be used to generate a dispatcher which passes `undefined` R. This is dangerous, but can be useful if you have a few routes, such as `/ping`, which you want to skip your main dispatcher.
+
+```zig
+router.getC("/metrics", metrics, .{.dispatcher = server.dispatchUndefined()});
+
+...
+pub fn metrics(_: Context, _: *httpz.Request, res: *httpz.Response) !void {
+    // The first parameter, our Context, is `undefined`
+    const writer = res.writer();
+    try httpz.writeMetrics(writer);
+}
+```
+
 ## httpz.Request
 The following fields are the most useful:
 
@@ -453,7 +466,6 @@ res.body = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
 
 Memory allocated with `res.arena` will exist until the response is sent.
 
-
 ### io.Writer
 `res.writer()` returns an `std.io.Writer`. Various types support writing to an io.Writer. For example, the built-in JSON stream writer can use this writer:
 
@@ -542,7 +554,6 @@ router.get("/info/*", any_info, .{})
 
 A request for "/info/debug/all" will be routed to `any_info`, whereas a request for "/over/9000" will be routed to `not_found`.
 
-
 ### Limitations
 The router has several limitations which might not get fixed. These specifically resolve around the interaction of globs, parameters and static path segments.
 
@@ -558,7 +569,7 @@ You would expect a request to "/hello/users" to be routed to `route1`. However, 
 Globs interact similarly poorly with parameters and static path segments.
 
 Resolving this issue requires keeping a stack (or visiting the routes recursively), in order to back-out of a dead-end and trying a different path.
-This seems like an unnecessarily expensive thing to do, on each request, when, in my opinion, such route hierarchies are quite uncommon. 
+This seems like an unnecessarily expensive thing to do, on each request, when, in my opinion, such route hierarchies are uncommon. 
 
 ## CORS
 CORS requests can be satisfied through normal use of routing and response headers. However, for common cases, httpz can satisfy CORS requests directly by passing a `cors` object in the configuration. By default, the `cors` field is null and httpz will handle CORS request like any other.
@@ -736,6 +747,33 @@ The connection alternates between these two timeouts. It starts with a timeout o
 The `timeout.request_count` is the number of individual requests allowed within a single keepalive session. This protects against a client consuming the connection by sending unlimited meaningless but valid HTTP requests.
 
 When the three are combined, it should be difficult for a problematic client to stay connected indefinitely.
+
+## Metrics
+A few basic metrics are collected using [metrics.zig](https://github.com/karlseguin/metrics.zig), a prometheus-compatible library. These can be written to an `std.io.Writer` using `try httpz.writeMetrics(writer)`. As an example:
+
+```zig
+pub fn metrics(_: *httpz.Request, res: *httpz.Response) !void {
+    const writer = res.writer();
+    try httpz.writeMetrics(writer);
+
+    // if we were also using pg.zig 
+    // try pg.writeMetrics(writer);
+}
+```
+
+Since httpz does not provide any authorization, care should be taken before exposing this. 
+
+The metrics are:
+
+* `httpz_connections` - counts each TCP connection
+* `httpz_requests` - counts each request (should  be >= httpz_connections due to keepalive)
+* `httpz_timeout_active` - counts each time an "active" connection is timed out. An "active" connection is one that has (a) just connected or (b) started to send bytes. The timeout is controlled by the `timeout.request` configuration.
+* `httpz_timeout_keepalive` - counts each time an "keepalive" connection is timed out. A "keepalive" connection has already received at least 1 response and the server is waiting for a new request. The timeout is controlled by the `timeout.keepalive` configuration.
+* `httpz_alloc_buffer_empty` - counts number of bytes allocated due to the large buffer pool being empty. This may indicate that `workers.large_buffer_count` should be larger.
+* `httpz_alloc_buffer_large` - counts number of bytes allocated due to the large buffer pool being too small. This may indicate that `workers.large_buffer_size` should be larger.
+* `httpz_alloc_unescape` - counts number of bytes allocated due to unescaping query or form parameters. This may indicate that `request.buffer_size` should be larger.
+* `httpz_internal_error` - counts number of unexpected errors within httpz. Such errors normally result in the connection being abruptly closed. For example, a failing syscall to epoll/kqueue would increment this counter.
+* `httpz_invalid_request` - counts number of requests which httpz could not parse (where the request is invalid).
 
 # Testing
 The `httpz.testing` namespace exists to help application developers setup `*httpz.Requests` and assert `*httpz.Responses`.
