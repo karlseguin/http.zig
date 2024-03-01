@@ -1,13 +1,13 @@
-An HTTP/1.1 server for Zig.
+# An HTTP/1.1 server for Zig.
 
 ## Demo
 http.zig powers the <https://www.aolium.com> [api server](https://github.com/karlseguin/aolium-api).
 
 # Installation
-This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`.
+This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`. This library only imports [websocket.zig](https://github.com/karlseguin/websocket.zig) and [metrics.zig](https://github.com/karlseguin/metrics.zig) - two libraries that I've written which have no other dependencies.
 
 # Why not std.http.Server
-`std.http.Server` is slow. Exactly how slow depends on what you're doing and how you're testing.
+`std.http.Server` is slow. Exactly how slow depends on what you're doing and how you're testing. There are many Zig HTTP server implementations. Most wrap `std.http.Server` and tend to be slow; slower than Sinatra. A few wrap some C libraries and are much faster (though some of these are slow too!). http.zig is written in Zig, without using `std.http.Server`. On an M2, a basic request can hit 110K requests per seconds.
 
 ## Branches (scaling, robustness and windows)
 Until async support is re-added to Zig, 2 versions of this project are being maintained: the `master` branch and the `blocking` branch. Except for very small API changes and a few different configuration options, the differences between the two branches are internal.
