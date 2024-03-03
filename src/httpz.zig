@@ -450,14 +450,17 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 conn.handover = .disown;
             } else  {
                 const request_count_limit = conn.request_count == self._max_request_per_connection;
-                if (res.written == true) {
-                    conn.handover = if (request_count_limit == false and req.canKeepAlive()) .keepalive else .close;
+                if (request_count_limit == false and req.canKeepAlive()) {
+                    conn.handover = if (res.written == true) .keepalive else .write_and_keepalive;
                 } else {
+                    res.keepalive = false;
+                    conn.handover = if (res.written == true) .close else .write_and_close;
+                }
+                if (res.written == false) {
                     conn.res_state.prepareForWrite(&res) catch |err| {
                         log.err("Failed to prepare response for writing: {}", .{err});
                         conn.handover = .close;
                     };
-                    conn.handover = if (request_count_limit == false and req.canKeepAlive()) .write_and_keepalive else .write_and_close;
                 }
             }
 
