@@ -1,7 +1,7 @@
 # An HTTP/1.1 server for Zig.
 
 ## Demo
-http.zig powers the <https://www.aolium.com> [api server](https://github.com/karlseguin/aolium-api).
+http.zig is used by [DuckDB HTTP Proxy](https://www.goblgobl.com/demo/duckdb-proxy/) and the [api server for aolium](https://github.com/karlseguin/aolium-api).
 
 # Installation
 This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`. This library only imports [websocket.zig](https://github.com/karlseguin/websocket.zig) and [metrics.zig](https://github.com/karlseguin/metrics.zig) - two libraries that I've written which have no other dependencies.
