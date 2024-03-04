@@ -65,7 +65,11 @@ pub const Testing = struct {
         }
 
         pub fn expectJson(self: Response, expected: anytype) !void {
-            try t.expectString("application/json", self.headers.get("Content-Type").?);
+            if (self.headers.get("Content-Type")) |ct| {
+                try t.expectString("application/json", ct);
+            } else {
+                return error.NoContentTypeHeader;
+            }
 
             var jc = JsonComparer.init(t.allocator);
             defer jc.deinit();
