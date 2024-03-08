@@ -150,7 +150,7 @@ pub const Testing = struct {
         self.body(bd);
     }
 
-    pub fn expectStatus(self: Testing, expected: u16) !void {
+    pub fn expectStatus(self: *const Testing, expected: u16) !void {
         try t.expectEqual(expected, self.res.status);
     }
 
