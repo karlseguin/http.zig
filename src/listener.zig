@@ -10,7 +10,7 @@ const Config = @import("config.zig").Config;
 const Loop = std.event.Loop;
 const Allocator = std.mem.Allocator;
 const Stream = if (builtin.is_test) *t.Stream else std.net.Stream;
-const Conn = if (builtin.is_test) *t.Stream else std.net.StreamServer.Connection;
+const Conn = if (builtin.is_test) *t.Stream else std.net.Server.Connection;
 
 const os = std.os;
 const net = std.net;
@@ -33,11 +33,6 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 	var reqResPool = try initReqResPool(httpz_allocator, app_allocator, &ws, &config);
 	defer reqResPool.deinit();
 
-	var socket = net.StreamServer.init(.{
-		.reuse_address = true,
-		.kernel_backlog = 1024,
-	});
-	defer socket.deinit();
 
 	var thread_pool: std.Thread.Pool = undefined;
 	if (config.thread_pool > 0) {
@@ -57,7 +52,11 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 		const listen_address = config.address.?;
 		break :blk try net.Address.parseIp(listen_address, listen_port);
 	};
-	try socket.listen(address);
+	var socket = try address.listen(.{
+		.reuse_address = true,
+		.kernel_backlog = 1024,
+	});
+	defer socket.deinit();
 
 	if (no_delay) {
 		// TODO: Broken on darwin:
@@ -65,7 +64,7 @@ pub fn listen(comptime S: type, httpz_allocator: Allocator, app_allocator: Alloc
 		// if (@hasDecl(os.TCP, "NODELAY")) {
 		// 	try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, os.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
 		// }
-		try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
+		try os.setsockopt(socket.stream.handle, os.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
 	}
 
 	while (true) {
