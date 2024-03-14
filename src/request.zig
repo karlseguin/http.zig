@@ -806,7 +806,12 @@ pub const State = struct {
             // we don't have the [full] body, but we have enough space in our static
             // buffer for it
             self.body = .{ .type = .static, .data = buf[pos .. pos + cl] };
-            self.pos = len;
+
+            // While we don't have this yet, we know that this will be the final
+            // position of valid data within self.buf. We need this so that
+            // we create create our `spare` slice, we can slice starting from
+            // self.pos (everything before that is the full raw request)
+            self.pos = len + missing;
         } else {
             // We don't have the [full] body, and our static buffer is too small
             const body_buf = try self.buffer_pool.arenaAlloc(self.arena.allocator(), cl);
