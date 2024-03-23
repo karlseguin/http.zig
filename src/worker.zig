@@ -18,8 +18,8 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const Stream = std.net.Stream;
 const NetConn = std.net.StreamServer.Connection;
 
-const os = std.os;
 const net = std.net;
+const posix = std.posix;
 const log = std.log.scoped(.httpz);
 
 const MAX_TIMEOUT = 2_147_483_647;
@@ -82,8 +82,8 @@ pub fn Worker(comptime S: type) type {
             self.loop.deinit();
         }
 
-        pub fn run(self: *Self, listener: os.fd_t, signal: os.fd_t) void {
-            std.os.maybeIgnoreSigpipe();
+        pub fn run(self: *Self, listener: posix.fd_t, signal: posix.fd_t) void {
+            @import("pipe.zig").maybeIgnoreSigpipe();
             const manager = &self.manager;
 
             self.loop.monitorAccept(listener) catch |err| {
@@ -95,12 +95,12 @@ pub fn Worker(comptime S: type) type {
                 // setup our signal
 
                 // First, we make it non blocking
-                const flags = os.fcntl(signal, os.F.GETFL, 0)  catch |err| {
+                const flags = posix.fcntl(signal, posix.F.GETFL, 0)  catch |err| {
                     log.err("Failed to make get signal file flags: {}", .{err});
                     return;
                 };
 
-                _ = os.fcntl(signal, os.F.SETFL, flags | @as(u32, @bitCast(std.os.O{ .NONBLOCK = true }))) catch |err| {
+                _ = posix.fcntl(signal, posix.F.SETFL, flags | @as(u32, @bitCast(std.posix.O{ .NONBLOCK = true }))) catch |err| {
                     log.err("Failed to make signal nonblocking: {}", .{err});
                     return;
                 };
@@ -148,7 +148,7 @@ pub fn Worker(comptime S: type) type {
             }
         }
 
-        fn accept(self: *Self, listener: os.fd_t) !void {
+        fn accept(self: *Self, listener: posix.fd_t) !void {
             const max_conn = self.max_conn;
 
             var manager = &self.manager;
@@ -156,20 +156,20 @@ pub fn Worker(comptime S: type) type {
 
             while (len < max_conn) {
                 var address: std.net.Address = undefined;
-                var address_len: os.socklen_t = @sizeOf(std.net.Address);
+                var address_len: posix.socklen_t = @sizeOf(std.net.Address);
 
-                const socket = os.accept(listener, &address.any, &address_len, os.SOCK.CLOEXEC) catch |err| {
+                const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
                     // When available, we use SO_REUSEPORT_LB or SO_REUSEPORT, so WouldBlock
                     // should not be possible in those cases, but if it isn't available
                     // this error should be ignored as it means another thread picked it up.
                     return if (err == error.WouldBlock) {} else err;
                 };
-                errdefer os.close(socket);
+                errdefer posix.close(socket);
                 metrics.connection();
 
                 // set non blocking
-                const flags = (try os.fcntl(socket, os.F.GETFL, 0)) | @as(u32, @bitCast(std.os.O{ .NONBLOCK = true }));
-                _ = try os.fcntl(socket, os.F.SETFL, flags);
+                const flags = (try posix.fcntl(socket, posix.F.GETFL, 0)) | @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
+                _ = try posix.fcntl(socket, posix.F.SETFL, flags);
 
                 var conn = try manager.new();
                 conn.socket_flags = flags;
@@ -222,14 +222,14 @@ pub fn Worker(comptime S: type) type {
             return .executing;
         }
 
-        fn processSignal(self: *Self, signal: os.fd_t) bool {
+        fn processSignal(self: *Self, signal: posix.fd_t) bool {
             const s_t = @sizeOf(usize);
 
             const buflen = @typeInfo(@TypeOf(self.signal_buf)).Array.len * @sizeOf(usize);
             const buf: *[buflen]u8 = @ptrCast(&self.signal_buf);
             const start = self.signal_pos;
 
-            const n = os.read(signal, buf[start..]) catch |err| switch (err) {
+            const n = posix.read(signal, buf[start..]) catch |err| switch (err) {
                 error.WouldBlock => return false,
                 else => 0,
             };
@@ -530,7 +530,7 @@ pub const Conn = struct {
     // being kept connected to a client
     pub fn keepalive(self: *Conn) !void {
         if (self.io_mode == .blocking) {
-            _ = try os.fcntl(self.stream.handle, os.F.SETFL, self.socket_flags);
+            _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags);
             self.io_mode = .nonblocking;
         }
         self.poll_mode = .read;
@@ -555,7 +555,7 @@ pub const Conn = struct {
 
     pub fn blocking(self: *Conn) !void {
         if (self.io_mode == .blocking) return;
-        _ = try os.fcntl(self.stream.handle, os.F.SETFL, self.socket_flags & ~@as(u32, @bitCast(std.os.O{ .NONBLOCK = true })));
+        _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags & ~@as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
         self.io_mode = .blocking;
     }
 };
@@ -901,11 +901,11 @@ const KQueue = struct {
     change_buffer: [16]Kevent,
     event_list: [64]Kevent,
 
-    const Kevent = std.os.Kevent;
+    const Kevent = posix.Kevent;
 
     fn init() !KQueue {
         return .{
-            .q = try std.os.kqueue(),
+            .q = try posix.kqueue(),
             .change_count = 0,
             .change_buffer = undefined,
             .event_list = undefined,
@@ -913,39 +913,39 @@ const KQueue = struct {
     }
 
     fn deinit(self: KQueue) void {
-        std.os.close(self.q);
+        posix.close(self.q);
     }
 
     fn monitorAccept(self: *KQueue, fd: c_int) !void {
-        try self.change(fd, 0, os.system.EVFILT_READ, os.system.EV_ADD);
+        try self.change(fd, 0, posix.system.EVFILT_READ, posix.system.EV_ADD);
     }
 
     fn monitorSignal(self: *KQueue, fd: c_int) !void {
-        try self.change(fd, 1, os.system.EVFILT_READ, os.system.EV_ADD);
+        try self.change(fd, 1, posix.system.EVFILT_READ, posix.system.EV_ADD);
     }
 
     fn monitorRead(self: *KQueue, conn: *Conn, comptime rearm: bool) !void {
         _ = rearm; // used by epoll
-        try self.change(conn.stream.handle, @intFromPtr(conn), os.system.EVFILT_READ, os.system.EV_ADD | os.system.EV_ENABLE | os.system.EV_DISPATCH);
+        try self.change(conn.stream.handle, @intFromPtr(conn), posix.system.EVFILT_READ, posix.system.EV_ADD | posix.system.EV_ENABLE | posix.system.EV_DISPATCH);
     }
 
     fn monitorWrite(self: *KQueue, conn: *Conn) !void {
-        try self.change(conn.stream.handle, @intFromPtr(conn), os.system.EVFILT_WRITE, os.system.EV_ADD | os.system.EV_ENABLE | os.system.EV_DISPATCH);
+        try self.change(conn.stream.handle, @intFromPtr(conn), posix.system.EVFILT_WRITE, posix.system.EV_ADD | posix.system.EV_ENABLE | posix.system.EV_DISPATCH);
     }
 
     fn remove(self: *KQueue, conn: *Conn) !void {
         const fd = conn.stream.handle;
-        try self.change(fd, 0, os.system.EVFILT_READ, os.system.EV_DELETE);
-        try self.change(fd, 0, os.system.EVFILT_WRITE, os.system.EV_DELETE);
+        try self.change(fd, 0, posix.system.EVFILT_READ, posix.system.EV_DELETE);
+        try self.change(fd, 0, posix.system.EVFILT_WRITE, posix.system.EV_DELETE);
     }
 
-    fn change(self: *KQueue, fd: os.fd_t, data: usize, filter: i16, flags: u16) !void {
+    fn change(self: *KQueue, fd: posix.fd_t, data: usize, filter: i16, flags: u16) !void {
         var change_count = self.change_count;
         var change_buffer = &self.change_buffer;
 
         if (change_count == change_buffer.len) {
             // calling this with an empty event_list will return immediate
-            _ = try std.os.kevent(self.q, change_buffer, &[_]Kevent{}, null);
+            _ = try posix.kevent(self.q, change_buffer, &[_]Kevent{}, null);
             change_count = 0;
         }
         change_buffer[change_count] = .{
@@ -961,8 +961,8 @@ const KQueue = struct {
 
     fn wait(self: *KQueue, timeout_sec: ?i32) !Iterator {
         const event_list = &self.event_list;
-        const timeout: ?os.timespec = if (timeout_sec) |ts| os.timespec{ .tv_sec = ts, .tv_nsec = 0 } else null;
-        const event_count = try std.os.kevent(self.q, self.change_buffer[0..self.change_count], event_list, if (timeout) |ts| &ts else null);
+        const timeout: ?posix.timespec = if (timeout_sec) |ts| posix.timespec{ .tv_sec = ts, .tv_nsec = 0 } else null;
+        const event_count = try posix.kevent(self.q, self.change_buffer[0..self.change_count], event_list, if (timeout) |ts| &ts else null);
         self.change_count = 0;
 
         return .{
@@ -991,62 +991,63 @@ const EPoll = struct {
     q: i32,
     event_list: [64]EpollEvent,
 
-    const EpollEvent = std.os.linux.epoll_event;
+    const linux = std.os.linux;
+    const EpollEvent = linux.epoll_event;
 
     fn init() !EPoll {
         return .{
             .event_list = undefined,
-            .q = try std.os.epoll_create1(0),
+            .q = try posix.epoll_create1(0),
         };
     }
 
     fn deinit(self: EPoll) void {
-        std.os.close(self.q);
+        posix.close(self.q);
     }
 
     fn monitorAccept(self: *EPoll, fd: c_int) !void {
-        var event = os.linux.epoll_event{ .events = os.linux.EPOLL.IN, .data = .{ .ptr = 0 } };
-        return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_ADD, fd, &event);
+        var event = linux.epoll_event{ .events = linux.EPOLL.IN, .data = .{ .ptr = 0 } };
+        return std.posix.epoll_ctl(self.q, linux.EPOLL.CTL_ADD, fd, &event);
     }
 
     fn monitorSignal(self: *EPoll, fd: c_int) !void {
-        var event = os.linux.epoll_event{ .events = os.linux.EPOLL.IN, .data = .{ .ptr = 1 } };
-        return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_ADD, fd, &event);
+        var event = linux.epoll_event{ .events = linux.EPOLL.IN, .data = .{ .ptr = 1 } };
+        return std.posix.epoll_ctl(self.q, linux.EPOLL.CTL_ADD, fd, &event);
     }
 
     fn monitorRead(self: *EPoll, conn: *Conn, comptime rearm: bool) !void {
-        const op = if (rearm) os.linux.EPOLL.CTL_MOD else os.linux.EPOLL.CTL_ADD;
-        var event = os.linux.epoll_event{ .events = os.linux.EPOLL.IN | os.linux.EPOLL.ONESHOT, .data = .{ .ptr = @intFromPtr(conn) } };
-        return std.os.epoll_ctl(self.q, op, conn.stream.handle, &event);
+        const op = if (rearm) linux.EPOLL.CTL_MOD else linux.EPOLL.CTL_ADD;
+        var event = linux.epoll_event{ .events = linux.EPOLL.IN | linux.EPOLL.ONESHOT, .data = .{ .ptr = @intFromPtr(conn) } };
+        return posix.epoll_ctl(self.q, op, conn.stream.handle, &event);
     }
 
     // socket always begins with a call to monitorRead(conn, false)
     // so any subsequent call for this socket has to be a modification. Thus,
     // modifyWrite doesn't need a "rearm" flag - it would always be true.
     fn monitorWrite(self: *EPoll, conn: *Conn) !void {
-        var event = os.linux.epoll_event{ .events = os.linux.EPOLL.OUT | os.linux.EPOLL.ONESHOT, .data = .{ .ptr = @intFromPtr(conn) } };
-        return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_MOD, conn.stream.handle, &event);
+        var event = linux.epoll_event{ .events = linux.EPOLL.OUT | linux.EPOLL.ONESHOT, .data = .{ .ptr = @intFromPtr(conn) } };
+        return posix.epoll_ctl(self.q, linux.EPOLL.CTL_MOD, conn.stream.handle, &event);
     }
 
     fn remove(self: *EPoll, conn: *Conn) !void {
-        return std.os.epoll_ctl(self.q, os.linux.EPOLL.CTL_DEL, conn.stream.handle, null);
+        return posix.epoll_ctl(self.q, linux.EPOLL.CTL_DEL, conn.stream.handle, null);
     }
 
     fn wait(self: *EPoll, timeout_sec: ?i32) !Iterator {
         const event_list = &self.event_list;
         const event_count = blk: while (true) {
-            const rc = os.linux.syscall6(
+            const rc = linux.syscall6(
                 .epoll_pwait2,
                 @as(usize, @bitCast(@as(isize, self.q))),
                 @intFromPtr(event_list.ptr),
                 event_list.len,
-                if (timeout_sec) |ts| @intFromPtr(&os.timespec{ .tv_sec = @intCast(ts), .tv_nsec = 0 }) else 0,
+                if (timeout_sec) |ts| @intFromPtr(&posix.timespec{ .tv_sec = @intCast(ts), .tv_nsec = 0 }) else 0,
                 0,
-                @sizeOf(os.linux.sigset_t),
+                @sizeOf(linux.sigset_t),
             );
 
             // taken from std.os.epoll_waits
-             switch (std.os.errno(rc)) {
+             switch (posix.errno(rc)) {
                 .SUCCESS => break :blk @as(usize, @intCast(rc)),
                 .INTR => continue,
                 .BADF => unreachable,
@@ -1079,8 +1080,8 @@ const EPoll = struct {
 };
 
 fn timestamp() u32 {
-    var ts: os.timespec = undefined;
-    os.clock_gettime(os.CLOCK.REALTIME, &ts) catch unreachable;
+    var ts: posix.timespec = undefined;
+    posix.clock_gettime(posix.CLOCK.REALTIME, &ts) catch unreachable;
     return @intCast(ts.tv_sec);
 }
 

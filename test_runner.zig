@@ -104,7 +104,7 @@ pub fn main() !void {
     printer.fmt("\n", .{});
     try slowest.display(printer);
     printer.fmt("\n", .{});
-    std.os.exit(if (fail == 0) 0 else 1);
+    std.posix.exit(if (fail == 0) 0 else 1);
 }
 
 const Printer = struct {

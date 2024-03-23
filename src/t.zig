@@ -24,7 +24,7 @@ pub fn reset() void {
 
 pub fn getRandom() std.rand.DefaultPrng {
     var seed: u64 = undefined;
-    std.os.getrandom(std.mem.asBytes(&seed)) catch unreachable;
+    std.posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
     return std.rand.DefaultPrng.init(seed);
 }
 
@@ -43,24 +43,24 @@ pub const Context = struct {
 
     pub fn allocInit(ctx_allocator: std.mem.Allocator, config_: httpz.Config) Context {
         var pair: [2]c_int = undefined;
-        const rc = std.c.socketpair(std.os.AF.LOCAL, std.os.SOCK.STREAM, 0, &pair);
+        const rc = std.c.socketpair(std.posix.AF.LOCAL, std.posix.SOCK.STREAM, 0, &pair);
         if (rc != 0) {
             @panic("socketpair fail");
         }
 
         {
-            const timeout = std.mem.toBytes(std.os.timeval{
+            const timeout = std.mem.toBytes(std.posix.timeval{
                 .tv_sec = 0,
                 .tv_usec = 20_000,
             });
-            std.os.setsockopt(pair[0], std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &timeout) catch unreachable;
-            std.os.setsockopt(pair[0], std.os.SOL.SOCKET, std.os.SO.SNDTIMEO, &timeout) catch unreachable;
-            std.os.setsockopt(pair[1], std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &timeout) catch unreachable;
-            std.os.setsockopt(pair[1], std.os.SOL.SOCKET, std.os.SO.SNDTIMEO, &timeout) catch unreachable;
+            std.posix.setsockopt(pair[0], std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &timeout) catch unreachable;
+            std.posix.setsockopt(pair[0], std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, &timeout) catch unreachable;
+            std.posix.setsockopt(pair[1], std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &timeout) catch unreachable;
+            std.posix.setsockopt(pair[1], std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, &timeout) catch unreachable;
 
             // for request.fuzz, which does up to an 8K write. Not sure why this has
             // to be so much more but on linux, even a 10K SNDBUF results in WOULD_BLOCK.
-            std.os.setsockopt(pair[1], std.os.SOL.SOCKET, std.os.SO.SNDBUF, &std.mem.toBytes(@as(c_int, 20_000))) catch unreachable;
+            std.posix.setsockopt(pair[1], std.posix.SOL.SOCKET, std.posix.SO.SNDBUF, &std.mem.toBytes(@as(c_int, 20_000))) catch unreachable;
         }
 
         const server = std.net.Stream{ .handle = pair[0] };
@@ -180,7 +180,7 @@ pub const Context = struct {
         // should have no extra data
         // let's check, with a shor timeout, which could let things slip, but
         // else we slow down fuzz tests too much
-        std.os.setsockopt(self.client.handle, std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &std.mem.toBytes(std.os.timeval{
+        std.posix.setsockopt(self.client.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &std.mem.toBytes(std.posix.timeval{
             .tv_sec = 0,
             .tv_usec = 1_000,
         })) catch unreachable;
@@ -193,7 +193,7 @@ pub const Context = struct {
         };
         try expectEqual(0, n);
 
-        std.os.setsockopt(self.client.handle, std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &std.mem.toBytes(std.os.timeval{
+        std.posix.setsockopt(self.client.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &std.mem.toBytes(std.posix.timeval{
             .tv_sec = 0,
             .tv_usec = 20_000,
         })) catch unreachable;

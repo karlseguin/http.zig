@@ -14,8 +14,8 @@ pub const Response = response.Response;
 pub const Url = @import("url.zig").Url;
 pub const Config = @import("config.zig").Config;
 
-const fd_t = std.os.fd_t;
 const Thread = std.Thread;
+const fd_t = std.posix.fd_t;
 const Allocator = std.mem.Allocator;
 const log = std.log.scoped(.httpz);
 
@@ -275,8 +275,8 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         }
 
         pub fn listen(self: *Self) !void {
-            const os = std.os;
             const net = std.net;
+            const posix = std.posix;
             const config = self.config;
 
             var no_delay = true;
@@ -293,9 +293,9 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             };
 
             const socket = blk: {
-                const sock_flags = os.SOCK.STREAM | os.SOCK.CLOEXEC | os.SOCK.NONBLOCK;
-                const proto = if (address.any.family == os.AF.UNIX) @as(u32, 0) else os.IPPROTO.TCP;
-                break :blk try os.socket(address.any.family, sock_flags, proto);
+                const sock_flags = posix.SOCK.STREAM | posix.SOCK.CLOEXEC | posix.SOCK.NONBLOCK;
+                const proto = if (address.any.family == posix.AF.UNIX) @as(u32, 0) else posix.IPPROTO.TCP;
+                break :blk try posix.socket(address.any.family, sock_flags, proto);
             };
 
             if (no_delay) {
@@ -304,21 +304,21 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 // if (@hasDecl(os.TCP, "NODELAY")) {
                 //  try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, os.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
                 // }
-                try os.setsockopt(socket, os.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
+                try posix.setsockopt(socket, posix.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
             }
 
-            if (@hasDecl(os.SO, "REUSEPORT_LB")) {
-                try os.setsockopt(socket, os.SOL.SOCKET, os.SO.REUSEPORT_LB, &std.mem.toBytes(@as(c_int, 1)));
-            } else if (@hasDecl(os.SO, "REUSEPORT")) {
-                try os.setsockopt(socket, os.SOL.SOCKET, os.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1)));
+            if (@hasDecl(posix.SO, "REUSEPORT_LB")) {
+                try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.REUSEPORT_LB, &std.mem.toBytes(@as(c_int, 1)));
+            } else if (@hasDecl(posix.SO, "REUSEPORT")) {
+                try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1)));
             }
 
             {
                 const socklen = address.getOsSockLen();
-                try os.bind(socket, &address.any, socklen);
-                try os.listen(socket, 1204); // kernel backlog
+                try posix.bind(socket, &address.any, socklen);
+                try posix.listen(socket, 1204); // kernel backlog
             }
-            defer os.close(socket);
+            defer posix.close(socket);
 
             const allocator = self.allocator;
 
@@ -343,7 +343,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
             defer {
                 for (0..started) |i| {
-                    os.close(signals[i][1]);
+                    posix.close(signals[i][1]);
                     threads[i].join();
                     workers[i].deinit();
                 }
@@ -352,8 +352,8 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             }
 
             for (0..workers.len) |i| {
-                signals[i] = try os.pipe();
-                errdefer os.close(signals[i][1]);
+                signals[i] = try posix.pipe();
+                errdefer posix.close(signals[i][1]);
 
                 workers[i] = try Worker.init(allocator, i, self, &ws, &config);
                 errdefer workers[i].deinit();
@@ -469,7 +469,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
             var to_write: usize = @sizeOf(usize);
             while (to_write > 0) {
-                to_write -= std.os.write(signal, buf) catch @panic("TODO");
+                to_write -= std.posix.write(signal, buf) catch @panic("TODO");
             }
         }
 
@@ -551,7 +551,7 @@ fn ensureWebsocketRequest(req: *Request) ?[]const u8 {
 
 fn websocketHandler(comptime H: type, server: *websocket.Server, stream: std.net.Stream, context: anytype) void {
     errdefer stream.close();
-    std.os.maybeIgnoreSigpipe();
+    @import("pipe.zig").maybeIgnoreSigpipe();
 
     var conn = server.newConn(stream);
     var handler = H.init(&conn, context) catch return;
@@ -1117,15 +1117,15 @@ fn testWriter(req: *Request, res: *Response) !void {
 }
 
 fn testStream(port: u16) std.net.Stream {
-    const timeout = std.mem.toBytes(std.os.timeval{
+    const timeout = std.mem.toBytes(std.posix.timeval{
         .tv_sec = 0,
         .tv_usec = 20_000,
     });
 
     const address = std.net.Address.parseIp("127.0.0.1", port) catch unreachable;
     const stream = std.net.tcpConnectToAddress(address) catch unreachable;
-    std.os.setsockopt(stream.handle, std.os.SOL.SOCKET, std.os.SO.RCVTIMEO, &timeout) catch unreachable;
-    std.os.setsockopt(stream.handle, std.os.SOL.SOCKET, std.os.SO.SNDTIMEO, &timeout) catch unreachable;
+    std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &timeout) catch unreachable;
+    std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, &timeout) catch unreachable;
     return stream;
 }
 
