@@ -53,9 +53,13 @@ pub fn main() !void {
         const friendly_name = blk: {
             const name = t.name;
             var it = std.mem.splitScalar(u8, name, '.');
-            _ = it.next() orelse break :blk name; // skip module name
-            _ = it.next() orelse break :blk name; // slip "test"
-            break :blk it.rest();
+            while (it.next()) |value| {
+                if (std.mem.eql(u8, value, "test")) {
+                    const rest = it.rest();
+                    break :blk if (rest.len > 0) rest else name;
+                }
+            }
+            break :blk name;
         };
         const ns_taken = slowest.endTiming(friendly_name);
 
