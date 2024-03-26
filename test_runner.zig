@@ -13,6 +13,9 @@ const Allocator = std.mem.Allocator;
 
 const BORDER = "=" ** 80;
 
+// use in custom panic handler
+var current_test: ?[]const u8 = null;
+
 pub fn main() !void {
     var mem: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&mem);
@@ -45,11 +48,6 @@ pub fn main() !void {
             }
         }
 
-        const result = t.func();
-        if (is_unnamed_test) {
-            continue;
-        }
-
         const friendly_name = blk: {
             const name = t.name;
             var it = std.mem.splitScalar(u8, name, '.');
@@ -57,10 +55,19 @@ pub fn main() !void {
                 if (std.mem.eql(u8, value, "test")) {
                     const rest = it.rest();
                     break :blk if (rest.len > 0) rest else name;
-                }
+                    }
             }
             break :blk name;
         };
+
+        current_test = friendly_name;
+        const result = t.func();
+        current_test = null;
+
+        if (is_unnamed_test) {
+            continue;
+        }
+
         const ns_taken = slowest.endTiming(friendly_name);
 
         if (std.testing.allocator_instance.deinit() == .leak) {
@@ -256,3 +263,10 @@ const Env = struct {
         return std.ascii.eqlIgnoreCase(value, "true");
     }
 };
+
+pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
+    if (current_test) |ct| {
+        std.debug.print("\x1b[31m{s}\npanic running \"{s}\"\n{s}\x1b[0m\n", .{BORDER, ct, BORDER});
+    }
+    std.builtin.default_panic(msg, error_return_trace, ret_addr);
+}
