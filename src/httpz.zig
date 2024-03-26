@@ -570,6 +570,7 @@ test {
         router.get("/test/json", testJsonRes);
         router.get("/test/query", testReqQuery);
         router.get("/test/stream", testEventStream);
+        router.get("/test/callback", testCallback);
         router.allC("/test/dispatcher", testDispatcherAction, .{ .dispatcher = testDispatcher1 });
         var thread = try default_server.listenInNewThread();
         thread.detach();
@@ -995,6 +996,15 @@ test "httpz: request in chunks" {
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 18\r\n\r\nversion=v2,user=11", testReadAll(stream, &buf));
 }
 
+test "httpz: callback" {
+    const stream = testStream(5992);
+    defer stream.close();
+    try stream.writeAll("GET /test/callback HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+    var buf: [100]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 3\r\n\r\nres", testReadAll(stream, &buf));
+}
+
 fn testFail(_: u32, _: *Request, _: *Response) !void {
     return error.TestUnhandledError;
 }
@@ -1028,6 +1038,25 @@ fn testJsonRes(_: *Request, res: *Response) !void {
 fn testEventStream(_: *Request, res: *Response) !void {
     res.status = 818;
     try res.startEventStream(StreamContext{.data = "hello"}, StreamContext.handle);
+}
+
+const CallbackState = struct {
+    body: []const u8,
+};
+
+fn testCallback(_: *Request, res: *Response) !void {
+    const state = try t.allocator.create(CallbackState);
+    state.body = try t.allocator.dupe(u8, "res");
+
+    res.body = state.body;
+    res.conn.callback_state = @ptrCast(state);
+    res.conn.callback = testCallbackClean;
+}
+
+fn testCallbackClean(state: ?*anyopaque) void {
+    const cs: *CallbackState = @alignCast(@ptrCast(state.?));
+    t.allocator.free(cs.body);
+    t.allocator.destroy(cs);
 }
 
 const StreamContext = struct {

@@ -484,6 +484,9 @@ pub const Conn = struct {
     // Reference to our websocket server
     websocket: *websocket.Server,
 
+    callback_state: ?*anyopaque = null,
+    callback: ?*const fn(state: ?*anyopaque) void = null,
+
     // Workers maintain their active conns in a linked list. The link list is intrusive.
     next: ?*Conn,
     prev: ?*Conn,
@@ -557,6 +560,14 @@ pub const Conn = struct {
         if (self.io_mode == .blocking) return;
         _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags & ~@as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
         self.io_mode = .blocking;
+    }
+
+    fn doCallback(self: *Conn) void {
+        if (self.callback) |cb| {
+            cb(self.callback_state);
+            self.callback = null;
+            self.callback_state = null;
+        }
     }
 };
 
@@ -664,6 +675,7 @@ const Manager = struct {
     }
 
     fn keepalive(self: *Manager, conn: *Conn) void {
+        conn.doCallback();
         conn.keepalive() catch {
             self.close(conn);
             return;
@@ -675,6 +687,7 @@ const Manager = struct {
     }
 
     fn close(self: *Manager, conn: *Conn) void {
+        conn.doCallback();
         conn.stream.close();
         switch (conn.state) {
             .active => self.active_list.remove(conn),
@@ -685,6 +698,7 @@ const Manager = struct {
     }
 
     fn disown(self: *Manager, conn: *Conn) void {
+        conn.doCallback();
         switch (conn.state) {
             .active => self.active_list.remove(conn),
             .keepalive => self.keepalive_list.remove(conn),
