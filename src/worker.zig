@@ -484,8 +484,7 @@ pub const Conn = struct {
     // Reference to our websocket server
     websocket: *websocket.Server,
 
-    callback_state: ?*anyopaque = null,
-    callback: ?*const fn(state: ?*anyopaque) void = null,
+    callback: ?Callback = null,
 
     // Workers maintain their active conns in a linked list. The link list is intrusive.
     next: ?*Conn,
@@ -564,11 +563,15 @@ pub const Conn = struct {
 
     fn doCallback(self: *Conn) void {
         if (self.callback) |cb| {
-            cb(self.callback_state);
+            cb.func(cb.state);
             self.callback = null;
-            self.callback_state = null;
         }
     }
+
+    const Callback = struct {
+        state: *anyopaque,
+        func: *const fn(state: *anyopaque) void,
+    };
 };
 
 const Manager = struct {

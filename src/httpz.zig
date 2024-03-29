@@ -1049,12 +1049,11 @@ fn testCallback(_: *Request, res: *Response) !void {
     state.body = try t.allocator.dupe(u8, "res");
 
     res.body = state.body;
-    res.conn.callback_state = @ptrCast(state);
-    res.conn.callback = testCallbackClean;
+    res.callback(testCallbackClean, @ptrCast(state));
 }
 
-fn testCallbackClean(state: ?*anyopaque) void {
-    const cs: *CallbackState = @alignCast(@ptrCast(state.?));
+fn testCallbackClean(state: *anyopaque) void {
+    const cs: *CallbackState = @alignCast(@ptrCast(state));
     t.allocator.free(cs.body);
     t.allocator.destroy(cs);
 }

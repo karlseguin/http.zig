@@ -148,6 +148,13 @@ pub const Response = struct {
         return Writer.init(self);
     }
 
+    pub fn callback(self: *Response, func: *const fn(*anyopaque) void, state: *anyopaque) void {
+        self.conn.callback = .{
+            .func = func,
+            .state = state,
+        };
+    }
+
     // writer optimized for std.json.stringify, but that can also be used as a
     // more generic std.io.Writer.
     pub const Writer = struct {
@@ -243,6 +250,7 @@ pub const Response = struct {
             state.body_buffer = try state.buffer_pool.grow(state.arena.allocator(), bb, pos, new_capacity);
         }
     };
+
 };
 
 // All the upfront memory allocation that we can do. Gets re-used from request
