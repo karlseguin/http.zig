@@ -12,6 +12,8 @@ var metrics = Metrics{
     .alloc_unescape = m.Counter(u64).Impl.init("httpz_alloc_unescape", .{}),
     .internal_error = m.Counter(usize).Impl.init("httpz_internal_error", .{}),
     .invalid_request = m.Counter(usize).Impl.init("httpz_invalid_request", .{}),
+    .header_too_big = m.Counter(usize).Impl.init("httpz_header_too_big", .{}),
+    .body_too_big = m.Counter(usize).Impl.init("httpz_body_too_big", .{}),
 };
 
 const Metrics = struct {
@@ -45,6 +47,12 @@ const Metrics = struct {
 
     // requests which could not be parsed
     invalid_request: m.Counter(usize).Impl,
+
+    // requests which were rejected because the header was too big
+    header_too_big: m.Counter(usize).Impl,
+
+    // requests which were rejected because the body was too big
+    body_too_big: m.Counter(usize).Impl,
 };
 
 pub fn write(writer: anytype) !void {
@@ -57,6 +65,8 @@ pub fn write(writer: anytype) !void {
     try metrics.alloc_unescape.write(writer);
     try metrics.internal_error.write(writer);
     try metrics.invalid_request.write(writer);
+    try metrics.header_too_big.write(writer);
+    try metrics.body_too_big.write(writer);
 }
 
 pub fn allocBufferEmpty(size: u64) void {
@@ -93,4 +103,12 @@ pub fn internalError() void {
 
 pub fn invalidRequest() void {
     metrics.invalid_request.incr();
+}
+
+pub fn headerTooBig() void {
+    metrics.header_too_big.incr();
+}
+
+pub fn bodyTooBig() void {
+    metrics.body_too_big.incr();
 }

@@ -3,6 +3,7 @@ const std = @import("std");
 const os = std.os;
 const http = @import("httpz.zig");
 const buffer = @import("buffer.zig");
+const metrics = @import("metrics.zig");
 
 const Self = @This();
 
@@ -615,6 +616,7 @@ pub const State = struct {
         }
 
         if (self.body == null and len == buf.len) {
+            metrics.headerTooBig();
             return error.HeaderTooBig;
         }
         return false;
@@ -780,6 +782,7 @@ pub const State = struct {
         if (cl == 0) return true;
 
         if (cl > self.max_body_size) {
+            metrics.bodyTooBig();
             return error.BodyTooBig;
         }
 
