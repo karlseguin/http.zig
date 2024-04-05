@@ -42,6 +42,9 @@ pub const Response = struct {
     // whether or not we've already written the response
     written: bool,
 
+    // whether or not we're in chunk transfer mode
+    chunked: bool,
+
     // Indicates that http.zig no longer owns this socket connection. App can
     // us this if it wants to take over ownership of the socket. We use it
     // when upgrading the connection to websocket.
@@ -66,6 +69,7 @@ pub const Response = struct {
             .conn = conn,
             .status = 200,
             .arena = arena,
+            .chunked = false,
             .disowned = false,
             .written = false,
             .keepalive = true,
@@ -138,6 +142,28 @@ pub const Response = struct {
         } else if (state.body_buffer) |b| {
             try stream.writeAll(b.data[0..state.body_len]);
         }
+    }
+
+    pub fn chunk(self: *Response, data: []const u8) !void {
+        const conn = self.conn;
+        const stream = conn.stream;
+        const state = &conn.res_state;
+        if (!self.chunked) {
+            self.written = true;
+            self.chunked = true;
+            try conn.blocking();
+
+            try state.prepareForWrite(self);
+            try stream.writeAll(state.header_buffer.data[0..state.header_len]);
+        }
+        const buf = state.header_buffer.data;
+        buf[0] = '\r';
+        buf[1] = '\n';
+        const len = 2 + std.fmt.formatIntBuf(buf[2..], data.len, 16, .upper, .{});
+        buf[len] = '\r';
+        buf[len+1] = '\n';
+        try stream.writeAll(buf[0..len+2]);
+        try stream.writeAll(data);
     }
 
     pub fn writer(self: *Response) Writer.IOWriter {
@@ -543,6 +569,7 @@ pub const State = struct {
             self.header_len = end;
         } else {
             const fin = blk: {
+                if (res.chunked) break :blk "Transfer-Encoding: chunked\r\n";
                 if (res.content_type == .EVENTS) break :blk "\r\n";
                 break :blk "Content-Length: 0\r\n\r\n";
             };

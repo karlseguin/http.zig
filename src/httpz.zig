@@ -424,7 +424,6 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             return error.CannotDispatch;
         }
 
-
         pub fn handle(self: *Self, worker: *Worker, conn: *Conn) !void {
             // this is executing in the worker's thread, we want to move it
             // to our threadpool asap
@@ -448,7 +447,13 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
             if (res.disowned) {
                 conn.handover = .disown;
-            } else  {
+            } else  blk: {
+                if (res.chunked) {
+                    conn.stream.writeAll("\r\n0\r\n\r\n") catch {
+                        conn.handover = .close;
+                        break :blk;
+                    };
+                }
                 const request_count_limit = conn.request_count == self._max_request_per_connection;
                 if (request_count_limit == false and req.canKeepAlive()) {
                     conn.handover = if (res.written == true) .keepalive else .write_and_keepalive;
@@ -570,6 +575,7 @@ test {
         router.get("/test/json", testJsonRes);
         router.get("/test/query", testReqQuery);
         router.get("/test/stream", testEventStream);
+        router.get("/test/chunked", testChunked);
         router.get("/test/callback", testCallback);
         router.allC("/test/dispatcher", testDispatcherAction, .{ .dispatcher = testDispatcher1 });
         var thread = try default_server.listenInNewThread();
@@ -747,6 +753,15 @@ test "httpz: query" {
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 11\r\n\r\nkeemun tea!", testReadAll(stream, &buf));
+}
+
+test "httpz: chunked" {
+    const stream = testStream(5992);
+    defer stream.close();
+    try stream.writeAll("GET /test/chunked HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+    var buf: [1000]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nOver: 9000!\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nChunk 1\r\n11\r\nand another chunk\r\n0\r\n\r\n", testReadAll(stream, &buf));
 }
 
 test "httpz: custom dispatcher" {
@@ -1071,6 +1086,13 @@ fn testReqQuery(req: *Request, res: *Response) !void {
     res.status = 200;
     const query = try req.query();
     res.body = query.get("fav").?;
+}
+
+fn testChunked(_: *Request, res: *Response) !void {
+    res.header("Over", "9000!");
+    res.status = 200;
+    try res.chunk("Chunk 1");
+    try res.chunk("and another chunk");
 }
 
 fn testNotFound(ctx: u32, _: *Request, res: *Response) !void {
