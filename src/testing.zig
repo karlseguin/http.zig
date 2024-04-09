@@ -243,9 +243,11 @@ fn decodeChunkedEncoding(full_dest: []u8, full_src: []u8) usize {
     var src = full_src;
     var dest = full_dest;
     var length: usize = 0;
+    const clean_trailer = std.mem.endsWith(u8, src, "\r\n0\r\n\r\n");
 
     while (true) {
         const nl = std.mem.indexOfScalar(u8, src, '\r') orelse unreachable;
+        std.debug.print("HEAD: {s}\n", .{src[0..nl]});
         const chunk_length = std.fmt.parseInt(u32, src[0..nl], 16) catch unreachable;
         if (chunk_length == 0) {
             if (src[1] == '\r' and src[2] == '\n' and src[3] == '\r' and src[4] == '\n') {
@@ -258,7 +260,17 @@ fn decodeChunkedEncoding(full_dest: []u8, full_src: []u8) usize {
         length += chunk_length;
 
         dest = dest[chunk_length..];
-        src = src[nl + 4 + chunk_length ..];
+        const next_start = nl + 4 + chunk_length;
+
+        if (src.len < next_start and clean_trailer == false) {
+            // This should not happen, but...When http.zig writes a chunked
+            // response, the trailing empty chunk ony gets written deep in the
+            // library. When calling a handler directly from a test, that part
+            // of the library isn't executed, and thus an invalid chunked encoded
+            // body is written (it's missing that empty trailing chunk).
+            break;
+        }
+        src = src[next_start..];
     }
     return length;
 }
