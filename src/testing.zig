@@ -247,7 +247,6 @@ fn decodeChunkedEncoding(full_dest: []u8, full_src: []u8) usize {
 
     while (true) {
         const nl = std.mem.indexOfScalar(u8, src, '\r') orelse unreachable;
-        std.debug.print("HEAD: {s}\n", .{src[0..nl]});
         const chunk_length = std.fmt.parseInt(u32, src[0..nl], 16) catch unreachable;
         if (chunk_length == 0) {
             if (src[1] == '\r' and src[2] == '\n' and src[3] == '\r' and src[4] == '\n') {
