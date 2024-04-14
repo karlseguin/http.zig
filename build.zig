@@ -43,7 +43,7 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = .{ .path = "src/httpz.zig" },
         .target = target,
         .optimize = optimize,
-        .test_runner = "test_runner.zig",
+        .test_runner = .{.path = "test_runner.zig"},
     });
     tests.linkLibC();
     tests.root_module.addImport("metrics", metrics_module);
