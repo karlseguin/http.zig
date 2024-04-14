@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) !void {
 		.root_source_file = .{ .path = "src/httpz.zig" },
 		.target = target,
 		.optimize = optimize,
-		.test_runner = "test_runner.zig",
+		.test_runner = .{.path = "test_runner.zig"},
 	});
 	tests.root_module.addImport("websocket", websocket_module);
 	const run_test = b.addRunArtifact(tests);
