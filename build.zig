@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) !void {
     // });
 
     const httpz_module = b.addModule("httpz", .{
-        .root_source_file = .{ .path = "src/httpz.zig" },
+        .root_source_file = b.path("src/httpz.zig"),
         .imports = &.{
             .{ .name = "metrics", .module = metrics_module },
             .{ .name = "websocket", .module = websocket_module }
@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) !void {
 
     const exe = b.addExecutable(.{
         .name = "http.zig demo",
-        .root_source_file = .{ .path = "example/main.zig" },
+        .root_source_file = b.path("example/main.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -40,10 +40,10 @@ pub fn build(b: *std.Build) !void {
     run_step.dependOn(&run_cmd.step);
 
     const tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/httpz.zig" },
+        .root_source_file = b.path("src/httpz.zig"),
         .target = target,
         .optimize = optimize,
-        .test_runner = .{.path = "test_runner.zig"},
+        .test_runner = b.path("test_runner.zig"),
     });
     tests.linkLibC();
     tests.root_module.addImport("metrics", metrics_module);
