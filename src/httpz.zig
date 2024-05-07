@@ -435,15 +435,19 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             var req = Request.init(aa, conn);
             var res = Response.init(aa, conn);
 
-            const dispatchable_action = self._router.route(req.method, req.url.path, &req.params);
-            self.dispatch(dispatchable_action, &req, &res) catch |err| {
-                if (comptime G == void) {
-                    self._errorHandler(&req, &res, err);
-                } else {
-                    const ctx = if (dispatchable_action) |da| da.ctx else self.ctx;
-                    self._errorHandler(ctx, &req, &res, err);
-                }
-            };
+            if (comptime hasHandle(G)) {
+                @call(.auto, G.handle, .{self.ctx, &req, &res});
+            } else {
+                const dispatchable_action = self._router.route(req.method, req.url.path, &req.params);
+                self.dispatch(dispatchable_action, &req, &res) catch |err| {
+                    if (comptime G == void) {
+                        self._errorHandler(&req, &res, err);
+                    } else {
+                        const ctx = if (dispatchable_action) |da| da.ctx else self.ctx;
+                        self._errorHandler(ctx, &req, &res, err);
+                    }
+                };
+            }
 
             if (res.disowned) {
                 conn.handover = .disown;
@@ -478,7 +482,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             }
         }
 
-        inline fn dispatch(self: Self, dispatchable_action: ?DispatchableAction(G, R), req: *Request, res: *Response) !void {
+        inline fn dispatch(self: *const Self, dispatchable_action: ?DispatchableAction(G, R), req: *Request, res: *Response) !void {
             if (self._cors_origin) |origin| {
                 res.header("Access-Control-Allow-Origin", origin);
             }
@@ -517,6 +521,14 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
     };
 }
 
+fn hasHandle(comptime T: type) bool {
+    switch (@typeInfo(T)) {
+        .Struct =>  return @hasDecl(T, "handle"),
+        .Pointer => |ptr| return hasHandle(ptr.child),
+        else => return false,
+    }
+}
+
 const t = @import("t.zig");
 var la = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -524,6 +536,7 @@ var default_server: *ServerCtx(void, void) = undefined;
 var context_server: *ServerCtx(u32, u32) = undefined;
 var cors_server: *ServerCtx(u32, u32) = undefined;
 var reuse_server: *ServerCtx(void, void) = undefined;
+var handle_server: *ServerCtx(CustomHandler, CustomHandler) = undefined;
 
 pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, context: anytype) !bool {
     const key = ensureWebsocketRequest(req) orelse return false;
@@ -631,6 +644,16 @@ test {
         var router = reuse_server.router();
         router.get("/test/writer", testWriter);
         var thread = try reuse_server.listenInNewThread();
+        thread.detach();
+    }
+
+    {
+        handle_server = try leaking_allocator.create(ServerCtx(CustomHandler, CustomHandler));
+        handle_server.* = try ServerCtx(CustomHandler, CustomHandler).init(leaking_allocator, .{
+            .port = 5996,
+            .response = .{ .body_buffer_size = 100 },
+        }, CustomHandler{});
+        var thread = try handle_server.listenInNewThread();
         thread.detach();
     }
 
@@ -1020,6 +1043,15 @@ test "httpz: callback" {
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 3\r\n\r\nres", testReadAll(stream, &buf));
 }
 
+test "httpz: dispatcher handle" {
+    const stream = testStream(5996);
+    defer stream.close();
+    try stream.writeAll("GET /whatever?name=teg HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+    var buf: [100]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 9\r\n\r\nhello teg", testReadAll(stream, &buf));
+}
+
 fn testFail(_: u32, _: *Request, _: *Response) !void {
     return error.TestUnhandledError;
 }
@@ -1264,4 +1296,11 @@ const TestWSHandler = struct {
 const TestUser = struct {
     id: []const u8,
     power: usize,
+};
+
+const CustomHandler = struct {
+    fn handle(_: CustomHandler, req: *Request, res: *Response) void {
+        const query = req.query() catch unreachable;
+        std.fmt.format(res.writer(), "hello {s}", .{query.get("name") orelse "world"}) catch unreachable;
+    }
 };
