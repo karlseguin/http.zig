@@ -614,8 +614,6 @@ fn ensureWebsocketRequest(req: *Request) ?[]const u8 {
 
 fn websocketHandler(comptime H: type, server: *websocket.Server, stream: std.net.Stream, context: anytype) void {
     errdefer stream.close();
-    @import("pipe.zig").maybeIgnoreSigpipe();
-
     var conn = server.newConn(stream);
     var handler = H.init(&conn, context) catch return;
     server.handle(H, &handler, &conn);

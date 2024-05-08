@@ -87,7 +87,6 @@ pub fn NonBlocking(comptime S: type) type {
         }
 
         pub fn run(self: *Self, listener: posix.fd_t, signal: posix.fd_t) void {
-            @import("pipe.zig").maybeIgnoreSigpipe();
             const manager = &self.manager;
 
             self.loop.monitorAccept(listener) catch |err| {
