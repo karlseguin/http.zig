@@ -24,7 +24,11 @@ const log = std.log.scoped(.httpz);
 
 const MAX_TIMEOUT = 2_147_483_647;
 
-pub fn Worker(comptime S: type) type {
+// This is a NonBlocking worker. We have N workers, each accepting connections
+// and largely working in isolation from each other (the only thing they share
+// is the *const config, a reference to the Server and to the Websocket server).
+// The bulk of the code in this file exists to support the NonBlocking Worker.
+pub fn NonBlocking(comptime S: type) type {
     return struct {
         id: usize,
 
@@ -192,17 +196,10 @@ pub fn Worker(comptime S: type) type {
             const stream = conn.stream;
 
             const done = conn.req_state.parse(stream) catch |err| {
-                switch (err) {
-                    error.HeaderTooBig => {
-                        metrics.invalidRequest();
-                        return self.writeError(conn, 431, "Request header is too big");
-                    },
-                    error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
-                        metrics.invalidRequest();
-                        return self.writeError(conn, 400, "Invalid Request");
-                    },
-                    error.BrokenPipe, error.ConnectionClosed, error.ConnectionResetByPeer => {},
-                    else => return self.serverError(conn, "unknown read/parse error: {}", err),
+                if (requestParseError(conn, err)) {
+                    // requestParseError prepared a response for us (in conn)
+                    // we should try to write it.
+                    return self.write(conn) catch .close;
                 }
                 return .close;
             };
@@ -210,15 +207,16 @@ pub fn Worker(comptime S: type) type {
             if (done == false) {
                 // we need to wait for more data
                 self.loop.monitorRead(conn, true) catch |err| {
-                    return self.serverError(conn, "unknown event loop error: {}", err);
+                    if (serverError(conn, "unknown event loop error: {}", err)) {
+                        return self.write(conn) catch .close;
+                    }
                 };
                 return .wait_for_socket;
             }
 
             metrics.request();
-            self.server.handle(self, conn) catch |err| {
-                return self.serverError(conn, "handler executor: {}", err);
-            };
+            const server = self.server;
+            server._thread_pool.spawn(.{server, self, conn});
             return .executing;
         }
 
@@ -358,26 +356,6 @@ pub fn Worker(comptime S: type) type {
             return .keepalive;
         }
 
-        fn serverError(self: *Self, conn: *Conn, comptime log_fmt: []const u8, err: anyerror) HandleResult {
-            log.err("server error: " ++ log_fmt, .{err});
-            metrics.internalError();
-            return self.writeError(conn, 500, "Internal Server Error");
-        }
-
-        fn writeError(self: *Self, conn: *Conn, status: u16, msg: []const u8) HandleResult {
-            const aa = conn.arena.allocator();
-            var res = Response.init(aa, conn);
-            res.status = status;
-            res.body = msg;
-            res.keepalive = false;
-
-            conn.res_state.prepareForWrite(&res) catch |err| {
-                log.err("Failed to prepare error response for writing: {}", .{err});
-                return .close;
-            };
-            return self.write(conn) catch .close;
-        }
-
         pub fn disown(self: *Self, conn: *Conn) void {
             // Called from the handler thread pool.
             if (self.loop.remove(conn)) {
@@ -403,7 +381,7 @@ pub fn Worker(comptime S: type) type {
 pub const Conn = struct {
     // In normal operations, sockets are nonblocking. But since Zig doesn't have
     // async, the applications using httpz have no consistent way to deal with
-    // nonblocking/async. So, if they use some of the more advanced featuresw which
+    // nonblocking/async. So, if they use some of the more advanced features which
     // take over the socket directly, we'll switch to blocking.
     const IOMode = enum {
         blocking,
@@ -529,13 +507,20 @@ pub const Conn = struct {
         self.res_state.deinit(allocator);
     }
 
-    // being kept connected to a client
-    pub fn keepalive(self: *Conn) !void {
+    // this is the keepalive called by the NonBlocking codepath. It puts the
+    // connection back in blocking mode (if it isn't already.)
+    pub fn keepaliveAndRestore(self: *Conn) !void {
         if (self.io_mode == .blocking) {
             _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags);
             self.io_mode = .nonblocking;
         }
         self.poll_mode = .read;
+        self.keepalive();
+    }
+
+    // This is called by the above keepaliveAndRestore, but also by the Blocking
+    // worker directly.
+    pub fn keepalive(self: *Conn) void {
         self.req_state.reset();
         self.res_state.reset();
         _ = self.arena.reset(.free_all);
@@ -605,9 +590,7 @@ const Manager = struct {
         const buffer_pool = try allocator.create(BufferPool);
         errdefer allocator.destroy(buffer_pool);
 
-        const large_buffer_count = config.workers.large_buffer_count orelse 16;
-        const large_buffer_size = config.workers.large_buffer_size orelse config.request.max_body_size orelse 65536;
-        buffer_pool.* = try BufferPool.init(allocator, large_buffer_count, large_buffer_size);
+        buffer_pool.* = try initializeBufferPool(allocator, config);
         errdefer buffer_pool.deinit();
 
         const conn_pool = try ConnPool.init(allocator, buffer_pool, ws, config);
@@ -679,7 +662,7 @@ const Manager = struct {
 
     fn keepalive(self: *Manager, conn: *Conn) void {
         conn.doCallback();
-        conn.keepalive() catch {
+        conn.keepaliveAndRestore() catch {
             self.close(conn);
             return;
         };
@@ -1100,6 +1083,189 @@ fn timestamp() u32 {
     var ts: posix.timespec = undefined;
     posix.clock_gettime(posix.CLOCK.REALTIME, &ts) catch unreachable;
     return @intCast(ts.tv_sec);
+}
+
+// This is our Blocking worker. It's very different than NonBlocking and much
+// simpler.
+pub fn Blocking(comptime S: type) type {
+    return struct {
+        server: S,
+        running: bool,
+        config: *const Config,
+        allocator: Allocator,
+        websocket: *websocket.Server,
+        buffer_pool: BufferPool,
+
+        const Self = @This();
+
+        pub fn init(allocator: Allocator, server: S, ws: *websocket.Server, config: *const Config) !Self {
+            const buffer_pool = try initializeBufferPool(allocator, config);
+            errdefer buffer_pool.deinit();
+
+            return .{
+                .running = true,
+                .server = server,
+                .config = config,
+                .websocket = ws,
+                .allocator = allocator,
+                .buffer_pool = buffer_pool,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.buffer_pool.deinit();
+        }
+
+        pub fn stop(self: *Self) void {
+            @atomicStore(bool, &self.running, false, .monotonic);
+        }
+
+        pub fn listen(self: *Self, listener: posix.socket_t) void {
+            var server = self.server;
+            while (true) {
+                if (@atomicLoad(bool, &self.running, .monotonic) == false) {
+                    return;
+                }
+
+                var address: std.net.Address = undefined;
+                var address_len: posix.socklen_t = @sizeOf(std.net.Address);
+                const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
+                    log.err("Failed to accept socket: {}", .{err});
+                    continue;
+                };
+                metrics.connection();
+                server._thread_pool.spawn(.{self, socket});
+            }
+        }
+
+        const HandleResult = enum {
+            keepalive,
+            close,
+            disown,
+        };
+
+        pub fn handleConnection(self: *Self, socket: posix.socket_t) void {
+            // do we own the socket, it can be taken away from us
+            var own = true;
+            defer if (own) posix.close(socket);
+
+            var conn = Conn.init(self.allocator, &self.buffer_pool, self.websocket, self.config) catch |err| {
+                log.err("Failed to initialize connectiont: {}", .{err});
+                return;
+            };
+            defer conn.deinit(self.allocator);
+
+            conn.io_mode = .blocking;
+            conn.stream = .{.handle = socket};
+
+            while (true) {
+                switch (self.handleRequest(&conn) catch .close) {
+                    .keepalive => conn.keepalive(),
+                    .close => break,
+                    .disown => {
+                        // something (e.g. websocket) has taken over ownership of the socket
+                        own = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        fn handleRequest(self: *const Self, conn: *Conn) !HandleResult {
+            const stream = conn.stream;
+            while (true) {
+                // TODO timeout
+                const done = conn.req_state.parse(stream) catch |err| {
+                    if (requestParseError(conn, err)) {
+                        // todo TIMEOUT
+                        // requestParseError prepared a response for us (in conn)
+                        // we should try to write it.
+                        write(conn) catch return .close;
+                    }
+                    return .close;
+                };
+                if (done) break;
+            }
+
+            metrics.request();
+            self.server.handler(conn);
+            defer conn.doCallback();
+
+            switch (conn.handover) {
+                .write_and_keepalive => {
+                    write(conn) catch return .close;
+                    return .keepalive;
+                },
+                .write_and_close => {
+                    write(conn) catch {};
+                    return .close;
+                },
+                .close => return .close,
+                .keepalive => return .keepalive,
+                .disown => return .disown,
+            }
+        }
+
+        fn write(conn: *Conn) !void {
+            const stream = conn.stream;
+            const state = &conn.res_state;
+            try stream.writeAll(state.header_buffer.data[0..state.header_len]);
+            if (state.body) |b| {
+                try stream.writeAll(b);
+            } else if (state.body_buffer) |b| {
+                try stream.writeAll(b.data[0..state.body_len]);
+            }
+        }
+    };
+}
+
+// There's some shared logic between the NonBlocking and Blocking workers.
+// Whatever we can de-duplicate, goes here.
+fn initializeBufferPool(allocator: Allocator, config: *const Config) !BufferPool {
+    const large_buffer_count = config.workers.large_buffer_count orelse 16;
+    const large_buffer_size = config.workers.large_buffer_size orelse config.request.max_body_size orelse 65536;
+    return BufferPool.init(allocator, large_buffer_count, large_buffer_size);
+}
+
+// Handles parsing errors. If this returns true, it means Conn has a body ready
+// to write. In this case the worker (blocking or nonblocking) will want to send
+// the resposne. If it returns false, the worker probably wants to close the connection.
+// This function ensures that both Blocking and NonBlocking workers handle these
+// errors with the same response
+fn requestParseError(conn: *Conn, err: anyerror) bool {
+    switch (err) {
+        error.HeaderTooBig => {
+            metrics.invalidRequest();
+            return writeError(conn, 431, "Request header is too big");
+        },
+        error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
+            metrics.invalidRequest();
+            return writeError(conn, 400, "Invalid Request");
+        },
+        error.BrokenPipe, error.ConnectionClosed, error.ConnectionResetByPeer => return false,
+        else => return serverError(conn, "unknown read/parse error: {}", err),
+    }
+    return false;
+}
+
+fn serverError(conn: *Conn, comptime log_fmt: []const u8, err: anyerror) bool {
+    log.err("server error: " ++ log_fmt, .{err});
+    metrics.internalError();
+    return writeError(conn, 500, "Internal Server Error");
+}
+
+fn writeError(conn: *Conn, status: u16, msg: []const u8) bool {
+    const aa = conn.arena.allocator();
+    var res = Response.init(aa, conn);
+    res.status = status;
+    res.body = msg;
+    res.keepalive = false;
+
+    conn.res_state.prepareForWrite(&res) catch |err| {
+        log.err("Failed to prepare error response for writing: {}", .{err});
+        return false;
+    };
+    return true;
 }
 
 const t = @import("t.zig");

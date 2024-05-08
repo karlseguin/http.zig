@@ -19,8 +19,12 @@ const fd_t = std.posix.fd_t;
 const Allocator = std.mem.Allocator;
 const log = std.log.scoped(.httpz);
 
-const Conn = @import("worker.zig").Conn;
+const worker = @import("worker.zig");
+const Conn = worker.Conn;
 const ThreadPool = @import("thread_pool.zig").ThreadPool;
+
+const build = @import("build");
+const force_blocking: bool = if (@hasDecl(build, "force_blocking")) build.force_blocking else false;
 
 // don't like using CPU detection since hyperthread cores are marketing.
 const DEFAULT_WORKERS = 2;
@@ -207,6 +211,8 @@ pub fn Server() type {
 
 pub fn ServerCtx(comptime G: type, comptime R: type) type {
     return struct {
+        const TP = if (blockingMode()) ThreadPool(worker.Blocking(*Self).handleConnection) else ThreadPool(Self.notifyingHandler);
+
         ctx: G,
         config: Config,
         allocator: Allocator,
@@ -215,12 +221,11 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         _errorHandler: ErrorHandlerAction(G),
         _notFoundHandler: Action(G),
         _cond: Thread.Condition,
-        _thread_pool: *ThreadPool(Self.handler),
+        _thread_pool: *TP,
         _signals: [][2]fd_t,
         _max_request_per_connection: u64,
 
         const Self = @This();
-        const Worker = @import("worker.zig").Worker(*Self);
 
         pub fn init(allocator: Allocator, config: Config, ctx: G) !Self {
             const nfh = if (comptime G == void) defaultNotFound else defaultNotFoundWithContext;
@@ -235,8 +240,20 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 var_config.address = "127.0.0.1";
             }
 
-            var thread_pool = try ThreadPool(Self.handler).init(allocator, .{
-                .count = config.thread_pool.count orelse 4,
+            var thread_count = config.thread_pool.count orelse 4;
+            if (blockingMode()) {
+                // in blockingMode, we only have 1 worker (regardless of the
+                // config). We want to make blocking and nonblocking modes
+                // use the same number of threads, so we'll convert extra workers
+                // to thread pool threads.
+                const worker_count = config.workers.count orelse DEFAULT_WORKERS;
+                if (worker_count > 1) {
+                    thread_count += worker_count - 1;
+                }
+            }
+
+            var thread_pool = try TP.init(allocator, .{
+                .count = thread_count,
                 .backlog = config.thread_pool.backlog orelse 500,
             });
             errdefer thread_pool.deinit(allocator);
@@ -282,6 +299,9 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             var no_delay = true;
             const address = blk: {
                 if (config.unix_path) |unix_path| {
+                    if (comptime builtin.os.tag == .windows) {
+                        return error.UnixPathNotSupported;
+                    }
                     no_delay = false;
                     std.fs.deleteFileAbsolute(unix_path) catch {};
                     break :blk try net.Address.initUnix(unix_path);
@@ -293,7 +313,9 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             };
 
             const socket = blk: {
-                const sock_flags = posix.SOCK.STREAM | posix.SOCK.CLOEXEC | posix.SOCK.NONBLOCK;
+                var sock_flags: u32 = posix.SOCK.STREAM | posix.SOCK.CLOEXEC;
+                if (blockingMode() == false) sock_flags |= posix.SOCK.NONBLOCK;
+
                 const proto = if (address.any.family == posix.AF.UNIX) @as(u32, 0) else posix.IPPROTO.TCP;
                 break :blk try posix.socket(address.any.family, sock_flags, proto);
             };
@@ -334,39 +356,55 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             });
             defer ws.deinit(allocator);
 
-            var signals = self._signals;
-            const worker_count = config.workers.count orelse DEFAULT_WORKERS;
-            const workers = try allocator.alloc(Worker, worker_count);
-            const threads = try allocator.alloc(Thread, worker_count);
+            if (comptime blockingMode()) {
+                var w = try worker.Blocking(*Self).init(allocator, self, &ws, &config);
+                defer w.deinit();
 
-            var started: usize = 0;
+                const thrd = try Thread.spawn(.{}, worker.Blocking(*Self).listen, .{&w, socket});
 
-            defer {
-                for (0..started) |i| {
-                    posix.close(signals[i][1]);
-                    threads[i].join();
-                    workers[i].deinit();
+                // is this really the best way?
+                var mutex = Thread.Mutex{};
+                mutex.lock();
+                self._cond.wait(&mutex);
+                mutex.unlock();
+                w.stop();
+                thrd.join();
+            } else {
+                const Worker = worker.NonBlocking(*Self);
+                var signals = self._signals;
+                const worker_count = config.workers.count orelse DEFAULT_WORKERS;
+                const workers = try allocator.alloc(Worker, worker_count);
+                const threads = try allocator.alloc(Thread, worker_count);
+
+                var started: usize = 0;
+
+                defer {
+                    for (0..started) |i| {
+                        posix.close(signals[i][1]);
+                        threads[i].join();
+                        workers[i].deinit();
+                    }
+                    allocator.free(workers);
+                    allocator.free(threads);
                 }
-                allocator.free(workers);
-                allocator.free(threads);
+
+                for (0..workers.len) |i| {
+                    signals[i] = try posix.pipe();
+                    errdefer posix.close(signals[i][1]);
+
+                    workers[i] = try Worker.init(allocator, i, self, &ws, &config);
+                    errdefer workers[i].deinit();
+
+                    threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], socket, signals[i][0] });
+                    started += 1;
+                }
+
+                // is this really the best way?
+                var mutex = Thread.Mutex{};
+                mutex.lock();
+                self._cond.wait(&mutex);
+                mutex.unlock();
             }
-
-            for (0..workers.len) |i| {
-                signals[i] = try posix.pipe();
-                errdefer posix.close(signals[i][1]);
-
-                workers[i] = try Worker.init(allocator, i, self, &ws, &config);
-                errdefer workers[i].deinit();
-
-                threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], socket, signals[i][0] });
-                started += 1;
-            }
-
-            // is this really the best way?
-            var mutex = Thread.Mutex{};
-            mutex.lock();
-            self._cond.wait(&mutex);
-            mutex.unlock();
         }
 
         pub fn listenInNewThread(self: *Self) !std.Thread {
@@ -424,13 +462,18 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             return error.CannotDispatch;
         }
 
-        pub fn handle(self: *Self, worker: *Worker, conn: *Conn) !void {
-            // this is executing in the worker's thread, we want to move it
-            // to our threadpool asap
-            try self._thread_pool.spawn(.{self, worker, conn});
+        pub fn notifyingHandler(self: *Self, w: *worker.NonBlocking(*Self), conn: *Conn) void {
+            self.handler(conn);
+            const signal = self._signals[w.id][1];
+            const buf = std.mem.asBytes(&@intFromPtr(conn));
+
+            var to_write: usize = @sizeOf(usize);
+            while (to_write > 0) {
+                to_write -= std.posix.write(signal, buf) catch @panic("TODO");
+            }
         }
 
-        fn handler(self: *Self, worker: *Worker, conn: *Conn) void {
+        pub fn handler(self: *Self, conn: *Conn) void {
             const aa = conn.arena.allocator();
             var req = Request.init(aa, conn);
             var res = Response.init(aa, conn);
@@ -471,14 +514,6 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                         conn.handover = .close;
                     };
                 }
-            }
-
-            const signal = self._signals[worker.id][1];
-            const buf = std.mem.asBytes(&@intFromPtr(conn));
-
-            var to_write: usize = @sizeOf(usize);
-            while (to_write > 0) {
-                to_write -= std.posix.write(signal, buf) catch @panic("TODO");
             }
         }
 
@@ -527,6 +562,16 @@ fn hasHandle(comptime T: type) bool {
         .Pointer => |ptr| return hasHandle(ptr.child),
         else => return false,
     }
+}
+
+pub fn blockingMode() bool {
+    if (force_blocking) {
+        return true;
+    }
+    return switch (builtin.os.tag) {
+        .linux, .macos, .ios, .tvos, .watchos, .freebsd, .netbsd, .dragonfly, .openbsd => false,
+        else => true,
+    };
 }
 
 const t = @import("t.zig");

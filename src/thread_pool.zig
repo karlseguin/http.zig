@@ -85,7 +85,7 @@ pub fn ThreadPool(comptime F: anytype) type {
             return self.pull == self.push;
         }
 
-        pub fn spawn(self: *Self, args: Args) !void {
+        pub fn spawn(self: *Self, args: Args) void {
             self.sem.wait();
             self.mutex.lock();
             const push = self.push;
@@ -124,7 +124,7 @@ test "ThreadPool: small fuzz" {
     var tp = try ThreadPool(testIncr).init(t.allocator, .{ .count = 3, .backlog = 3 });
 
     for (0..50_000) |_| {
-        try tp.spawn(.{1});
+        tp.spawn(.{1});
     }
     while (tp.empty() == false) {
         std.time.sleep(std.time.ns_per_ms);
@@ -138,7 +138,7 @@ test "ThreadPool: large fuzz" {
     var tp = try ThreadPool(testIncr).init(t.allocator, .{ .count = 50, .backlog = 1000 });
 
     for (0..50_000) |_| {
-        try tp.spawn(.{1});
+        tp.spawn(.{1});
     }
     while (tp.empty() == false) {
         std.time.sleep(std.time.ns_per_ms);

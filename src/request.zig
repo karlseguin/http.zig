@@ -1490,7 +1490,11 @@ test "request: fuzz" {
         const number_of_requests = random.uintAtMost(u8, 10) + 1;
 
         for (0..number_of_requests) |_| {
-            defer ctx.conn.keepalive() catch unreachable;
+            defer if (@import("httpz.zig").blockingMode()) {
+                ctx.conn.keepalive();
+            } else {
+                ctx.conn.keepaliveAndRestore() catch unreachable;
+            };
 
             const method = randomMethod(random);
             const url = t.randomString(random, aa, 20);

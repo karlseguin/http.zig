@@ -1,6 +1,9 @@
 const std = @import("std");
 const metrics = @import("metrics.zig");
 
+const blockingMode = @import("httpz.zig").blockingMode;
+
+const Mutex = std.Thread.Mutex;
 const Allocator = std.mem.Allocator;
 
 pub const Buffer = struct {
@@ -15,11 +18,18 @@ pub const Buffer = struct {
     };
 };
 
+// When we're in blocking mode, the Pool is shared by threads in the blocking
+// worker's threadpool. Thus, we need to synchornize access.
+// When we're not in blocking mode, every worker gets its own Pool and the pool
+// is only accessed from that worker thread, so no lockig is required.
 pub const Pool = struct {
+    const M = if (blockingMode()) Mutex else void;
+
     available: usize,
     buffers: []Buffer,
     allocator: Allocator,
     buffer_size: usize,
+    mutex: M,
 
     pub fn init(allocator: Allocator, count: usize, buffer_size: usize) !Pool {
         const buffers = try allocator.alloc(Buffer, count);
@@ -41,6 +51,7 @@ pub const Pool = struct {
         }
 
         return .{
+            .mutex = if (comptime blockingMode()) .{} else {},
             .buffers = buffers,
             .available = count,
             .allocator = allocator,
@@ -91,14 +102,17 @@ pub const Pool = struct {
             };
         }
 
+        self.lock();
         const available = self.available;
         if (available == 0) {
+            self.unlock();
             metrics.allocBufferEmpty(size);
             return .{
                 .type = buffer_type,
                 .data = try allocator.alloc(u8, size),
             };
         }
+        defer self.unlock();
 
         const index = available - 1;
         const buffer = self.buffers[index];
@@ -120,10 +134,23 @@ pub const Pool = struct {
             .static, .arena => {},
             .dynamic => self.allocator.free(buffer.data),
             .pooled => {
+                self.lock();
+                defer self.unlock();
                 const available = self.available;
                 self.buffers[available] = buffer;
                 self.available = available + 1;
             },
+        }
+    }
+
+    inline fn lock(self: *Pool) void {
+        if (comptime blockingMode()) {
+            self.mutex.lock();
+        }
+    }
+    inline fn unlock(self: *Pool) void {
+        if (comptime blockingMode()) {
+            self.mutex.unlock();
         }
     }
 };
