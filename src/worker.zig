@@ -317,10 +317,11 @@ pub fn NonBlocking(comptime S: type) type {
                         return .close;
                     }
 
-                    if (conn.poll_mode != .write) {
-                        conn.poll_mode = .write;
-                        try self.loop.monitorWrite(conn);
-                    }
+                    // even if poll_mode was already .write, we need to re-arm
+                    // the event filter, since we registered it as DISPATCH (kqueue)
+                    // and ONESHOT (epoll)
+                    conn.poll_mode = .write;
+                    try self.loop.monitorWrite(conn);
 
                     state.pos = pos;
                     state.stage = stage;
