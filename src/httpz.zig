@@ -7,6 +7,7 @@ pub const testing = @import("testing.zig");
 pub const routing = @import("router.zig");
 pub const request = @import("request.zig");
 pub const response = @import("response.zig");
+pub const key_value = @import("key_value.zig");
 
 pub const Router = routing.Router;
 pub const Request = request.Request;
