@@ -1,4 +1,4 @@
-# An HTTP/1.1 server for Zig.
+<!-- # An HTTP/1.1 server for Zig. -->
 
 ## Demo
 http.zig is used by [DuckDB HTTP Proxy](https://www.goblgobl.com/demo/duckdb-proxy/) and the [api server for aolium](https://github.com/karlseguin/aolium-api).
@@ -817,9 +817,7 @@ In blocking mode, `config.workers.large_buffer_count` defaults to the size of th
 
 In blocking mode, `config.workers.max_conn` and `config.workers.min_conn` are ignored. The maximum number of connections is simply the size of the thread_pool.
 
-If you aren't using a reverse proxy, you should always set the `config.timeout.request`, `config.timeout.keepalive` and config.timeout.request_count` settings. In blocking mode, consider using conservative values: say 5/5/5 (5 second request timeout, 5 second keepalive timeout, and 5 keepalive count). You can monitor the `httpz_timeout_active` metric to see if the request timeout is too low.
-
-
+If you aren't using a reverse proxy, you should always set the `config.timeout.request`, `config.timeout.keepalive` and `config.timeout.request_count` settings. In blocking mode, consider using conservative values: say 5/5/5 (5 second request timeout, 5 second keepalive timeout, and 5 keepalive count). You can monitor the `httpz_timeout_active` metric to see if the request timeout is too low.
 
 # Testing
 The `httpz.testing` namespace exists to help application developers setup `*httpz.Requests` and assert `*httpz.Responses`.
