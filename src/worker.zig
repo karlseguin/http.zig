@@ -731,7 +731,7 @@ const Manager = struct {
         timeout: ?u32,
     };
 
-    // lists are ordered from soonest to timeout to latest, as soon as we find
+    // lists are ordered from soonest to timeout to last, as soon as we find
     // a connection that isn't timed out, we can break;
     // This returns the next timeout
     fn enforceTimeout(self: *Manager, list: List(Conn), now: u32) TimeoutResult {
@@ -1095,12 +1095,47 @@ pub fn Blocking(comptime S: type) type {
         allocator: Allocator,
         websocket: *websocket.Server,
         buffer_pool: BufferPool,
+        timeout_request: ?Timeout,
+        timeout_keepalive: ?Timeout,
+        timeout_write_error: Timeout,
+
+        const Timeout = struct {
+            sec: u32,
+            timeval: [16]u8,
+
+            // if sec is null, it means we want to cancel the timeout.
+            fn init(sec: ?u32) Timeout {
+                return .{
+                    .sec = if (sec) |s| s else 604800,
+                    .timeval = std.mem.toBytes(std.posix.timeval{.tv_sec = sec orelse 0, .tv_usec = 0,}),
+                };
+            }
+        };
 
         const Self = @This();
 
         pub fn init(allocator: Allocator, server: S, ws: *websocket.Server, config: *const Config) !Self {
             const buffer_pool = try initializeBufferPool(allocator, config);
             errdefer buffer_pool.deinit();
+
+            var timeout_request: ?Timeout = null;
+            if (config.timeout.request) |sec| {
+                timeout_request = Timeout.init(sec);
+            } else if (config.timeout.keepalive != null) {
+                // We have to set this up, so that when we transition from
+                // keepalive state to a request parsing state, we remove the timeout
+                timeout_request = Timeout.init(0);
+            }
+
+            var timeout_keepalive: ?Timeout = null;
+            if (config.timeout.keepalive) |sec| {
+                timeout_keepalive = Timeout.init(sec);
+            } else if (timeout_request != null) {
+                // We have to set this up, so that when we transition from
+                // request processing state to a kepealive state, we remove the timeout
+                timeout_keepalive = Timeout.init(0);
+            }
+
 
             return .{
                 .running = true,
@@ -1109,6 +1144,9 @@ pub fn Blocking(comptime S: type) type {
                 .websocket = ws,
                 .allocator = allocator,
                 .buffer_pool = buffer_pool,
+                .timeout_request = timeout_request,
+                .timeout_keepalive = timeout_keepalive,
+                .timeout_write_error = Timeout.init(5),
             };
         }
 
@@ -1158,8 +1196,9 @@ pub fn Blocking(comptime S: type) type {
             conn.io_mode = .blocking;
             conn.stream = .{.handle = socket};
 
+            var is_keepalive = false;
             while (true) {
-                switch (self.handleRequest(&conn) catch .close) {
+                switch (self.handleRequest(&conn, is_keepalive) catch .close) {
                     .keepalive => conn.keepalive(),
                     .close => break,
                     .disown => {
@@ -1168,23 +1207,65 @@ pub fn Blocking(comptime S: type) type {
                         break;
                     }
                 }
+                is_keepalive = true;
             }
         }
 
-        fn handleRequest(self: *const Self, conn: *Conn) !HandleResult {
+        fn handleRequest(self: *const Self, conn: *Conn, is_keepalive: bool) !HandleResult {
             const stream = conn.stream;
+            const timeout: ?Timeout = if (is_keepalive) self.timeout_keepalive else self.timeout_request;
+
+            var deadline: ?i64 = null;
+
+            if (timeout) |to| {
+                if (is_keepalive == false) {
+                    deadline = timestamp() + to.sec;
+                }
+                try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &to.timeval);
+            }
+
+            var is_first = true;
             while (true) {
-                // TODO timeout
                 const done = conn.req_state.parse(stream) catch |err| {
+                    if (err == error.WouldBlock) {
+                        if (is_keepalive and is_first) {
+                            metrics.timeoutKeepalive(1);
+                        } else {
+                            metrics.timeoutActive(1);
+                        }
+                        return .close;
+                    }
                     if (requestParseError(conn, err)) {
-                        // todo TIMEOUT
-                        // requestParseError prepared a response for us (in conn)
-                        // we should try to write it.
+                        try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &self.timeout_write_error.timeval);
                         write(conn) catch return .close;
                     }
                     return .close;
                 };
-                if (done) break;
+                if (done) {
+                    // we have a complete request, time to process it
+                    break;
+                }
+
+                if (is_keepalive) {
+                    if (is_first) {
+                        if (self.timeout_request) |to| {
+                            // This was the first data from a keepalive request.
+                            // We would have been on a keepalive timeout (if there was one),
+                            // and now need to switch to a request timeout. This might be
+                            // an actual timeout, or it could just be removing the keepalive timeout
+                            // eitehr way, it's the same code (timeval will just be set to 0 for
+                            // the second case)
+                            deadline = timestamp() + to.sec;
+                            try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &to.timeval);
+                        }
+                        is_first = false;
+                    }
+                } else if (deadline) |dl| {
+                    if (timestamp() > dl) {
+                        metrics.timeoutActive(1);
+                        return .close;
+                    }
+                }
             }
 
             metrics.request();
