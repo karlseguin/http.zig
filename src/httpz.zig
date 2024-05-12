@@ -27,9 +27,6 @@ const ThreadPool = @import("thread_pool.zig").ThreadPool;
 const build = @import("build");
 const force_blocking: bool = if (@hasDecl(build, "force_blocking")) build.force_blocking else false;
 
-// don't like using CPU detection since hyperthread cores are marketing.
-const DEFAULT_WORKERS = 2;
-
 const MAX_REQUEST_COUNT = 4_294_967_295;
 
 pub fn writeMetrics(writer: anytype) !void {
@@ -241,25 +238,13 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 var_config.address = "127.0.0.1";
             }
 
-            var thread_count = config.thread_pool.count orelse 4;
-            if (blockingMode()) {
-                // in blockingMode, we only have 1 worker (regardless of the
-                // config). We want to make blocking and nonblocking modes
-                // use the same number of threads, so we'll convert extra workers
-                // to thread pool threads.
-                const worker_count = config.workers.count orelse DEFAULT_WORKERS;
-                if (worker_count > 1) {
-                    thread_count += worker_count - 1;
-                }
-            }
-
             var thread_pool = try TP.init(allocator, .{
-                .count = thread_count,
+                .count = config.threadPoolCount(),
                 .backlog = config.thread_pool.backlog orelse 500,
             });
             errdefer thread_pool.deinit(allocator);
 
-            const signals = try allocator.alloc([2]fd_t, config.workers.count orelse DEFAULT_WORKERS);
+            const signals = try allocator.alloc([2]fd_t, config.workers.count orelse Config.DEFAULT_WORKERS);
             errdefer allocator.free(signals);
 
             return .{
@@ -375,7 +360,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             } else {
                 const Worker = worker.NonBlocking(*Self);
                 var signals = self._signals;
-                const worker_count = config.workers.count orelse DEFAULT_WORKERS;
+                const worker_count = config.workers.count orelse Config.DEFAULT_WORKERS;
                 const workers = try allocator.alloc(Worker, worker_count);
                 const threads = try allocator.alloc(Thread, worker_count);
 

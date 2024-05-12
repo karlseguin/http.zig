@@ -1080,6 +1080,9 @@ const EPoll = struct {
 };
 
 fn timestamp() u32 {
+    if (comptime @hasDecl(std.c, "CLOCK") == false) {
+        return @intCast(std.time.timestamp());
+    }
     var ts: posix.timespec = undefined;
     posix.clock_gettime(posix.CLOCK.REALTIME, &ts) catch unreachable;
     return @intCast(ts.tv_sec);
@@ -1101,13 +1104,13 @@ pub fn Blocking(comptime S: type) type {
 
         const Timeout = struct {
             sec: u32,
-            timeval: [16]u8,
+            timeval: [@sizeOf(std.posix.timeval)]u8,
 
             // if sec is null, it means we want to cancel the timeout.
             fn init(sec: ?u32) Timeout {
                 return .{
-                    .sec = if (sec) |s| s else 604800,
-                    .timeval = std.mem.toBytes(std.posix.timeval{.tv_sec = sec orelse 0, .tv_usec = 0,}),
+                    .sec = if (sec) |s| s else MAX_TIMEOUT,
+                    .timeval = std.mem.toBytes(std.posix.timeval{.tv_sec = @intCast(sec orelse 0), .tv_usec = 0,}),
                 };
             }
         };
@@ -1303,7 +1306,13 @@ pub fn Blocking(comptime S: type) type {
 // There's some shared logic between the NonBlocking and Blocking workers.
 // Whatever we can de-duplicate, goes here.
 fn initializeBufferPool(allocator: Allocator, config: *const Config) !BufferPool {
-    const large_buffer_count = config.workers.large_buffer_count orelse 16;
+    const large_buffer_count = config.workers.large_buffer_count orelse blk: {
+        if (httpz.blockingMode()) {
+            break :blk config.threadPoolCount();
+        } else {
+            break :blk 16;
+        }
+    };
     const large_buffer_size = config.workers.large_buffer_size orelse config.request.max_body_size orelse 65536;
     return BufferPool.init(allocator, large_buffer_count, large_buffer_size);
 }

@@ -9,19 +9,6 @@ This library supports native Zig module (introduced in 0.11). Add a "httpz" depe
 # Why not std.http.Server
 `std.http.Server` is slow. Exactly how slow depends on what you're doing and how you're testing. There are many Zig HTTP server implementations. Most wrap `std.http.Server` and tend to be slow; slower than Sinatra. A few wrap some C libraries and are much faster (though some of these are slow too!). http.zig is written in Zig, without using `std.http.Server`. On an M2, a basic request can hit 110K requests per seconds.
 
-## Branches (scaling, robustness and windows)
-Until async support is re-added to Zig, 2 versions of this project are being maintained: the `master` branch and the `blocking` branch. Except for very small API changes and a few different configuration options, the differences between the two branches are internal.
-
-Whichever branch you pick, if you plan on exposing this publicly, I strongly recommend that you place it behind a robust reverse proxy (e.g. nginx). Neither does TLS termination and the `blocking` branch is relatively easy to DOS.
-
-The `master` branch is more advanced and only runs on systems with epoll (Linux) and kqueue (e.g. BSD, MacOS). It should scale and perform better under load and be more predictable in the face of real-world networking (e.g. slow or misbehaving clients). It has a few additional configuration settings to control memory usage and timeouts.
-
-The `blocking` branch uses a naive thread-per-connection. It is simpler and should work on most platforms, including Windows. This approach can have unpredictable memory spikes due to the overhead of the threads themselves. Plus, performance can suffer due to thread thrashing. The `thread_pool = #` setting, uses a `std.Thread.Pool` to limit the number of threads, resulting in more predictable memory usage and, assuming properly behaved clients, can perform better. The `blocking` branch is easy to DOS and really _has_ to sit behind a reverse proxy that can enforce timeouts/limits.
-
-More details are [available here](https://www.aolium.com/karlseguin/f75427ac-699e-35f1-dec8-32d54a4f5700).
-
-Please use the [zig-0.11](https://github.com/karlseguin/http.zig/tree/zig-0.11) for use with Zig 0.11. This is similar to the master branch but is compatible with Zig 0.11. It does not include websocket support however.
-
 # Usage
 
 ## Simple Use Case
@@ -281,6 +268,23 @@ pub fn metrics(_: Context, _: *httpz.Request, res: *httpz.Response) !void {
     try httpz.writeMetrics(writer);
 }
 ```
+
+## Complex Use Case 5 - Dispatch Takeover
+As shown above, a custom dispatcher receives the action to execute as well as a request and response object. Obviously, in order to provide the action, httpz must have already matched the request with a route. Advanced cases might wish to circumvent httpz's router and take over the request and response object as early as possible. This can be achieved by providing a dispatcher with a public `handle` method:
+
+```zig
+
+const Dispatcher = struct {
+    fn handle(_: Dispatcher, req: *Request, res: *Response) void {
+        // todo
+    }
+};
+
+var server = try ServerCtx(Dispatcher, Dispatcher).init(allocator, config, Dispatcher{});
+...
+```
+
+When used this way, httpz's routing, action error handling (hence why `handle` can't return an errorset), not found fallback and CORS handling are all bypassed.
 
 ## httpz.Request
 The following fields are the most useful:
@@ -588,7 +592,9 @@ var srv = Server().init(allocator, .{.cors = .{
 Only the `origin` field is required. The values given to the configuration are passed as-is to the appropriate preflight header.
 
 ## Configuration
-The third option given to `listen` is an `httpz.Config` instance. Possible values, along with their default, are:
+The third option given to `listen` is an `httpz.Config` instance. When running in <a href=#blocking-mode>blocking mode</a> (e.g. on Windows) a few of these behave slightly, but not drastically, different.
+
+Possible values, along with their default, are:
 
 ```zig
 try httpz.listen(allocator, &router, .{
@@ -608,6 +614,7 @@ try httpz.listen(allocator, &router, .{
     // 4 - writing response
     .workers = .{
         // Number of worker threads
+        // (blocking mode: handled differently)
         .count = 2,
 
         // Maximum number of concurrent connection each worker can handle
@@ -617,6 +624,7 @@ try httpz.listen(allocator, &router, .{
         //   $a_bit_of_overhead + ($large_buffer_count * $large_buffer_size)
         // )
         // is a rough estimate for the most amount of memory httpz will use
+        // (blocking mode: currently ignored)
         .max_conn = 500,
 
         // Minimum number of connection states each worker should maintain
@@ -626,6 +634,7 @@ try httpz.listen(allocator, &router, .{
         //   $a_bit_of_overhead + ($large_buffer_count * $large_buffer_size)
         // )
         // is a rough estimate for the lowest amount of memory httpz will use
+        // (blocking mode: currently ignored)
         .min_conn = 32,
 
         // A pool of larger buffers that can be used for any data larger than configured
@@ -643,6 +652,7 @@ try httpz.listen(allocator, &router, .{
     .thread_pool = .{
         // Number threads. If you're handlers are doing a lot of i/o, a higher
         // number might provide better throughput
+        // (blocking mode: handled differently)
         .count = 4,
 
         // The maximum number of pending requests that the thread pool will accept
@@ -742,11 +752,13 @@ The configuration settings under the `timeouts` section are designed to help pro
 
 The `timeout.request` is the time, in seconds, that a connection has to send a complete request. The `timeout.keepalive` is the time, in second, that a connection can stay connected without sending a request (after the initial request has been sent).
 
-The connection alternates between these two timeouts. It starts with a timeout of `timeout.request` and after the response is sent and the connection is placed in the "keepalive list", switches to the `timeout.keepalive`. When new data is received, it switches back to `timeout.request`. When `null`, both timeouts default to 2_147_483_647 seconds (so not completely disabled, both close enough).
+The connection alternates between these two timeouts. It starts with a timeout of `timeout.request` and after the response is sent and the connection is placed in the "keepalive list", switches to the `timeout.keepalive`. When new data is received, it switches back to `timeout.request`. When `null`, both timeouts default to 2_147_483_647 seconds (so not completely disabled, but close enough).
 
 The `timeout.request_count` is the number of individual requests allowed within a single keepalive session. This protects against a client consuming the connection by sending unlimited meaningless but valid HTTP requests.
 
 When the three are combined, it should be difficult for a problematic client to stay connected indefinitely.
+
+If you're running httpz on Windows (or, more generally, where <code>httpz.blockingMode()</code> returns true), please <a href="#blocking-mode">read the section</a> as this mode of operation is more susceptible to DOS.
 
 ## Metrics
 A few basic metrics are collected using [metrics.zig](https://github.com/karlseguin/metrics.zig), a prometheus-compatible library. These can be written to an `std.io.Writer` using `try httpz.writeMetrics(writer)`. As an example:
@@ -776,6 +788,38 @@ The metrics are:
 * `httpz_invalid_request` - counts number of requests which httpz could not parse (where the request is invalid).
 * `httpz_header_too_big` - counts the number of requests which httpz rejects due to a header being too big (does not fit in `request.buffer_size` config).
 * `httpz_body_too_big` - counts the number of requests which httpz rejects due to a body being too big (is larger than `request.max_body_size` config).
+
+# Blocking Mode
+kqueue (BSD, MacOS) or epoll (Linux) are used on supported platforms. On all other platforms (most notably Windows), a more naive thread-per-connection with blocking sockets is used.
+
+The comptime-safe, `httpz.blockingMode() bool` function can be called to determine which mode httpz is running in (when it returns `true`, then you're running the simpler blocking mode).
+
+It is possible to force blocking mode by adding the <code>force_blocking = true</code> build option in your build.zig (it is **not** possible to force non blocking mode)
+
+```zig
+var httpz_module =  b.dependency("httpz", dep_opts);
+const options = b.addOptions();
+options.addOption(bool, "force_blocking", true);
+httpz_module.addOptions("build", options);
+```
+
+While you should always run httpz behind a reverse proxy, it's particularly important to do so in blocking mode due to the ease with which external connections can DOS the server.
+
+In blocking mode, `config.workers.count` is hard-coded to 1. (This worker does considerably less work than the non-blocking workers). If `config.workers.count` is > 1, than those extra workers will go towards `config.thread_pool.count`. In other words:
+
+In non-blocking mode, if `config.workers.count = 2` and `config.thread_pool.count = 4`, then you'll have 6 threads: 2 threads that read+parse requests and send replies, and 4 threads to execute application code.
+
+In blocking more, the same config will also use 6 threads, but there will only be: 1 thread that accepts connections, and 5 threads to read+parse requests, send replies and execute application code.
+
+The goal is for the same configuration to result in the same # of threads regardless of the mode, and to have more thread_pool threads in blocking mode since they do more work.
+
+In blocking mode, `config.workers.large_buffer_count` defaults to the size of the thread pool.
+
+In blocking mode, `config.workers.max_conn` and `config.workers.min_conn` are ignored. The maximum number of connections is simply the size of the thread_pool.
+
+If you aren't using a reverse proxy, you should always set the `config.timeout.request`, `config.timeout.keepalive` and config.timeout.request_count` settings. In blocking mode, consider using conservative values: say 5/5/5 (5 second request timeout, 5 second keepalive timeout, and 5 keepalive count). You can monitor the `httpz_timeout_active` metric to see if the request timeout is too low.
+
+
 
 # Testing
 The `httpz.testing` namespace exists to help application developers setup `*httpz.Requests` and assert `*httpz.Responses`.
@@ -870,8 +914,6 @@ try std.testing.expectEqual(@as(u16, 200), res.status);
 // use res.raw for the full raw response
 ```
 
-# Zig Compatibility
-0.12-dev is constantly changing, but the goal is to keep this library compatible with the latest development release. Since 0.12-dev does not support async, threads are currently used. Since this library is itself a WIP, the entire thing is considered good enough for playing/testing, and should be stable when 0.12 itself becomes more stable.
 
 # HTTP Compliance
 This implementation may never be fully HTTP/1.1 compliant, as it is built with the assumption that it will sit behind a reverse proxy that is tolerant of non-compliant upstreams (e.g. nginx). (One example I know of is that the server doesn't include the mandatory Date header in the response.)
