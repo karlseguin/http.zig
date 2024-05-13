@@ -377,7 +377,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 }
 
                 for (0..workers.len) |i| {
-                    signals[i] = try posix.pipe();
+                    signals[i] = try posix.pipe2(.{.NONBLOCK = true});
                     errdefer posix.close(signals[i][1]);
 
                     workers[i] = try Worker.init(allocator, i, self, &ws, &config);

@@ -58,7 +58,7 @@ pub fn NonBlocking(comptime S: type) type {
         const Loop = switch (builtin.os.tag) {
             .macos, .ios, .tvos, .watchos, .freebsd, .netbsd, .dragonfly, .openbsd => KQueue,
             .linux => EPoll,
-            else => @compileError("This branch requires access to kqueue or epoll. Consider using the \"blocking\" branch instead."),
+            else => unreachable,
         };
 
         pub fn init(allocator: Allocator, id: usize, server: S, ws: *websocket.Server, config: *const Config) !Self {
@@ -96,18 +96,6 @@ pub fn NonBlocking(comptime S: type) type {
 
             {
                 // setup our signal
-
-                // First, we make it non blocking
-                const flags = posix.fcntl(signal, posix.F.GETFL, 0)  catch |err| {
-                    log.err("Failed to make get signal file flags: {}", .{err});
-                    return;
-                };
-
-                _ = posix.fcntl(signal, posix.F.SETFL, flags | @as(u32, @bitCast(std.posix.O{ .NONBLOCK = true }))) catch |err| {
-                    log.err("Failed to make signal nonblocking: {}", .{err});
-                    return;
-                };
-
                 // Next we register it in our event loop
                 self.loop.monitorSignal(signal) catch |err| {
                     log.err("Failed to add monitor to signal pipe: {}", .{err});
@@ -115,17 +103,19 @@ pub fn NonBlocking(comptime S: type) type {
                 };
             }
 
+            var now = timestamp();
             while (true) {
-                const timeout = manager.prepareToWait();
+                const timeout = manager.prepareToWait(now);
                 var it = self.loop.wait(timeout) catch |err| {
                     log.err("Failed to wait on events: {}", .{err});
                     std.time.sleep(std.time.ns_per_s);
                     continue;
                 };
+                now = timestamp();
 
                 while (it.next()) |data| {
                     if (data == 0) {
-                        self.accept(listener) catch |err| {
+                        self.accept(listener, now) catch |err| {
                             log.err("Failed to accept connection: {}", .{err});
                             std.time.sleep(std.time.ns_per_ms * 10);
                         };
@@ -133,7 +123,7 @@ pub fn NonBlocking(comptime S: type) type {
                     }
 
                     if (data == 1) {
-                        if (self.processSignal(signal)) {
+                        if (self.processSignal(signal, now)) {
                             // signal was closed, we're being told to shutdown
                             return;
                         }
@@ -141,17 +131,17 @@ pub fn NonBlocking(comptime S: type) type {
                     }
 
                     const conn: *align(8) Conn = @ptrFromInt(data);
-                    manager.active(conn);
+                    manager.active(conn, now);
                     const result = switch (conn.poll_mode) {
                         .read => self.handleRequest(conn),
                         .write => self.write(conn) catch .close,
                     };
-                    self.handleResult(result, conn);
+                    self.handleResult(result, conn, now);
                 }
             }
         }
 
-        fn accept(self: *Self, listener: posix.fd_t) !void {
+        fn accept(self: *Self, listener: posix.fd_t, now: u32) !void {
             const max_conn = self.max_conn;
 
             var manager = &self.manager;
@@ -174,7 +164,7 @@ pub fn NonBlocking(comptime S: type) type {
                 const flags = (try posix.fcntl(socket, posix.F.GETFL, 0)) | @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
                 _ = try posix.fcntl(socket, posix.F.SETFL, flags);
 
-                var conn = try manager.new();
+                var conn = try manager.new(now);
                 conn.socket_flags = flags;
                 conn.stream = .{ .handle = socket };
                 conn.address = address;
@@ -219,7 +209,7 @@ pub fn NonBlocking(comptime S: type) type {
             return .executing;
         }
 
-        fn processSignal(self: *Self, signal: posix.fd_t) bool {
+        fn processSignal(self: *Self, signal: posix.fd_t, now: u32) bool {
             const s_t = @sizeOf(usize);
 
             const buflen = @typeInfo(@TypeOf(self.signal_buf)).Array.len * @sizeOf(usize);
@@ -243,7 +233,7 @@ pub fn NonBlocking(comptime S: type) type {
                 const data_start = (i * s_t);
                 const data_end = data_start + s_t;
                 const conn: *Conn = @ptrFromInt(@as(*usize, @alignCast(@ptrCast(buf[data_start..data_end]))).*);
-                self.processHandover(conn);
+                self.processHandover(conn, now);
             }
 
             const partial_len = @mod(pos, s_t);
@@ -255,14 +245,14 @@ pub fn NonBlocking(comptime S: type) type {
             return false;
         }
 
-        fn processHandover(self: *Self, conn: *Conn) void {
+        fn processHandover(self: *Self, conn: *Conn, now: u32) void {
             switch (conn.handover) {
                 .write_and_close, .write_and_keepalive => {
                     const result = self.write(conn) catch .close;
-                    self.handleResult(result, conn);
+                    self.handleResult(result, conn, now);
                 },
                 .close => self.manager.close(conn),
-                .keepalive => self.handleResult(.keepalive, conn),
+                .keepalive => self.handleResult(.keepalive, conn, now),
                 .disown => {
                     if (self.loop.remove(conn)) {
                         self.manager.disown(conn);
@@ -273,7 +263,7 @@ pub fn NonBlocking(comptime S: type) type {
             }
         }
 
-        fn handleResult(self: *Self, result: HandleResult, conn: *Conn) void {
+        fn handleResult(self: *Self, result: HandleResult, conn: *Conn, now: u32) void {
             var manager = &self.manager;
             switch (result) {
                 .keepalive => blk: {
@@ -283,7 +273,7 @@ pub fn NonBlocking(comptime S: type) type {
                         break :blk;
                     };
                     conn.poll_mode = .read;
-                    manager.keepalive(conn);
+                    manager.keepalive(conn, now);
                 },
                 .close => manager.close(conn),
                 .wait_for_socket, .executing => {},
@@ -638,16 +628,16 @@ const Manager = struct {
         allocator.destroy(self.buffer_pool);
     }
 
-    fn new(self: *Manager) !*Conn {
+    fn new(self: *Manager, now: u32) !*Conn {
         const conn = try self.conn_pool.acquire();
         self.active_list.insert(conn);
         conn.request_count = 1;
-        conn.timeout = timestamp() + self.timeout_request;
+        conn.timeout = now + self.timeout_request;
         self.len += 1;
         return conn;
     }
 
-    fn active(self: *Manager, conn: *Conn) void {
+    fn active(self: *Manager, conn: *Conn, now: u32) void {
         if (conn.state == .active) return;
 
         // If we're here, it means the connection is going from a keepalive
@@ -655,19 +645,19 @@ const Manager = struct {
 
         conn.state = .active;
         conn.request_count += 1;
-        conn.timeout = timestamp() + self.timeout_request;
+        conn.timeout = now + self.timeout_request;
         self.keepalive_list.remove(conn);
         self.active_list.insert(conn);
     }
 
-    fn keepalive(self: *Manager, conn: *Conn) void {
+    fn keepalive(self: *Manager, conn: *Conn, now: u32) void {
         conn.doCallback();
         conn.keepaliveAndRestore() catch {
             self.close(conn);
             return;
         };
         conn.state = .keepalive;
-        conn.timeout = timestamp() + self.timeout_keepalive;
+        conn.timeout = now + self.timeout_keepalive;
         self.active_list.remove(conn);
         self.keepalive_list.insert(conn);
     }
@@ -694,8 +684,7 @@ const Manager = struct {
     }
 
     // Enforces timeouts, and returns when the next timeout should be checked.
-    fn prepareToWait(self: *Manager) ?i32 {
-        const now = timestamp();
+    fn prepareToWait(self: *Manager, now: u32) ?i32 {
         const next_active = self.enforceTimeout(self.active_list, now);
         const next_keepalive = self.enforceTimeout(self.keepalive_list, now);
 
