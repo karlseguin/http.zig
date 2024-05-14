@@ -500,6 +500,7 @@ pub const Conn = struct {
     // this is the keepalive called by the NonBlocking codepath. It puts the
     // connection back in blocking mode (if it isn't already.)
     pub fn keepaliveAndRestore(self: *Conn) !void {
+        std.debug.assert(httpz.blockingMode() == false);
         if (self.io_mode == .blocking) {
             _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags);
             self.io_mode = .nonblocking;
@@ -531,9 +532,11 @@ pub const Conn = struct {
     }
 
     pub fn blocking(self: *Conn) !void {
-        if (self.io_mode == .blocking) return;
-        _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags & ~@as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
-        self.io_mode = .blocking;
+        if (comptime httpz.blockingMode() == false) {
+            if (self.io_mode == .blocking) return;
+            _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags & ~@as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
+            self.io_mode = .blocking;
+        }
     }
 
     fn doCallback(self: *Conn) void {
