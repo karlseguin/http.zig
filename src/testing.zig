@@ -331,20 +331,19 @@ const JsonComparer = struct {
     // Either a or b might already be serialized JSON string.
     fn compare(self: *JsonComparer, a: anytype, b: anytype) !ArrayList(Diff) {
         const allocator = self._arena.allocator();
+
         var a_bytes: []const u8 = undefined;
-        if (@TypeOf(a) != []const u8) {
-            // a isn't a string, let's serialize it
-            a_bytes = try self.stringify(a);
-        } else {
+        if (comptime isString(@TypeOf(a))) {
             a_bytes = a;
+        } else {
+            a_bytes = try self.stringify(a);
         }
 
         var b_bytes: []const u8 = undefined;
-        if (@TypeOf(b) != []const u8) {
-            // b isn't a string, let's serialize it
-            b_bytes = try self.stringify(b);
-        } else {
+        if (comptime isString(@TypeOf(b))) {
             b_bytes = b;
+        } else {
+            b_bytes = try self.stringify(b);
         }
 
         const a_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, a_bytes, .{});
@@ -440,6 +439,21 @@ const JsonComparer = struct {
         return std.fmt.allocPrint(self._arena.allocator(), "{}", .{value}) catch unreachable;
     }
 };
+
+fn isString(comptime T: type) bool {
+    switch (@typeInfo(T)) {
+        .Pointer => |ptr| switch (ptr.size) {
+            .Slice => return ptr.child == u8,
+            .One => switch (@typeInfo(ptr.child)) {
+                .Array => |arr| return arr.child == u8,
+                else => return false,
+            },
+            else => return false,
+        },
+        .Array => return false,
+        else => return false,
+    }
+}
 
 test "testing: params" {
     var ht = init(.{});
