@@ -539,7 +539,10 @@ pub const Conn = struct {
         }
     }
 
-    fn doCallback(self: *Conn) void {
+    // Should not be called directly, but if we don't expose it, it's a bit
+    // messy to test handlers which use a callback. So, it should only ever
+    // be called from a test.
+    pub fn doCallback(self: *Conn) void {
         if (self.callback) |cb| {
             cb.func(cb.state);
             self.callback = null;
