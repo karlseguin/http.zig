@@ -150,6 +150,22 @@ pub const Testing = struct {
         self.body(bd);
     }
 
+    pub fn expectGzip(self: *Testing) !void {
+        var res = try self.parseResponse();
+        if (res.headers.get("Content-Encoding")) |ce| {
+            try t.expectString("gzip", ce);
+        } else {
+            return error.NoContentEncoding;
+        }
+
+        var fbs = std.io.fixedBufferStream(res.body);
+        var uncompressed = std.ArrayList(u8).init(self.arena);
+        try std.compress.gzip.decompress(fbs.reader(), uncompressed.writer());
+
+        res.body = uncompressed.items;
+        self.parsed_response = res;
+    }
+
     pub fn expectStatus(self: *const Testing, expected: u16) !void {
         try t.expectEqual(expected, self.res.status);
     }
@@ -179,8 +195,15 @@ pub const Testing = struct {
         return try std.json.parseFromSliceLeaky(std.json.Value, self.arena, pr.body, .{});
     }
 
+    pub fn getBody(self: *Testing) ![]const u8 {
+        const pr = try self.parseResponse();
+        return pr.body;
+    }
+
     pub fn parseResponse(self: *Testing) !Response {
         if (self.parsed_response) |r| return r;
+
+        self.conn.doCallback();
         try self.res.write();
         self._ctx.close();
 
