@@ -9,7 +9,19 @@ pub const Opts = struct {
 };
 
 pub fn ThreadPool(comptime F: anytype) type {
-    const Args = std.meta.ArgsTuple(@TypeOf(F));
+    const FullArgs = std.meta.ArgsTuple(@TypeOf(F));
+    const full_fields = std.meta.fields(FullArgs);
+    const ARG_COUNT = full_fields.len;
+
+    const Args = @Type(.{
+        .Struct = .{
+            .layout = .auto,
+            .is_tuple = true,
+            .fields = full_fields[0..ARG_COUNT-1],
+            .decls = &[_]std.builtin.Type.Declaration{},
+        },
+    });
+
     return struct {
         stop: bool,
         push: usize,
@@ -97,6 +109,7 @@ pub fn ThreadPool(comptime F: anytype) type {
         }
 
         fn worker(self: *Self) void {
+            var buf: [8392]u8 = undefined;
             while (true) {
                 self.mutex.lock();
                 while (self.pending == 0) {
@@ -112,7 +125,13 @@ pub fn ThreadPool(comptime F: anytype) type {
                 self.pending -= 1;
                 self.mutex.unlock();
                 self.sem.post();
-                @call(.auto, F, args);
+
+                var full_args: FullArgs = undefined;
+                full_args[ARG_COUNT - 1] = &buf;
+                inline for (0..ARG_COUNT - 1) |i| {
+                    full_args[i] = args[i];
+                }
+                @call(.auto, F, full_args);
             }
         }
     };

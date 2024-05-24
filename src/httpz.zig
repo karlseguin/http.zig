@@ -18,6 +18,8 @@ pub const Config = @import("config.zig").Config;
 const Thread = std.Thread;
 const fd_t = std.posix.fd_t;
 const Allocator = std.mem.Allocator;
+const FixedBufferAllocator = std.heap.FixedBufferAllocator;
+
 const log = std.log.scoped(.httpz);
 
 const worker = @import("worker.zig");
@@ -450,8 +452,8 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             return error.CannotDispatch;
         }
 
-        pub fn notifyingHandler(self: *Self, w: *worker.NonBlocking(*Self), conn: *Conn) void {
-            self.handler(conn);
+        pub fn notifyingHandler(self: *Self, w: *worker.NonBlocking(*Self), conn: *Conn, thread_buf: []u8) void {
+            self.handler(conn, thread_buf);
             const signal = self._signals[w.id][1];
             const buf = std.mem.asBytes(&@intFromPtr(conn));
 
@@ -461,9 +463,16 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             }
         }
 
-        pub fn handler(self: *Self, conn: *Conn) void {
+        pub fn handler(self: *Self, conn: *Conn, thread_buf: []u8) void {
             const aa = conn.arena.allocator();
-            var req = Request.init(aa, conn);
+
+            var fba = FixedBufferAllocator.init(thread_buf);
+            var fb = FallbackAllocator{
+                .fba = &fba,
+                .fallback = aa,
+                .fixed = fba.allocator(),
+            };
+            var req = Request.init(fb.allocator(), conn);
             var res = Response.init(aa, conn);
 
             if (comptime hasHandle(G)) {
@@ -606,6 +615,48 @@ fn websocketHandler(comptime H: type, server: *websocket.Server, stream: std.net
     var handler = H.init(&conn, context) catch return;
     server.handle(H, &handler, &conn);
 }
+
+const FallbackAllocator = struct {
+    fixed: Allocator,
+    fallback: Allocator,
+    fba: *FixedBufferAllocator,
+
+    /// This function both fetches a `Allocator` interface to this
+    /// allocator *and* resets the internal buffer allocator.
+    pub fn allocator(self: *FallbackAllocator) Allocator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .alloc = alloc,
+                .resize = resize,
+                .free = free,
+            },
+        };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, ptr_align: u8, ra: usize) ?[*]u8 {
+        const self: *FallbackAllocator = @ptrCast(@alignCast(ctx));
+        return self.fixed.rawAlloc(len, ptr_align, ra) orelse self.fallback.rawAlloc(len, ptr_align, ra);
+    }
+
+    fn resize(ctx: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, ra: usize) bool {
+        const self: *FallbackAllocator = @ptrCast(@alignCast(ctx));
+        if (self.fba.ownsPtr(buf.ptr)) {
+            if (self.fixed.rawResize(buf, buf_align, new_len, ra)) {
+                return true;
+            }
+        }
+        return self.fallback.rawResize(buf, buf_align, new_len, ra);
+    }
+
+    fn free(ctx: *anyopaque, buf: []u8, buf_align: u8, ra: usize) void {
+        _ = ctx;
+        _ = buf;
+        _ = buf_align;
+        _ = ra;
+        // hack. Always noop since our fallback is an arena
+    }
+};
 
 test {
     // this will leak since the server will run until the process exits. If we use
