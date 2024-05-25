@@ -243,8 +243,9 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             var thread_pool = try TP.init(allocator, .{
                 .count = config.threadPoolCount(),
                 .backlog = config.thread_pool.backlog orelse 500,
+                .buffer_size = config.thread_pool.buffer_size orelse 8192,
             });
-            errdefer thread_pool.deinit(allocator);
+            errdefer thread_pool.deinit();
 
             const signals = try allocator.alloc([2]fd_t, config.workers.count orelse Config.DEFAULT_WORKERS);
             errdefer allocator.free(signals);
@@ -267,7 +268,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         pub fn deinit(self: *Self) void {
             self.allocator.free(self._signals);
             self._router.deinit(self.allocator);
-            self._thread_pool.deinit(self.allocator);
+            self._thread_pool.deinit();
         }
 
         pub fn dispatchUndefined(_: *Self) Dispatcher(G, R) {
@@ -463,6 +464,20 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             }
         }
 
+        // This is always called from within a threadpool thread. For nonblocking,
+        // notifyingHandler (above) was the threadpool's main entry and it called this.
+        // For blocking, the threadpool was directed to the worker's handleConnection
+        // which eventually called this.
+        // thread_buf is a thread-specific configurable-sized buffer that we're
+        // free to use as we want. This is, by far, the most efficient memory
+        // we can use because it's allocated on server start and re-used on
+        // each request (which is safe, because, in blocking or nonblocking, once
+        // a request reaches this point, processing is blocking from the point
+        // of view of the server).
+        // We'll use thread_buf as part of a FallBackAllocator with the conn
+        // arena for our request ONLY. We cannot use thread_buf for the response
+        // because the response data must outlive the execution of this function
+        // (and thus, in nonblocking, outlives this threadpool's execution unit).
         pub fn handler(self: *Self, conn: *Conn, thread_buf: []u8) void {
             const aa = conn.arena.allocator();
 
@@ -616,13 +631,14 @@ fn websocketHandler(comptime H: type, server: *websocket.Server, stream: std.net
     server.handle(H, &handler, &conn);
 }
 
+// std.heap.StackFallbackAllocator is weird. First, it requires a comptime buffer
+// size (why?) second, it relies on private functions of the FixedBufferAllocator (why?)
+// So we write our own that doesn't have these limitations.
 const FallbackAllocator = struct {
     fixed: Allocator,
     fallback: Allocator,
     fba: *FixedBufferAllocator,
 
-    /// This function both fetches a `Allocator` interface to this
-    /// allocator *and* resets the internal buffer allocator.
     pub fn allocator(self: *FallbackAllocator) Allocator {
         return .{
             .ptr = self,
@@ -654,7 +670,8 @@ const FallbackAllocator = struct {
         _ = buf;
         _ = buf_align;
         _ = ra;
-        // hack. Always noop since our fallback is an arena
+        // hack.
+        // Always noop since, in our specific usage, we know fallback is an arena.
     }
 };
 

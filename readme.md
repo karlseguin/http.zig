@@ -237,9 +237,6 @@ pub fn main() !void {
 ...
 
 fn dispatcher(global: *Global, action: httpz.Action(Context), req: *httpz.Request, res: *httpz.Response) !void {
-    // If needed, req.arena is an std.mem.Allocator than can be used to allocate memory
-    // and it'll exist for the life of this request.
-
     const context = Context{
         .global = global,
 
@@ -286,11 +283,30 @@ var server = try ServerCtx(Dispatcher, Dispatcher).init(allocator, config, Dispa
 
 When used this way, httpz's routing, action error handling (hence why `handle` can't return an errorset), not found fallback and CORS handling are all bypassed.
 
+# Memory and Arenas
+Any allocations made for the response, such as the body or a header, must remain valid until **after** the action returns. To achieve this, use `res.arena` or the `res.writer()`:
+
+```zig
+fn arenaExample(req: *httpz.Request, res: *httpz.Response) !void {
+    const query = try req.query();
+    const name = query.get("name") orelse "stranger";
+    res.body = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
+}
+
+fn writerExample(req: *httpz.Request, res: *httpz.Response) !void {
+    const query = try req.query();
+    const name = query.get("name") orelse "stranger";
+    try std.fmt.format(res.writer(), "Hello {s}", .{name});
+}
+```
+
+However for temporary allocations that need only exist for the lifetime of the action itself, prefer `req.arena` which can be much faster. `req.arena` uses a FallbackAllocator first trying to allocate using a FixedBufferAllocator based on the `config.thread_pool.buffer_size` and falling back to the `res.arena`.
+
 ## httpz.Request
 The following fields are the most useful:
 
 * `method` - an httpz.Method enum
-* `arena` - an arena allocator that will be reset at the end of the request
+* `arena` - an allocator that is valid until the end of the action handler. This arena can be much faster than using res.arena, but cannot be used for any part of the response.
 * `url.path` - the path of the request (`[]const u8`)
 * `address` - the std.net.Address of the client
 
@@ -659,6 +675,13 @@ try httpz.listen(allocator, &router, .{
         // This applies back pressure to the above workers and ensures that, under load
         // pending requests get precedence over processing new requests.
         .backlog = 500,
+
+
+        // Size of the static buffer to give each thread. Memory usage will be 
+        // `count * buffer_size`. If you're making heavy use of `req.arena`, 
+        // consider increasing this value to accomodate the size of allocations
+        // you are making.
+        .buffer_size = 8192,
     },
 
     // defaults to null

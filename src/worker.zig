@@ -458,7 +458,7 @@ pub const Conn = struct {
     next: ?*Conn,
     prev: ?*Conn,
 
-    fn init(allocator: Allocator, buffer_pool: *BufferPool, ws: *websocket.Server, config: *const Config) !Conn {
+    fn init(allocator: Allocator, buffer_pool: *BufferPool, ws: *websocket.Server, io_mode: IOMode, config: *const Config) !Conn {
         const arena = try allocator.create(std.heap.ArenaAllocator);
         errdefer allocator.destroy(arena);
 
@@ -476,7 +476,7 @@ pub const Conn = struct {
             .close = false,
             .state = .active,
             .websocket = ws,
-            .io_mode = .nonblocking,
+            .io_mode = io_mode,
             .poll_mode = .read,
             .stream = undefined,
             .address = undefined,
@@ -514,7 +514,7 @@ pub const Conn = struct {
     pub fn keepalive(self: *Conn) void {
         self.req_state.reset();
         self.res_state.reset();
-        _ = self.arena.reset(.free_all);
+        _ = self.arena.reset(.{.retain_with_limit = 8192});
     }
 
     // getting put back into the pool
@@ -745,6 +745,8 @@ const Manager = struct {
     }
 };
 
+// ConnPool is only used in nonblocking mode.
+// TODO: Can ConnPool be used in blocking mode too?
 const ConnPool = struct {
     conns: []*Conn,
     available: usize,
@@ -773,7 +775,7 @@ const ConnPool = struct {
         for (0..min) |i| {
             const conn = try mem_pool.create();
             errdefer mem_pool.destroy(conn);
-            conn.* = try Conn.init(allocator, buffer_pool, ws, config);
+            conn.* = try Conn.init(allocator, buffer_pool, ws, .nonblocking, config);
 
             conns[i] = conn;
             initialized += 1;
@@ -813,7 +815,7 @@ const ConnPool = struct {
 
         const conn = try self.mem_pool.create();
         errdefer self.mem_pool.destroy(conn);
-        conn.* = try Conn.init(self.allocator, self.buffer_pool, self.websocket, self.config);
+        conn.* = try Conn.init(self.allocator, self.buffer_pool, self.websocket, .nonblocking, self.config);
         return conn;
     }
 
@@ -1170,6 +1172,7 @@ pub fn Blocking(comptime S: type) type {
                     continue;
                 };
                 metrics.connection();
+                // calls handleConnection through the server's thread_pool
                 server._thread_pool.spawn(.{self, socket});
             }
         }
@@ -1180,23 +1183,28 @@ pub fn Blocking(comptime S: type) type {
             disown,
         };
 
-        pub fn handleConnection(self: *Self, socket: posix.socket_t) void {
-            // do we own the socket, it can be taken away from us
+        // Called in a worker thread. `thread_buf` is a thread-specific buffer that
+        // we are free to use as needed.
+        pub fn handleConnection(self: *Self, socket: posix.socket_t, thread_buf: []u8) void {
+            // Tracks whether or not we own `socket`. This almost always stays true
+            // but ownership/responsibility can be taken over. For example, if
+            // the connection is upgraded to a websocket connect, then the websocket
+            // code takes over and this function will just exit without closing
+            // the underlying socket.
             var own = true;
             defer if (own) posix.close(socket);
 
-            var conn = Conn.init(self.allocator, &self.buffer_pool, self.websocket, self.config) catch |err| {
-                log.err("Failed to initialize connectiont: {}", .{err});
+            var conn = Conn.init(self.allocator, &self.buffer_pool, self.websocket, .blocking, self.config) catch |err| {
+                log.err("Failed to initialize connection: {}", .{err});
                 return;
             };
             defer conn.deinit(self.allocator);
 
-            conn.io_mode = .blocking;
             conn.stream = .{.handle = socket};
 
             var is_keepalive = false;
             while (true) {
-                switch (self.handleRequest(&conn, is_keepalive) catch .close) {
+                switch (self.handleRequest(&conn, is_keepalive, thread_buf) catch .close) {
                     .keepalive => conn.keepalive(),
                     .close => break,
                     .disown => {
@@ -1209,7 +1217,7 @@ pub fn Blocking(comptime S: type) type {
             }
         }
 
-        fn handleRequest(self: *const Self, conn: *Conn, is_keepalive: bool) !HandleResult {
+        fn handleRequest(self: *const Self, conn: *Conn, is_keepalive: bool, thread_buf: []u8) !HandleResult {
             const stream = conn.stream;
             const timeout: ?Timeout = if (is_keepalive) self.timeout_keepalive else self.timeout_request;
 
@@ -1267,7 +1275,7 @@ pub fn Blocking(comptime S: type) type {
             }
 
             metrics.request();
-            self.server.handler(conn);
+            self.server.handler(conn, thread_buf);
             defer conn.doCallback();
 
             switch (conn.handover) {

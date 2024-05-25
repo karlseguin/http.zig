@@ -22,6 +22,7 @@ pub const Config = struct {
     pub const ThreadPool = struct {
         count: ?u16 = null,
         backlog: ?u32 = null,
+        buffer_size: ?usize = null,
     };
 
     pub const Worker = struct {
