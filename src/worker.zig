@@ -499,26 +499,26 @@ pub const Conn = struct {
 
     // this is the keepalive called by the NonBlocking codepath. It puts the
     // connection back in blocking mode (if it isn't already.)
-    pub fn keepaliveAndRestore(self: *Conn) !void {
+    pub fn keepaliveAndRestore(self: *Conn, retain_allocated_bytes: usize) !void {
         std.debug.assert(httpz.blockingMode() == false);
         if (self.io_mode == .blocking) {
             _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags);
             self.io_mode = .nonblocking;
         }
         self.poll_mode = .read;
-        self.keepalive();
+        self.keepalive(retain_allocated_bytes);
     }
 
     // This is called by the above keepaliveAndRestore, but also by the Blocking
     // worker directly.
-    pub fn keepalive(self: *Conn) void {
+    pub fn keepalive(self: *Conn, retain_allocated_bytes: usize) void {
         self.req_state.reset();
         self.res_state.reset();
-        _ = self.arena.reset(.{.retain_with_limit = 8192});
+        _ = self.arena.reset(.{.retain_with_limit = retain_allocated_bytes});
     }
 
     // getting put back into the pool
-    pub fn reset(self: *Conn, retain: usize) void {
+    pub fn reset(self: *Conn, retain_allocated_bytes: usize) void {
         self.close = false;
         self.next = null;
         self.prev = null;
@@ -528,7 +528,7 @@ pub const Conn = struct {
         self.io_mode = .nonblocking;
         self.req_state.reset();
         self.res_state.reset();
-        _ = self.arena.reset(.{.retain_with_limit = retain});
+        _ = self.arena.reset(.{.retain_with_limit = retain_allocated_bytes});
     }
 
     pub fn blocking(self: *Conn) !void {
@@ -582,8 +582,11 @@ const Manager = struct {
     timeout_request: u32,
     timeout_keepalive: u32,
 
-    // how many bytes should we retain our arena allocator between usage (can be 0)
+    // how many bytes should we retain in our arena allocator between usage (can be 0)
     retain_allocated_bytes: usize,
+
+    // how many bytes should we retain in our arena allocator between keepalive usage
+    retain_allocated_bytes_keepalive: usize,
 
     fn init(allocator: Allocator, ws: *websocket.Server, config: *const Config) !Manager {
         const buffer_pool = try allocator.create(BufferPool);
@@ -593,6 +596,13 @@ const Manager = struct {
         errdefer buffer_pool.deinit();
 
         const conn_pool = try ConnPool.init(allocator, buffer_pool, ws, config);
+        errdefer conn_pool.deinit();
+
+        const retain_allocated_bytes = config.workers.retain_allocated_bytes orelse 4096;
+        // always retain at least 8192, but if we're configured to retain more
+        // between non-keepalive usage, we might as well keep more between
+        // keepalive usage.
+        const retain_allocated_bytes_keepalive = @max(retain_allocated_bytes, 8192);
 
         return .{
             .len = 0,
@@ -601,7 +611,8 @@ const Manager = struct {
             .conn_pool = conn_pool,
             .allocator = allocator,
             .buffer_pool = buffer_pool,
-            .retain_allocated_bytes = config.workers.retain_allocated_bytes orelse 4096,
+            .retain_allocated_bytes = retain_allocated_bytes,
+            .retain_allocated_bytes_keepalive =retain_allocated_bytes_keepalive,
             .timeout_request = config.timeout.request orelse MAX_TIMEOUT,
             .timeout_keepalive = config.timeout.keepalive orelse MAX_TIMEOUT,
         };
@@ -662,7 +673,7 @@ const Manager = struct {
 
     fn keepalive(self: *Manager, conn: *Conn, now: u32) void {
         conn.doCallback();
-        conn.keepaliveAndRestore() catch {
+        conn.keepaliveAndRestore(self.retain_allocated_bytes_keepalive) catch {
             self.close(conn);
             return;
         };
@@ -823,7 +834,7 @@ const ConnPool = struct {
         return conn;
     }
 
-    fn release(self: *ConnPool, conn: *Conn, retain: usize) void {
+    fn release(self: *ConnPool, conn: *Conn, retain_allocated_bytes: usize) void {
         const conns = self.conns;
         const available = self.available;
         if (available == conns.len) {
@@ -832,7 +843,7 @@ const ConnPool = struct {
             return;
         }
 
-        conn.reset(retain);
+        conn.reset(retain_allocated_bytes);
         conns[available] = conn;
         self.available = available + 1;
     }
@@ -1102,6 +1113,7 @@ pub fn Blocking(comptime S: type) type {
         timeout_request: ?Timeout,
         timeout_keepalive: ?Timeout,
         timeout_write_error: Timeout,
+        retain_allocated_bytes_keepalive: usize,
 
         const Timeout = struct {
             sec: u32,
@@ -1139,7 +1151,7 @@ pub fn Blocking(comptime S: type) type {
                 // request processing state to a kepealive state, we remove the timeout
                 timeout_keepalive = Timeout.init(0);
             }
-
+            const retain_allocated_bytes_keepalive = config.workers.retain_allocated_bytes orelse 8192;
 
             return .{
                 .running = true,
@@ -1151,6 +1163,7 @@ pub fn Blocking(comptime S: type) type {
                 .timeout_request = timeout_request,
                 .timeout_keepalive = timeout_keepalive,
                 .timeout_write_error = Timeout.init(5),
+                .retain_allocated_bytes_keepalive = retain_allocated_bytes_keepalive,
             };
         }
 
@@ -1209,7 +1222,7 @@ pub fn Blocking(comptime S: type) type {
             var is_keepalive = false;
             while (true) {
                 switch (self.handleRequest(&conn, is_keepalive, thread_buf) catch .close) {
-                    .keepalive => conn.keepalive(),
+                    .keepalive => conn.keepalive(self.retain_allocated_bytes_keepalive),
                     .close => break,
                     .disown => {
                         // something (e.g. websocket) has taken over ownership of the socket
@@ -1384,13 +1397,13 @@ test "ConnPool" {
     try t.expectEqual(true, s1.req_state.buf.ptr != s3.req_state.buf.ptr);
     try t.expectEqual(true, s2.req_state.buf.ptr != s3.req_state.buf.ptr);
 
-    p.release(s2);
+    p.release(s2, 4096);
     const s4 = try p.acquire();
     try t.expectEqual(true, s4.req_state.buf.ptr == s2.req_state.buf.ptr);
 
-    p.release(s1);
-    p.release(s3);
-    p.release(s4);
+    p.release(s1, 0);
+    p.release(s3, 0);
+    p.release(s4, 0);
 }
 
 test "List: insert & remove" {

@@ -1491,9 +1491,9 @@ test "request: fuzz" {
 
         for (0..number_of_requests) |_| {
             defer if (@import("httpz.zig").blockingMode()) {
-                ctx.conn.keepalive();
+                ctx.conn.keepalive(4096);
             } else {
-                ctx.conn.keepaliveAndRestore() catch unreachable;
+                ctx.conn.keepaliveAndRestore(4096) catch unreachable;
             };
 
             const method = randomMethod(random);
