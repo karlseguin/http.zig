@@ -631,9 +631,10 @@ fn websocketHandler(comptime H: type, server: *websocket.Server, stream: std.net
     server.handle(H, &handler, &conn);
 }
 
-// std.heap.StackFallbackAllocator is weird. First, it requires a comptime buffer
-// size (why?) second, it relies on private functions of the FixedBufferAllocator (why?)
-// So we write our own that doesn't have these limitations.
+// std.heap.StackFallbackAllocator is very specific. It's really _stack_ as it
+// requires a comptime size. Also, it uses non-public calls from the FixedBufferAllocator.
+// There should be a more generic FallbackAllocator that just takes 2 allocators...
+// which is what this is.
 const FallbackAllocator = struct {
     fixed: Allocator,
     fallback: Allocator,

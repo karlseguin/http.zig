@@ -518,7 +518,7 @@ pub const Conn = struct {
     }
 
     // getting put back into the pool
-    pub fn reset(self: *Conn) void {
+    pub fn reset(self: *Conn, retain: usize) void {
         self.close = false;
         self.next = null;
         self.prev = null;
@@ -528,7 +528,7 @@ pub const Conn = struct {
         self.io_mode = .nonblocking;
         self.req_state.reset();
         self.res_state.reset();
-        _ = self.arena.reset(.free_all);
+        _ = self.arena.reset(.{.retain_with_limit = retain});
     }
 
     pub fn blocking(self: *Conn) !void {
@@ -582,6 +582,9 @@ const Manager = struct {
     timeout_request: u32,
     timeout_keepalive: u32,
 
+    // how many bytes should we retain our arena allocator between usage (can be 0)
+    retain_allocated_bytes: usize,
+
     fn init(allocator: Allocator, ws: *websocket.Server, config: *const Config) !Manager {
         const buffer_pool = try allocator.create(BufferPool);
         errdefer allocator.destroy(buffer_pool);
@@ -598,6 +601,7 @@ const Manager = struct {
             .conn_pool = conn_pool,
             .allocator = allocator,
             .buffer_pool = buffer_pool,
+            .retain_allocated_bytes = config.workers.retain_allocated_bytes orelse 4096,
             .timeout_request = config.timeout.request orelse MAX_TIMEOUT,
             .timeout_keepalive = config.timeout.keepalive orelse MAX_TIMEOUT,
         };
@@ -675,7 +679,7 @@ const Manager = struct {
             .active => self.active_list.remove(conn),
             .keepalive => self.keepalive_list.remove(conn),
         }
-        self.conn_pool.release(conn);
+        self.conn_pool.release(conn, self.retain_allocated_bytes);
         self.len -= 1;
     }
 
@@ -685,7 +689,7 @@ const Manager = struct {
             .active => self.active_list.remove(conn),
             .keepalive => self.keepalive_list.remove(conn),
         }
-        self.conn_pool.release(conn);
+        self.conn_pool.release(conn, self.retain_allocated_bytes);
         self.len -= 1;
     }
 
@@ -819,7 +823,7 @@ const ConnPool = struct {
         return conn;
     }
 
-    fn release(self: *ConnPool, conn: *Conn) void {
+    fn release(self: *ConnPool, conn: *Conn, retain: usize) void {
         const conns = self.conns;
         const available = self.available;
         if (available == conns.len) {
@@ -828,7 +832,7 @@ const ConnPool = struct {
             return;
         }
 
-        conn.reset();
+        conn.reset(retain);
         conns[available] = conn;
         self.available = available + 1;
     }

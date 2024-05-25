@@ -31,6 +31,7 @@ pub const Config = struct {
         min_conn: ?u16 = null,
         large_buffer_count: ?u16 = null,
         large_buffer_size: ?u32 = null,
+        retain_allocated_bytes: ?usize = null,
     };
 
     pub const Request = struct {

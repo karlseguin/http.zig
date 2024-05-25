@@ -661,6 +661,10 @@ try httpz.listen(allocator, &router, .{
 
         // The size of each large buffer.
         .large_buffer_size = 65536,
+
+        // Size of bytes retained for the connection arena between use. This will
+        // result in up to `min_conn * retain_allocated_bytes` of memory usage.
+        .retain_allocated_bytes = 4096,
     },
 
     // configures the threadpool which processes requests. The threadpool is 
