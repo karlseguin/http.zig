@@ -59,6 +59,11 @@ pub const Response = struct {
     // or created with res.arena. Use res.writer() for other cases.
     body: ?[]const u8,
 
+    // If we have created a writer for this response, then use the same instance of
+    // the writer for subsequent calls. Middleware may chain calls with the request
+    // which may ask for res.writer()
+    use_writer: ?Writer = null,
+
     pub const State = Self.State;
 
     // Should not be called directly, but initialized through a pool
@@ -103,7 +108,7 @@ pub const Response = struct {
         self.headers.add(n, v);
     }
 
-    pub fn startEventStream(self: *Response, ctx: anytype, comptime handler: fn(@TypeOf(ctx),  std.net.Stream) void) !void {
+    pub fn startEventStream(self: *Response, ctx: anytype, comptime handler: fn (@TypeOf(ctx), std.net.Stream) void) !void {
         self.content_type = .EVENTS;
         self.headers.add("Cache-Control", "no-cache");
         self.headers.add("Connection", "keep-alive");
@@ -118,7 +123,7 @@ pub const Response = struct {
 
         self.disown();
 
-        const thread = try std.Thread.spawn(.{}, handler, .{ctx, stream});
+        const thread = try std.Thread.spawn(.{}, handler, .{ ctx, stream });
         thread.detach();
     }
 
@@ -161,20 +166,23 @@ pub const Response = struct {
         buf[1] = '\n';
         const len = 2 + std.fmt.formatIntBuf(buf[2..], data.len, 16, .upper, .{});
         buf[len] = '\r';
-        buf[len+1] = '\n';
-        try stream.writeAll(buf[0..len+2]);
+        buf[len + 1] = '\n';
+        try stream.writeAll(buf[0 .. len + 2]);
         try stream.writeAll(data);
     }
 
     pub fn writer(self: *Response) Writer.IOWriter {
-        return .{ .context = Writer.init(self) };
+        if (self.use_writer == null) {
+            self.use_writer = Writer.init(self); // this should be used as a singleton per response
+        }
+        return .{ .context = self.use_writer.? };
     }
 
     pub fn directWriter(self: *Response) Writer {
         return Writer.init(self);
     }
 
-    pub fn callback(self: *Response, func: *const fn(*anyopaque) void, state: *anyopaque) void {
+    pub fn callback(self: *Response, func: *const fn (*anyopaque) void, state: *anyopaque) void {
         self.conn.callback = .{
             .func = func,
             .state = state,
@@ -276,7 +284,6 @@ pub const Response = struct {
             state.body_buffer = try state.buffer_pool.grow(state.arena.allocator(), bb, pos, new_capacity);
         }
     };
-
 };
 
 // All the upfront memory allocation that we can do. Gets re-used from request
