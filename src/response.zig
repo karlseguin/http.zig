@@ -139,8 +139,8 @@ pub const Response = struct {
         try stream.writeAll(state.header_buffer.data[0..state.header_len]);
         if (state.body) |b| {
             try stream.writeAll(b);
-        } else if (state.body_buffer) |b| {
-            try stream.writeAll(b.data[0..state.body_len]);
+        } else if (state.body_len > 0) {
+            try stream.writeAll(state.body_buffer.data[0..state.body_len]);
         }
     }
 
@@ -190,13 +190,8 @@ pub const Response = struct {
         pub const IOWriter = std.io.Writer(Writer, error{OutOfMemory}, Writer.write);
 
         fn init(res: *Response) Writer {
-            const state = &res.conn.res_state;
-            // safe to assume that we're going to have a body, we'll start by trying
-            // to fit it in our static_body_buffer
-            state.body_buffer = state.static_body_buffer;
-
             return .{
-                .state = state,
+                .state = &res.conn.res_state,
             };
         }
 
@@ -209,14 +204,14 @@ pub const Response = struct {
         pub fn writeByte(self: Writer, b: u8) !void {
             try self.ensureSpace(1);
             const pos = self.state.body_len;
-            self.state.body_buffer.?.data[pos] = b;
+            self.state.body_buffer.data[pos] = b;
             self.state.body_len = pos + 1;
         }
 
         pub fn writeByteNTimes(self: Writer, b: u8, n: usize) !void {
             try self.ensureSpace(n);
             const pos = self.state.body_len;
-            var buf = self.state.body_buffer.?.data;
+            var buf = self.state.body_buffer.data;
             for (pos..pos + n) |i| {
                 buf[i] = b;
             }
@@ -228,7 +223,7 @@ pub const Response = struct {
             try self.ensureSpace(l);
 
             var pos = self.state.body_len;
-            var buf = self.state.body_buffer.?.data;
+            var buf = self.state.body_buffer.data;
 
             for (0..n) |_| {
                 const end_pos = pos + bytes.len;
@@ -242,7 +237,7 @@ pub const Response = struct {
             try self.ensureSpace(data.len);
             const pos = self.state.body_len;
             const end_pos = pos + data.len;
-            @memcpy(self.state.body_buffer.?.data[pos..end_pos], data);
+            @memcpy(self.state.body_buffer.data[pos..end_pos], data);
             self.state.body_len = end_pos;
         }
 
@@ -259,7 +254,7 @@ pub const Response = struct {
             const state = self.state;
             const pos = state.body_len;
             const required_capacity = pos + n;
-            const bb = &self.state.body_buffer.?;
+            const bb = &self.state.body_buffer;
 
             const cap = bb.data.len;
             if (cap > required_capacity) {
@@ -314,8 +309,8 @@ pub const State = struct {
     static_body_buffer: buffer.Buffer,
 
     // Either points to static_body_buffer, or is something from the buffer pool
-    // This is what we're writing. Null means no body
-    body_buffer: ?buffer.Buffer,
+    // This is what we're writing.
+    body_buffer: buffer.Buffer,
 
     // Length of body, when sending, we'll write: body_buffer.data[pos..body_len];
     body_len: usize,
@@ -353,7 +348,7 @@ pub const State = struct {
             .buffer_pool = buffer_pool,
             .headers = headers,
             .body = null,
-            .body_buffer = null,
+            .body_buffer = body_buffer,
             .header_buffer = header_buffer,
             .static_body_buffer = body_buffer,
             .static_header_buffer = header_buffer,
@@ -362,10 +357,7 @@ pub const State = struct {
 
     pub fn deinit(self: *State, allocator: Allocator) void {
         // not our job to clear the arena!
-        if (self.body_buffer) |buf| {
-            self.buffer_pool.release(buf);
-            self.body_buffer = null;
-        }
+        self.buffer_pool.release(self.body_buffer);
         self.buffer_pool.free(self.static_body_buffer);
 
         self.buffer_pool.release(self.header_buffer);
@@ -376,10 +368,9 @@ pub const State = struct {
 
     pub fn reset(self: *State) void {
         // not our job to clear the arena!
-        if (self.body_buffer) |buf| {
-            self.buffer_pool.release(buf);
-            self.body_buffer = null;
-        }
+        self.buffer_pool.release(self.body_buffer);
+        self.body_buffer = self.static_body_buffer;
+
         self.buffer_pool.release(self.header_buffer);
         self.header_buffer = self.static_header_buffer;
 
@@ -808,6 +799,24 @@ test "response: direct writer" {
 
     try res.write();
     try ctx.expect("HTTP/1.1 200 \r\nContent-Length: 9\r\n\r\n[123,456]");
+}
+
+// this used to crash
+test "response: multiple writers" {
+    defer t.reset();
+    var ctx = t.Context.init(.{});
+    defer ctx.deinit();
+    var res = ctx.response();
+    {
+        var w = res.writer();
+        try w.writeAll("a" ** 5000);
+    }
+    {
+        var w = res.writer();
+        try w.writeAll("z" ** 10);
+    }
+    try res.write();
+    try ctx.expect("HTTP/1.1 200 \r\nContent-Length: 5010\r\n\r\n" ++ ("a" ** 5000) ++ ("z" ** 10));
 }
 
 test "response: written" {

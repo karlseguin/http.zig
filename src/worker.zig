@@ -294,10 +294,10 @@ pub fn NonBlocking(comptime S: type) type {
             } else if (state.body) |b| {
                 len = b.len;
                 buf = b;
-            } else {
+            } else if (state.body_len > 0) {
                 // we can only be here if there's a body
                 len = state.body_len;
-                buf = state.body_buffer.?.data;
+                buf = state.body_buffer.data;
             }
 
             var pos = state.pos;
@@ -326,8 +326,8 @@ pub fn NonBlocking(comptime S: type) type {
                     if (state.body) |b| {
                         buf = b;
                         len = buf.len;
-                    } else if (state.body_buffer) |b| {
-                        buf = b.data;
+                    } else if (state.body_len > 0) {
+                        buf = state.body_buffer.data;
                         len = state.body_len;
                     } else {
                         break;
@@ -1316,8 +1316,8 @@ pub fn Blocking(comptime S: type) type {
             try stream.writeAll(state.header_buffer.data[0..state.header_len]);
             if (state.body) |b| {
                 try stream.writeAll(b);
-            } else if (state.body_buffer) |b| {
-                try stream.writeAll(b.data[0..state.body_len]);
+            } else if (state.body_len > 0) {
+                try stream.writeAll(state.body_buffer.data[0..state.body_len]);
             }
         }
     };
