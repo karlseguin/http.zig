@@ -15,7 +15,7 @@ pub fn ThreadPool(comptime F: anytype) type {
     // and FullArgs would be our 3 args....
     const FullArgs = std.meta.ArgsTuple(@TypeOf(F));
     const full_fields = std.meta.fields(FullArgs);
-    const ARG_COUNT = full_fields.len;
+    const ARG_COUNT = full_fields.len - 1;
 
     // Args will be FullArgs[0..len-1], so in the above example, args would be
     // (*Server, *Conn)
@@ -27,12 +27,15 @@ pub fn ThreadPool(comptime F: anytype) type {
     // []u8. But this ThreadPool is private and being used for 2 specific cases
     // that we control.
 
-    const Args = @Type(.{
+    var fields: [ARG_COUNT]std.builtin.Type.StructField = undefined;
+    inline for (full_fields[0..ARG_COUNT], 0..) |field, index| fields[index] = field;
+
+    const Args = comptime @Type(.{
         .Struct = .{
             .layout = .auto,
             .is_tuple = true,
-            .fields = full_fields[0..ARG_COUNT-1],
-            .decls = &[_]std.builtin.Type.Declaration{},
+            .fields = &fields,
+            .decls = &.{},
         },
     });
 
@@ -89,7 +92,7 @@ pub fn ThreadPool(comptime F: anytype) type {
                 const buffer = try allocator.alloc(u8, opts.buffer_size);
                 errdefer allocator.free(buffer);
 
-                threads[i] = try Thread.spawn(.{}, Self.worker, .{thread_pool, buffer});
+                threads[i] = try Thread.spawn(.{}, Self.worker, .{ thread_pool, buffer });
                 started += 1;
             }
 
@@ -156,8 +159,8 @@ pub fn ThreadPool(comptime F: anytype) type {
 
                 // convert Args to FullArgs, i.e. inject buffer as the last argument
                 var full_args: FullArgs = undefined;
-                full_args[ARG_COUNT - 1] = buffer;
-                inline for (0..ARG_COUNT - 1) |i| {
+                full_args[ARG_COUNT] = buffer;
+                inline for (0..ARG_COUNT) |i| {
                     full_args[i] = args[i];
                 }
                 @call(.auto, F, full_args);
