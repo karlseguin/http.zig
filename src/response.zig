@@ -166,6 +166,10 @@ pub const Response = struct {
         try stream.writeAll(data);
     }
 
+    pub fn clearWriter(self: *Response) void {
+        self.conn.res_state.body_len = 0;
+    }
+
     pub fn writer(self: *Response) Writer.IOWriter {
         return .{ .context = Writer.init(self) };
     }
@@ -271,7 +275,6 @@ pub const Response = struct {
             state.body_buffer = try state.buffer_pool.grow(state.arena.allocator(), bb, pos, new_capacity);
         }
     };
-
 };
 
 // All the upfront memory allocation that we can do. Gets re-used from request
@@ -834,4 +837,20 @@ test "response: written" {
     res.body = "yo!";
     try res.write();
     try ctx.expect("");
+}
+
+test "response: clearWriter" {
+    defer t.reset();
+    var ctx = t.Context.init(.{});
+    defer ctx.deinit();
+
+    var res = ctx.response();
+    var writer = res.writer();
+
+    try writer.writeAll("abc");
+    res.clearWriter();
+    try writer.writeAll("123");
+
+    try res.write();
+    try ctx.expect("HTTP/1.1 200 \r\nContent-Length: 3\r\n\r\n123");
 }
