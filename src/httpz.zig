@@ -505,27 +505,37 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             }
 
             if (res.disowned) {
+                // we want to disown the socket, which is to say we no longer
+                // want to be responsible for it. There's nothing here for us
+                // to do, but we do need to let the worker know about this, since
+                // its the own that actually owns the socket so it has to disown
+                // it (one example of where we disown is when the request is
+                // upgraded to a websocket connection.)
                 conn.handover = .disown;
-            } else  blk: {
-                if (res.chunked) {
-                    conn.stream.writeAll("\r\n0\r\n\r\n") catch {
-                        conn.handover = .close;
-                        break :blk;
-                    };
-                }
-                const request_count_limit = conn.request_count == self._max_request_per_connection;
-                if (request_count_limit == false and req.canKeepAlive()) {
-                    conn.handover = if (res.written == true) .keepalive else .write_and_keepalive;
-                } else {
-                    res.keepalive = false;
-                    conn.handover = if (res.written == true) .close else .write_and_close;
-                }
-                if (res.written == false) {
-                    conn.res_state.prepareForWrite(&res) catch |err| {
-                        log.err("Failed to prepare response for writing: {}", .{err});
-                        conn.handover = .close;
-                    };
-                }
+                return;
+            }
+
+            if (res.chunked) {
+                // If the response was chunked, then the socket was placed in
+                // blocking mode, and the trailing chunk hasn't been written yet
+                conn.stream.writeAll("\r\n0\r\n\r\n") catch {
+                    conn.handover = .close;
+                    return;
+                };
+            }
+
+            const request_count_limit = conn.request_count == self._max_request_per_connection;
+            if (request_count_limit == false and req.canKeepAlive()) {
+                conn.handover = if (res.written == true) .keepalive else .write_and_keepalive;
+            } else {
+                res.keepalive = false;
+                conn.handover = if (res.written == true) .close else .write_and_close;
+            }
+            if (res.written == false) {
+                conn.res_state.prepareForWrite(&res) catch |err| {
+                    log.err("Failed to prepare response for writing: {}", .{err});
+                    conn.handover = .close;
+                };
             }
         }
 

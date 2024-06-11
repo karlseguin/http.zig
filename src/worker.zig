@@ -526,6 +526,7 @@ pub const Conn = struct {
         self.address = undefined;
         self.poll_mode = .read;
         self.io_mode = .nonblocking;
+        self.request_count = 0;
         self.req_state.reset();
         self.res_state.reset();
         _ = self.arena.reset(.{.retain_with_limit = retain_allocated_bytes});
