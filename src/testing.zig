@@ -203,7 +203,6 @@ pub const Testing = struct {
     pub fn parseResponse(self: *Testing) !Response {
         if (self.parsed_response) |r| return r;
 
-        self.conn.doCallback();
         try self.res.write();
         self._ctx.close();
 

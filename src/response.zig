@@ -122,25 +122,95 @@ pub const Response = struct {
         thread.detach();
     }
 
-    // App wants to force the response to be written. Unfortunately, for the time
-    // being, we achieve this by forcing the socket into blocking mode. This is
-    // necessary since we don't have a mechanism for callbacks/async with the app.
     pub fn write(self: *Response) !void {
-        if (self.written) return;
-        self.written = true;
+        if (self.written) {
+            return;
+        }
 
         const conn = self.conn;
-        try conn.blocking();
+        const stream = conn.stream;
+
+        self.written = true;
+        if (self.chunked) {
+            // If the response was chunked, then we've already written the header
+            // the connection is already in blocking mode, but the trailing chunk
+            // hasn't bene written yet. We'll write that now, and that's it.
+            return stream.writeAll("\r\n0\r\n\r\n");
+        }
+
+        // We don't know if the socket is in blocking or non blocking mode.
+        // And we don't care.
+        // We'll write the response, if it's blocking, so be it.
+        // If it's non-blocking and doesn't block, great.
+        // But, if it's non-blocking and DOES block, we'll switch to blocking
+        // and retry.
 
         const state = &conn.res_state;
         try state.prepareForWrite(self);
 
-        const stream = conn.stream;
-        try stream.writeAll(state.header_buffer.data[0..state.header_len]);
+        var body: []const u8 = "";
         if (state.body) |b| {
-            try stream.writeAll(b);
+            body = b;
         } else if (state.body_len > 0) {
-            try stream.writeAll(state.body_buffer.data[0..state.body_len]);
+            body = state.body_buffer.data[0..state.body_len];
+        }
+
+        var hdr_len = state.header_len;
+        var body_len = body.len;
+
+
+        if (comptime httpz.blockingMode()) {
+            // zig's std.posix.writev has a weird (broken) fallback implementation
+            // for windows, so we'll keep this real simple (especially since
+            // we know we're in blocking)
+            try stream.writeAll(state.header_buffer.data[0..hdr_len]);
+            if (body_len > 0) {
+                try stream.writeAll(body);
+            }
+            return;
+        }
+
+        var vec = [2]std.posix.iovec_const{
+            .{.len = hdr_len, .base = state.header_buffer.data.ptr},
+            .{.len = body_len, .base = body.ptr},
+        };
+
+        while (true) {
+            const n = std.posix.writev(stream.handle, &vec) catch |err| switch (err) {
+                error.WouldBlock => {
+                    try conn.blocking();
+                    continue;
+                },
+                else => return err,
+            };
+
+            if (n == 0) {
+                return error.Closed;
+            }
+
+           if (hdr_len > 0) {
+                // in the writev that we just did, we still had the header
+                // (or part of it) to write.
+
+                if (n >= hdr_len) {
+                    // but this last write wrote all of the header (and maybe some of the body, how exciting (are you excited? I am))
+                    body_len -= n - hdr_len;
+                    hdr_len = 0;
+                } else {
+                    // this last write didn't manage to get through our header
+                    hdr_len -= n;
+                }
+           } else {
+                // in the writev that we just did, we only had a body
+                body_len -= n;
+           }
+
+            if (body_len == 0) {
+                return;
+            }
+
+            vec[0].len = hdr_len;
+            vec[1].len = body_len;
         }
     }
 
@@ -149,7 +219,6 @@ pub const Response = struct {
         const stream = conn.stream;
         const state = &conn.res_state;
         if (!self.chunked) {
-            self.written = true;
             self.chunked = true;
             try conn.blocking();
 

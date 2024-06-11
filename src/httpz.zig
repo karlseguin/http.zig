@@ -243,7 +243,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             var thread_pool = try TP.init(allocator, .{
                 .count = config.threadPoolCount(),
                 .backlog = config.thread_pool.backlog orelse 500,
-                .buffer_size = config.thread_pool.buffer_size orelse 8192,
+                .buffer_size = config.thread_pool.buffer_size orelse 32_768,
             });
             errdefer thread_pool.deinit();
 
@@ -487,8 +487,10 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 .fallback = aa,
                 .fixed = fba.allocator(),
             };
-            var req = Request.init(fb.allocator(), conn);
-            var res = Response.init(aa, conn);
+
+            const allocator = fb.allocator();
+            var req = Request.init(allocator, conn);
+            var res = Response.init(allocator, conn);
 
             if (comptime hasHandle(G)) {
                 @call(.auto, G.handle, .{self.ctx, &req, &res});
@@ -515,28 +517,11 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 return;
             }
 
-            if (res.chunked) {
-                // If the response was chunked, then the socket was placed in
-                // blocking mode, and the trailing chunk hasn't been written yet
-                conn.stream.writeAll("\r\n0\r\n\r\n") catch {
-                    conn.handover = .close;
-                    return;
-                };
-            }
-
-            const request_count_limit = conn.request_count == self._max_request_per_connection;
-            if (request_count_limit == false and req.canKeepAlive()) {
-                conn.handover = if (res.written == true) .keepalive else .write_and_keepalive;
-            } else {
-                res.keepalive = false;
-                conn.handover = if (res.written == true) .close else .write_and_close;
-            }
-            if (res.written == false) {
-                conn.res_state.prepareForWrite(&res) catch |err| {
-                    log.err("Failed to prepare response for writing: {}", .{err});
-                    conn.handover = .close;
-                };
-            }
+            res.write() catch {
+                conn.handover = .close;
+                return;
+            };
+            conn.handover = if (conn.request_count < self._max_request_per_connection and req.canKeepAlive()) .keepalive else .close;
         }
 
         inline fn dispatch(self: *const Self, dispatchable_action: ?DispatchableAction(G, R), req: *Request, res: *Response) !void {
@@ -699,7 +684,6 @@ test {
         router.get("/test/query", testReqQuery);
         router.get("/test/stream", testEventStream);
         router.get("/test/chunked", testChunked);
-        router.get("/test/callback", testCallback);
         router.allC("/test/dispatcher", testDispatcherAction, .{ .dispatcher = testDispatcher1 });
         var thread = try default_server.listenInNewThread();
         thread.detach();
@@ -1144,15 +1128,6 @@ test "httpz: request in chunks" {
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 18\r\n\r\nversion=v2,user=11", testReadAll(stream, &buf));
 }
 
-test "httpz: callback" {
-    const stream = testStream(5992);
-    defer stream.close();
-    try stream.writeAll("GET /test/callback HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
-
-    var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 3\r\n\r\nres", testReadAll(stream, &buf));
-}
-
 test "httpz: dispatcher handle" {
     const stream = testStream(5996);
     defer stream.close();
@@ -1195,24 +1170,6 @@ fn testJsonRes(_: *Request, res: *Response) !void {
 fn testEventStream(_: *Request, res: *Response) !void {
     res.status = 818;
     try res.startEventStream(StreamContext{.data = "hello"}, StreamContext.handle);
-}
-
-const CallbackState = struct {
-    body: []const u8,
-};
-
-fn testCallback(_: *Request, res: *Response) !void {
-    const state = try t.allocator.create(CallbackState);
-    state.body = try t.allocator.dupe(u8, "res");
-
-    res.body = state.body;
-    res.callback(testCallbackClean, @ptrCast(state));
-}
-
-fn testCallbackClean(state: *anyopaque) void {
-    const cs: *CallbackState = @alignCast(@ptrCast(state));
-    t.allocator.free(cs.body);
-    t.allocator.destroy(cs);
 }
 
 const StreamContext = struct {

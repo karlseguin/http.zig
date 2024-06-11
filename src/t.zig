@@ -109,7 +109,6 @@ pub const Context = struct {
             .request_count = 0,
             .close = false,
             .io_mode = .blocking,
-            .poll_mode = .read,
             .socket_flags = 0,
             .arena = conn_arena,
         };

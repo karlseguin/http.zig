@@ -132,11 +132,11 @@ pub fn NonBlocking(comptime S: type) type {
 
                     const conn: *align(8) Conn = @ptrFromInt(data);
                     manager.active(conn, now);
-                    const result = switch (conn.poll_mode) {
-                        .read => self.handleRequest(conn),
-                        .write => self.write(conn) catch .close,
-                    };
-                    self.handleResult(result, conn, now);
+                    if (self.handleRequest(conn) == false) {
+                        // error in parsing/handling the request, we're closing
+                        // this connection
+                        manager.close(conn);
+                    }
                 }
             }
         }
@@ -174,39 +174,27 @@ pub fn NonBlocking(comptime S: type) type {
             }
         }
 
-        const HandleResult = enum {
-            close,
-            keepalive,
-            executing,
-            wait_for_socket,
-        };
-
-        pub fn handleRequest(self: *Self, conn: *Conn) HandleResult {
+        pub fn handleRequest(self: *Self, conn: *Conn) bool {
             const stream = conn.stream;
 
             const done = conn.req_state.parse(stream) catch |err| {
-                if (requestParseError(conn, err)) {
-                    // requestParseError prepared a response for us (in conn)
-                    // we should try to write it.
-                    return self.write(conn) catch .close;
-                }
-                return .close;
+                requestParseError(conn, err) catch {};
+                return false;
             };
 
             if (done == false) {
                 // we need to wait for more data
                 self.loop.monitorRead(conn, true) catch |err| {
-                    if (serverError(conn, "unknown event loop error: {}", err)) {
-                        return self.write(conn) catch .close;
-                    }
+                    serverError(conn, "unknown event loop error: {}", err) catch {};
+                    return false;
                 };
-                return .wait_for_socket;
+                return true;
             }
 
             metrics.request();
             const server = self.server;
             server._thread_pool.spawn(.{server, self, conn});
-            return .executing;
+            return true;
         }
 
         fn processSignal(self: *Self, signal: posix.fd_t, now: u32) bool {
@@ -247,12 +235,15 @@ pub fn NonBlocking(comptime S: type) type {
 
         fn processHandover(self: *Self, conn: *Conn, now: u32) void {
             switch (conn.handover) {
-                .write_and_close, .write_and_keepalive => {
-                    const result = self.write(conn) catch .close;
-                    self.handleResult(result, conn, now);
+                .keepalive => {
+                    self.loop.monitorRead(conn, true) catch {
+                        metrics.internalError();
+                        self.manager.close(conn);
+                        return;
+                    };
+                    self.manager.keepalive(conn, now);
                 },
                 .close => self.manager.close(conn),
-                .keepalive => self.handleResult(.keepalive, conn, now),
                 .disown => {
                     if (self.loop.remove(conn)) {
                         self.manager.disown(conn);
@@ -260,98 +251,6 @@ pub fn NonBlocking(comptime S: type) type {
                         self.manager.close(conn);
                     }
                 },
-            }
-        }
-
-        fn handleResult(self: *Self, result: HandleResult, conn: *Conn, now: u32) void {
-            var manager = &self.manager;
-            switch (result) {
-                .keepalive => blk: {
-                    self.loop.monitorRead(conn, true) catch {
-                        metrics.internalError();
-                        manager.close(conn);
-                        break :blk;
-                    };
-                    conn.poll_mode = .read;
-                    manager.keepalive(conn, now);
-                },
-                .close => manager.close(conn),
-                .wait_for_socket, .executing => {},
-            }
-        }
-
-        fn write(self: *Self, conn: *Conn) !HandleResult {
-            const stream = conn.stream;
-            var state = &conn.res_state;
-            var stage = state.stage;
-
-            var len: usize = 0;
-            var buf: []const u8 = undefined;
-
-            if (stage == .header) {
-                len = state.header_len;
-                buf = state.header_buffer.data;
-            } else if (state.body) |b| {
-                len = b.len;
-                buf = b;
-            } else if (state.body_len > 0) {
-                // we can only be here if there's a body
-                len = state.body_len;
-                buf = state.body_buffer.data;
-            }
-
-            var pos = state.pos;
-            while (pos < len) {
-                const n = stream.write(buf[pos..len]) catch |err| {
-                    if (err != error.WouldBlock) {
-                        return .close;
-                    }
-
-                    // even if poll_mode was already .write, we need to re-arm
-                    // the event filter, since we registered it as DISPATCH (kqueue)
-                    // and ONESHOT (epoll)
-                    conn.poll_mode = .write;
-                    try self.loop.monitorWrite(conn);
-
-                    state.pos = pos;
-                    state.stage = stage;
-                    // we need to wait for more data
-                    return .wait_for_socket;
-                };
-
-                pos += n;
-                if (pos == len) {
-                    if (stage == .body) break; // done
-
-                    if (state.body) |b| {
-                        buf = b;
-                        len = buf.len;
-                    } else if (state.body_len > 0) {
-                        buf = state.body_buffer.data;
-                        len = state.body_len;
-                    } else {
-                        break;
-                    }
-                    pos = 0;
-                    stage = .body;
-                }
-            }
-
-            if (conn.close) {
-                // This connection is going to be closed. Don't waste time putting it
-                // back in read mode.
-                return .close;
-            }
-
-            return .keepalive;
-        }
-
-        pub fn disown(self: *Self, conn: *Conn) void {
-            // Called from the handler thread pool.
-            if (self.loop.remove(conn)) {
-                self.manager.disown(conn);
-            } else |_| {
-                self.manager.close(conn);
             }
         }
     };
@@ -378,16 +277,6 @@ pub const Conn = struct {
         nonblocking,
     };
 
-    // This is largely done to avoid unecessry syscalls. When our response is ready
-    // we'll try to send it then and there. Only if we get a WouldBlock do we
-    // start monitoring for write/out events from our event loop. When that happens
-    // poll_mode becomes .write, and that tells us that we need to revert back to
-    // read-listening.
-    const PollMode = enum {
-        read,
-        write,
-    };
-
     // A connection can be in one of two states: active or keepalive. It begins
     // and stays in "active" until the response is sent. Then, assuming the
     // connection isn't closed, it transitions to "keepalive" until the first
@@ -403,13 +292,9 @@ pub const Conn = struct {
         disown,
         close,
         keepalive,
-        write_and_close,
-        write_and_keepalive,
     };
 
     io_mode: IOMode,
-
-    poll_mode: PollMode,
 
     state: State,
 
@@ -452,8 +337,6 @@ pub const Conn = struct {
     // Reference to our websocket server
     websocket: *websocket.Server,
 
-    callback: ?Callback = null,
-
     // Workers maintain their active conns in a linked list. The link list is intrusive.
     next: ?*Conn,
     prev: ?*Conn,
@@ -477,7 +360,6 @@ pub const Conn = struct {
             .state = .active,
             .websocket = ws,
             .io_mode = io_mode,
-            .poll_mode = .read,
             .stream = undefined,
             .address = undefined,
             .socket_flags = undefined,
@@ -505,7 +387,6 @@ pub const Conn = struct {
             _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags);
             self.io_mode = .nonblocking;
         }
-        self.poll_mode = .read;
         self.keepalive(retain_allocated_bytes);
     }
 
@@ -524,7 +405,6 @@ pub const Conn = struct {
         self.prev = null;
         self.stream = undefined;
         self.address = undefined;
-        self.poll_mode = .read;
         self.io_mode = .nonblocking;
         self.request_count = 0;
         self.req_state.reset();
@@ -539,21 +419,6 @@ pub const Conn = struct {
             self.io_mode = .blocking;
         }
     }
-
-    // Should not be called directly, but if we don't expose it, it's a bit
-    // messy to test handlers which use a callback. So, it should only ever
-    // be called from a test.
-    pub fn doCallback(self: *Conn) void {
-        if (self.callback) |cb| {
-            cb.func(cb.state);
-            self.callback = null;
-        }
-    }
-
-    const Callback = struct {
-        state: *anyopaque,
-        func: *const fn(state: *anyopaque) void,
-    };
 };
 
 const Manager = struct {
@@ -673,7 +538,6 @@ const Manager = struct {
     }
 
     fn keepalive(self: *Manager, conn: *Conn, now: u32) void {
-        conn.doCallback();
         conn.keepaliveAndRestore(self.retain_allocated_bytes_keepalive) catch {
             self.close(conn);
             return;
@@ -685,7 +549,6 @@ const Manager = struct {
     }
 
     fn close(self: *Manager, conn: *Conn) void {
-        conn.doCallback();
         conn.stream.close();
         switch (conn.state) {
             .active => self.active_list.remove(conn),
@@ -696,7 +559,6 @@ const Manager = struct {
     }
 
     fn disown(self: *Manager, conn: *Conn) void {
-        conn.doCallback();
         switch (conn.state) {
             .active => self.active_list.remove(conn),
             .keepalive => self.keepalive_list.remove(conn),
@@ -942,14 +804,9 @@ const KQueue = struct {
         try self.change(conn.stream.handle, @intFromPtr(conn), posix.system.EVFILT_READ, posix.system.EV_ADD | posix.system.EV_ENABLE | posix.system.EV_DISPATCH);
     }
 
-    fn monitorWrite(self: *KQueue, conn: *Conn) !void {
-        try self.change(conn.stream.handle, @intFromPtr(conn), posix.system.EVFILT_WRITE, posix.system.EV_ADD | posix.system.EV_ENABLE | posix.system.EV_DISPATCH);
-    }
-
     fn remove(self: *KQueue, conn: *Conn) !void {
         const fd = conn.stream.handle;
         try self.change(fd, 0, posix.system.EVFILT_READ, posix.system.EV_DELETE);
-        try self.change(fd, 0, posix.system.EVFILT_WRITE, posix.system.EV_DELETE);
     }
 
     fn change(self: *KQueue, fd: posix.fd_t, data: usize, filter: i16, flags: u16) !void {
@@ -1032,14 +889,6 @@ const EPoll = struct {
         const op = if (rearm) linux.EPOLL.CTL_MOD else linux.EPOLL.CTL_ADD;
         var event = linux.epoll_event{ .events = linux.EPOLL.IN | linux.EPOLL.ONESHOT, .data = .{ .ptr = @intFromPtr(conn) } };
         return posix.epoll_ctl(self.q, op, conn.stream.handle, &event);
-    }
-
-    // socket always begins with a call to monitorRead(conn, false)
-    // so any subsequent call for this socket has to be a modification. Thus,
-    // modifyWrite doesn't need a "rearm" flag - it would always be true.
-    fn monitorWrite(self: *EPoll, conn: *Conn) !void {
-        var event = linux.epoll_event{ .events = linux.EPOLL.OUT | linux.EPOLL.ONESHOT, .data = .{ .ptr = @intFromPtr(conn) } };
-        return posix.epoll_ctl(self.q, linux.EPOLL.CTL_MOD, conn.stream.handle, &event);
     }
 
     fn remove(self: *EPoll, conn: *Conn) !void {
@@ -1235,7 +1084,7 @@ pub fn Blocking(comptime S: type) type {
             }
         }
 
-        fn handleRequest(self: *const Self, conn: *Conn, is_keepalive: bool, thread_buf: []u8) !HandleResult {
+        fn handleRequest(self: *const Self, conn: *Conn, is_keepalive: bool, thread_buf: []u8) !Conn.Handover {
             const stream = conn.stream;
             const timeout: ?Timeout = if (is_keepalive) self.timeout_keepalive else self.timeout_request;
 
@@ -1259,10 +1108,7 @@ pub fn Blocking(comptime S: type) type {
                         }
                         return .close;
                     }
-                    if (requestParseError(conn, err)) {
-                        try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &self.timeout_write_error.timeval);
-                        write(conn) catch return .close;
-                    }
+                    requestParseError(conn, err) catch {};
                     return .close;
                 };
                 if (done) {
@@ -1294,32 +1140,7 @@ pub fn Blocking(comptime S: type) type {
 
             metrics.request();
             self.server.handler(conn, thread_buf);
-            defer conn.doCallback();
-
-            switch (conn.handover) {
-                .write_and_keepalive => {
-                    write(conn) catch return .close;
-                    return .keepalive;
-                },
-                .write_and_close => {
-                    write(conn) catch {};
-                    return .close;
-                },
-                .close => return .close,
-                .keepalive => return .keepalive,
-                .disown => return .disown,
-            }
-        }
-
-        fn write(conn: *Conn) !void {
-            const stream = conn.stream;
-            const state = &conn.res_state;
-            try stream.writeAll(state.header_buffer.data[0..state.header_len]);
-            if (state.body) |b| {
-                try stream.writeAll(b);
-            } else if (state.body_len > 0) {
-                try stream.writeAll(state.body_buffer.data[0..state.body_len]);
-            }
+            return conn.handover;
         }
     };
 }
@@ -1343,7 +1164,7 @@ fn initializeBufferPool(allocator: Allocator, config: *const Config) !BufferPool
 // the resposne. If it returns false, the worker probably wants to close the connection.
 // This function ensures that both Blocking and NonBlocking workers handle these
 // errors with the same response
-fn requestParseError(conn: *Conn, err: anyerror) bool {
+fn requestParseError(conn: *Conn, err: anyerror) !void {
     switch (err) {
         error.HeaderTooBig => {
             metrics.invalidRequest();
@@ -1353,30 +1174,26 @@ fn requestParseError(conn: *Conn, err: anyerror) bool {
             metrics.invalidRequest();
             return writeError(conn, 400, "Invalid Request");
         },
-        error.BrokenPipe, error.ConnectionClosed, error.ConnectionResetByPeer => return false,
+        error.BrokenPipe, error.ConnectionClosed, error.ConnectionResetByPeer => return,
         else => return serverError(conn, "unknown read/parse error: {}", err),
     }
-    return false;
+    log.err("unknown parse error: {}", .{err});
+    return err;
 }
 
-fn serverError(conn: *Conn, comptime log_fmt: []const u8, err: anyerror) bool {
+fn serverError(conn: *Conn, comptime log_fmt: []const u8, err: anyerror) !void {
     log.err("server error: " ++ log_fmt, .{err});
     metrics.internalError();
     return writeError(conn, 500, "Internal Server Error");
 }
 
-fn writeError(conn: *Conn, status: u16, msg: []const u8) bool {
+fn writeError(conn: *Conn, status: u16, msg: []const u8) !void {
     const aa = conn.arena.allocator();
     var res = Response.init(aa, conn);
     res.status = status;
     res.body = msg;
     res.keepalive = false;
-
-    conn.res_state.prepareForWrite(&res) catch |err| {
-        log.err("Failed to prepare error response for writing: {}", .{err});
-        return false;
-    };
-    return true;
+    return res.write();
 }
 
 const t = @import("t.zig");
