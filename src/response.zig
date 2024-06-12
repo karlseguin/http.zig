@@ -103,7 +103,7 @@ pub const Response = struct {
         self.headers.add(n, v);
     }
 
-    pub fn startEventStream(self: *Response, ctx: anytype, comptime handler: fn(@TypeOf(ctx),  std.net.Stream) void) !void {
+    pub fn startEventStream(self: *Response, ctx: anytype, comptime handler: fn (@TypeOf(ctx), std.net.Stream) void) !void {
         self.content_type = .EVENTS;
         self.headers.add("Cache-Control", "no-cache");
         self.headers.add("Connection", "keep-alive");
@@ -118,7 +118,7 @@ pub const Response = struct {
 
         self.disown();
 
-        const thread = try std.Thread.spawn(.{}, handler, .{ctx, stream});
+        const thread = try std.Thread.spawn(.{}, handler, .{ ctx, stream });
         thread.detach();
     }
 
@@ -156,8 +156,8 @@ pub const Response = struct {
         }
 
         var vec = [2]std.posix.iovec_const{
-            .{.len = state.header_len, .base = state.header_buffer.data.ptr},
-            .{.len = body.len, .base = body.ptr},
+            .{ .len = state.header_len, .base = state.header_buffer.data.ptr },
+            .{ .len = body.len, .base = body.ptr },
         };
 
         var i: usize = 0;
@@ -196,8 +196,8 @@ pub const Response = struct {
         buf[1] = '\n';
         const len = 2 + std.fmt.formatIntBuf(buf[2..], data.len, 16, .upper, .{});
         buf[len] = '\r';
-        buf[len+1] = '\n';
-        try stream.writeAll(buf[0..len+2]);
+        buf[len + 1] = '\n';
+        try stream.writeAll(buf[0 .. len + 2]);
         try stream.writeAll(data);
     }
 
@@ -213,7 +213,7 @@ pub const Response = struct {
         return Writer.init(self);
     }
 
-    pub fn callback(self: *Response, func: *const fn(*anyopaque) void, state: *anyopaque) void {
+    pub fn callback(self: *Response, func: *const fn (*anyopaque) void, state: *anyopaque) void {
         self.conn.callback = .{
             .func = func,
             .state = state,

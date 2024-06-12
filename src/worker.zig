@@ -193,7 +193,7 @@ pub fn NonBlocking(comptime S: type) type {
 
             metrics.request();
             const server = self.server;
-            server._thread_pool.spawn(.{server, self, conn});
+            server._thread_pool.spawn(.{ server, self, conn });
             return true;
         }
 
@@ -395,7 +395,7 @@ pub const Conn = struct {
     pub fn keepalive(self: *Conn, retain_allocated_bytes: usize) void {
         self.req_state.reset();
         self.res_state.reset();
-        _ = self.arena.reset(.{.retain_with_limit = retain_allocated_bytes});
+        _ = self.arena.reset(.{ .retain_with_limit = retain_allocated_bytes });
     }
 
     // getting put back into the pool
@@ -409,7 +409,7 @@ pub const Conn = struct {
         self.request_count = 0;
         self.req_state.reset();
         self.res_state.reset();
-        _ = self.arena.reset(.{.retain_with_limit = retain_allocated_bytes});
+        _ = self.arena.reset(.{ .retain_with_limit = retain_allocated_bytes });
     }
 
     pub fn blocking(self: *Conn) !void {
@@ -478,7 +478,7 @@ const Manager = struct {
             .allocator = allocator,
             .buffer_pool = buffer_pool,
             .retain_allocated_bytes = retain_allocated_bytes,
-            .retain_allocated_bytes_keepalive =retain_allocated_bytes_keepalive,
+            .retain_allocated_bytes_keepalive = retain_allocated_bytes_keepalive,
             .timeout_request = config.timeout.request orelse MAX_TIMEOUT,
             .timeout_keepalive = config.timeout.keepalive orelse MAX_TIMEOUT,
         };
@@ -613,13 +613,13 @@ const Manager = struct {
         while (conn) |c| {
             const timeout = c.timeout;
             if (timeout > now) {
-                return .{.count = count, .timeout = timeout};
+                return .{ .count = count, .timeout = timeout };
             }
             count += 1;
             self.close(c);
             conn = c.next;
         }
-        return .{.count = count, .timeout = null};
+        return .{ .count = count, .timeout = null };
     }
 };
 
@@ -909,7 +909,7 @@ const EPoll = struct {
             );
 
             // taken from std.os.epoll_waits
-             switch (posix.errno(rc)) {
+            switch (posix.errno(rc)) {
                 .SUCCESS => break :blk @as(usize, @intCast(rc)),
                 .INTR => continue,
                 .BADF => unreachable,
@@ -973,7 +973,7 @@ pub fn Blocking(comptime S: type) type {
             fn init(sec: ?u32) Timeout {
                 return .{
                     .sec = if (sec) |s| s else MAX_TIMEOUT,
-                    .timeval = std.mem.toBytes(std.posix.timeval{.tv_sec = @intCast(sec orelse 0), .tv_usec = 0,}),
+                    .timeval = std.mem.toBytes(std.posix.timeval{ .tv_sec = @intCast(sec orelse 0), .tv_usec = 0 }),
                 };
             }
         };
@@ -1040,7 +1040,7 @@ pub fn Blocking(comptime S: type) type {
                 };
                 metrics.connection();
                 // calls handleConnection through the server's thread_pool
-                server._thread_pool.spawn(.{self, socket});
+                server._thread_pool.spawn(.{ self, socket });
             }
         }
 
@@ -1067,7 +1067,7 @@ pub fn Blocking(comptime S: type) type {
             };
             defer conn.deinit(self.allocator);
 
-            conn.stream = .{.handle = socket};
+            conn.stream = .{ .handle = socket };
 
             var is_keepalive = false;
             while (true) {
@@ -1078,7 +1078,7 @@ pub fn Blocking(comptime S: type) type {
                         // something (e.g. websocket) has taken over ownership of the socket
                         own = false;
                         break;
-                    }
+                    },
                 }
                 is_keepalive = true;
             }
@@ -1187,13 +1187,34 @@ fn serverError(conn: *Conn, comptime log_fmt: []const u8, err: anyerror) !void {
     return writeError(conn, 500, "Internal Server Error");
 }
 
-fn writeError(conn: *Conn, status: u16, msg: []const u8) !void {
-    const aa = conn.arena.allocator();
-    var res = Response.init(aa, conn);
-    res.status = status;
-    res.body = msg;
-    res.keepalive = false;
-    return res.write();
+fn writeError(conn: *Conn, comptime status: u16, comptime msg: []const u8) !void {
+    const socket = conn.stream.handle;
+    const response = std.fmt.comptimePrint("HTTP/1.1 {d} \r\nConnection: Close\r\nContent-Length: {d}\r\n\r\n{s}", .{ status, msg.len, msg });
+
+    var i: usize = 0;
+
+    const timeout = std.mem.toBytes(std.posix.timeval{ .tv_sec = 5, .tv_usec = 0 });
+    try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &timeout);
+    while (i < response.len) {
+        const n = posix.write(socket, response[i..]) catch |err| switch (err) {
+            error.WouldBlock => {
+                if (conn.io_mode == .blocking) {
+                    // We were in blocking mode, which means we reached our timeout
+                    // We're done trying to send the response.
+                    return error.Timeout;
+                }
+                try conn.blocking();
+                continue;
+            },
+            else => return err,
+        };
+
+        if (n == 0) {
+            return error.Closed;
+        }
+
+        i += n;
+    }
 }
 
 const t = @import("t.zig");
