@@ -155,62 +155,28 @@ pub const Response = struct {
             body = state.body_buffer.data[0..state.body_len];
         }
 
-        var hdr_len = state.header_len;
-        var body_len = body.len;
-
-
-        if (comptime httpz.blockingMode()) {
-            // zig's std.posix.writev has a weird (broken) fallback implementation
-            // for windows, so we'll keep this real simple (especially since
-            // we know we're in blocking)
-            try stream.writeAll(state.header_buffer.data[0..hdr_len]);
-            if (body_len > 0) {
-                try stream.writeAll(body);
-            }
-            return;
-        }
-
         var vec = [2]std.posix.iovec_const{
-            .{.len = hdr_len, .base = state.header_buffer.data.ptr},
-            .{.len = body_len, .base = body.ptr},
+            .{.len = state.header_len, .base = state.header_buffer.data.ptr},
+            .{.len = body.len, .base = body.ptr},
         };
 
+        var i: usize = 0;
+        const socket = stream.handle;
         while (true) {
-            const n = std.posix.writev(stream.handle, &vec) catch |err| switch (err) {
+            var n = std.posix.writev(socket, vec[i..]) catch |err| switch (err) {
                 error.WouldBlock => {
                     try conn.blocking();
                     continue;
                 },
                 else => return err,
             };
-
-            if (n == 0) {
-                return error.Closed;
+            while (n >= vec[i].len) {
+                n -= vec[i].len;
+                i += 1;
+                if (i >= vec.len) return;
             }
-
-           if (hdr_len > 0) {
-                // in the writev that we just did, we still had the header
-                // (or part of it) to write.
-
-                if (n >= hdr_len) {
-                    // but this last write wrote all of the header (and maybe some of the body, how exciting (are you excited? I am))
-                    body_len -= n - hdr_len;
-                    hdr_len = 0;
-                } else {
-                    // this last write didn't manage to get through our header
-                    hdr_len -= n;
-                }
-           } else {
-                // in the writev that we just did, we only had a body
-                body_len -= n;
-           }
-
-            if (body_len == 0) {
-                return;
-            }
-
-            vec[0].len = hdr_len;
-            vec[1].len = body_len;
+            vec[i].base += n;
+            vec[i].len -= n;
         }
     }
 
