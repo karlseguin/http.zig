@@ -723,54 +723,83 @@ pub const State = struct {
     }
 
     fn parseHeaders(self: *State, full: []u8) !bool {
-        var pos = self.pos;
-        var headers = &self.headers;
-
         var buf = full;
-        while (true) {
-            const trailer_end = std.mem.indexOfScalar(u8, buf, '\n') orelse return false;
-            if (trailer_end == 0 or buf[trailer_end - 1] != '\r') return error.InvalidHeaderLine;
+        var headers = &self.headers;
+        while (true) line: {
+            for (buf, 0..) |bn, i| {
+                switch (bn) {
+                    'a'...'z', '0'...'9', '-', '_' => {},
+                    'A'...'Z' => buf[i] = bn + 32,
+                    ':' => {
+                        const value_start = i + 1; // skip the colon
+                        var value, const skip_len = trimLeadingSpaceCount(buf[value_start..]);
+                        for (value, 0..) |bv, j| {
+                            if (allowedHeaderValueByte(bv) == true) {
+                                continue;
+                            }
 
-            // means this follows the last \r\n, which means it's the end of our headers
-            if (trailer_end == 1) {
-                self.pos += 2;
-                return try self.prepareForBody();
-            }
+                            // To keep ALLOWED_HEADER_VALUE small, we said \r
+                            // was illegal. I mean, it _is_ illegal in a header value
+                            // but it isn't part of the header value, it's (probably) the end of line
+                            if (bv != '\r') {
+                                return error.InvalidHeaderLine;
+                            }
 
-            var valid = false;
-            const header_end = trailer_end - 1;
-            for (buf[0..header_end], 0..) |b, i| {
-                // find the colon and lowercase the header while we're iterating
-                if ('A' <= b and b <= 'Z') {
-                    buf[i] = b + 32;
-                    continue;
+                            const next = j + 1;
+                            if (next == value.len) {
+                                std.debug.print("d\n", .{});
+                                // we don't have any more data, we can't tell
+                                return false;
+                            }
+
+                            if (value[next] != '\n') {
+                                // we have a \r followed by something that isn't
+                                // a \n. Can't be valid
+                                return error.InvalidHeaderLine;
+                            }
+
+                            // If we're here, it means our value had valid characters
+                            // up until the point of a newline (\r\n), which means
+                            // we have a valid value (and name)
+                            value = value[0..j];
+                            break;
+                        }
+
+                        const name = buf[0..i];
+                        headers.add(name, value);
+
+
+                        // +2 to skip the \r\n
+                        const next_line = value_start + skip_len + value.len + 2;
+                        self.pos += next_line;
+                        buf = buf[next_line..];
+                        break :line;
+                    },
+                    '\r' => {
+                        if (i != 0) {
+                            // We're still parsing the header name, so a
+                            // \r should either be at the very start (to indicate the end of our headers)
+                            // or not be there at all
+                            return error.InvalidHeaderLine;
+                        }
+
+                        if (buf.len == 1) {
+                            // we don't have any more data, we need more data
+                            return false;
+                        }
+
+                        if (buf[1] == '\n') {
+                            // we have \r\n at the start of a line, we're done
+                            self.pos += 2;
+                            return try self.prepareForBody();
+                        }
+                        // we have a \r followed by something that isn't a \n, can't be right
+                        return error.InvalidHeaderLine;
+                    },
+                    else => return error.InvalidHeaderLine,
                 }
-                if (b != ':') {
-                    if (ALLOWED_HEADER_NAME_BYTES[b] == false) {
-                        break;
-                    }
-                    continue;
-                }
-
-                const name = buf[0..i];
-                const value = trimLeadingSpace(buf[i + 1 .. header_end]);
-                for (value) |vb| {
-                    if (ALLOWED_HEADER_VALUE_BYTES[vb] == false) {
-                        break;
-                    }
-                }
-                headers.add(name, value);
-                valid = true;
-                break;
-            }
-            if (!valid) {
-                return error.InvalidHeaderLine;
-            }
-
-            pos = trailer_end + 1;
-            self.pos += pos;
-            buf = buf[pos..];
-        }
+             }
+         }
     }
 
     // we've finished reading the header
@@ -842,35 +871,34 @@ pub const State = struct {
     }
 };
 
-const ALLOWED_HEADER_NAME_BYTES: [255]bool = blk: {
-    var all = std.mem.zeroes([255]bool);
-    for ('a'..('z' + 1)) |b| all[b] = true;
-    for ('A'..('Z' + 1)) |b| all[b] = true;
-    for ('0'..('9' + 1)) |b| all[b] = true;
-    all['-'] = true;
-    all['_'] = true;
-    break :blk all;
-};
+inline fn allowedHeaderValueByte(c: u8) bool {
+    const mask = 0 | ((1 << (0x7f - 0x21)) - 1) << 0x21 | 1 << 0x20 | 1 << 0x09;
 
-const ALLOWED_HEADER_VALUE_BYTES: [255]bool = blk: {
-    var all = std.mem.zeroes([255]bool);
-    for ('a'..('z' + 1)) |b| all[b] = true;
-    for ('A'..('Z' + 1)) |b| all[b] = true;
-    for ('0'..('9' + 1)) |b| all[b] = true;
-    for ([_]u8{ ':', ';', '.', ',', '\\', '/', '"', '\'', '?', '!', '(', ')', '{', '}', '[', ']', '@', '<', '>', '=', '-', '+', '*', '#', '$', '&', '`', '|', '~', '^', '%' }) |b| {
-        all[b] = true;
+    const mask1 = ~@as(u64, (mask & ((1 << 64) - 1)));
+    const mask2 = ~@as(u64, mask >> 64);
+
+    const shl = std.math.shl;
+    return ((shl(u64, 1, c) & mask1) | (shl(u64, 1, c -| 64) & mask2)) == 0;
+}
+
+inline fn trimLeadingSpaceCount(in: []const u8) struct{[]const u8, usize} {
+    if (in.len > 1 and in[0] == ' ') {
+        // very common case
+        const n = in[1];
+        if (n != ' ' and n != '\t') {
+            return .{in[1..], 1};
+        }
     }
-    break :blk all;
-};
-
-inline fn trimLeadingSpace(in: []const u8) []const u8 {
-    // very common case where we have a single space after our colon
-    if (in.len >= 2 and in[0] == ' ' and in[1] != ' ') return in[1..];
 
     for (in, 0..) |b, i| {
-        if (b != ' ' and b != '\t') return in[i..];
+        if (b != ' ' and b != '\t') return .{in[i..], i};
     }
-    return "";
+    return .{"", in.len};
+}
+
+inline fn trimLeadingSpace(in: []const u8) []const u8 {
+    const out, _ = trimLeadingSpaceCount(in);
+    return out;
 }
 
 fn atoi(str: []const u8) ?usize {
@@ -901,6 +929,21 @@ test "atoi" {
     try t.expectEqual(null, atoi("392a"));
     try t.expectEqual(null, atoi("b392"));
     try t.expectEqual(null, atoi("3c92"));
+}
+
+test "allowedHeaderValueByte" {
+    var all = std.mem.zeroes([255]bool);
+    for ('a'..('z' + 1)) |b| all[b] = true;
+    for ('A'..('Z' + 1)) |b| all[b] = true;
+    for ('0'..('9' + 1)) |b| all[b] = true;
+    for ([_]u8{'_', ' ', ',', ':', ';', '.', ',', '\\', '/', '"', '\'', '?', '!', '(', ')', '{', '}', '[', ']', '@', '<', '>', '=', '-', '+', '*', '#', '$', '&', '`', '|', '~', '^', '%', '\t'}) |b| {
+        all[b] = true;
+    }
+    for (128..255) |b| all[b] = true;
+
+    for (all, 0..) |allowed, b| {
+        try t.expectEqual(allowed, allowedHeaderValueByte(@intCast(b)));
+    }
 }
 
 test "request: header too big" {
@@ -1267,6 +1310,7 @@ test "body: multiFormData valid" {
         }, &.{}), .{.max_multiform_count = 5});
         const formData = try r.multiFormData();
         try t.expectEqual(0, formData.len);
+        try t.expectString("multipart/form-data; boundary=BX1", r.header("content-type").?);
     }
 
     {
