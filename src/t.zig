@@ -41,6 +41,11 @@ pub const Context = struct {
 
     arena: *std.heap.ArenaAllocator,
 
+    fake: bool,
+    to_read_pos: usize,
+    to_read: std.ArrayList(u8),
+    _random: ?std.rand.DefaultPrng = null,
+
     pub fn allocInit(ctx_allocator: std.mem.Allocator, config_: httpz.Config) Context {
         var pair: [2]c_int = undefined;
         const rc = std.c.socketpair(std.posix.AF.LOCAL, std.posix.SOCK.STREAM, 0, &pair);
@@ -118,6 +123,9 @@ pub const Context = struct {
             .arena = ctx_arena,
             .stream = server,
             .client = client,
+            .fake = false,
+            .to_read_pos = 0,
+            .to_read = std.ArrayList(u8).init(aa),
         };
     }
 
@@ -146,8 +154,12 @@ pub const Context = struct {
         }
     }
 
-    pub fn write(self: Context, data: []const u8) void {
-        self.client.writeAll(data) catch unreachable;
+    pub fn write(self: *Context, data: []const u8) void {
+        if (self.fake) {
+            self.to_read.appendSlice(data) catch unreachable;
+        } else {
+            self.client.writeAll(data) catch unreachable;
+        }
     }
 
     pub fn read(self: Context, a: std.mem.Allocator) !std.ArrayList(u8) {
@@ -196,7 +208,30 @@ pub const Context = struct {
             .tv_sec = 0,
             .tv_usec = 20_000,
         })) catch unreachable;
+    }
 
+    fn random(self: *Context) std.rand.Random {
+        if (self._random == null) {
+            var seed: u64 = undefined;
+            std.posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
+            self._random = std.rand.DefaultPrng.init(seed);
+        }
+        return self._random.?.random();
+    }
+
+    pub fn fakeReader(self: *Context) FakeReader {
+        std.debug.assert(self.fake);
+
+        const fr = .{
+            .pos = self.to_read_pos,
+            .buf = self.to_read.items,
+            .random = self.random(),
+        };
+
+        self.to_read_pos = 0;
+        self.to_read.clearRetainingCapacity();
+
+        return fr;
     }
 
     pub fn request(self: Context) httpz.Request {
@@ -208,8 +243,33 @@ pub const Context = struct {
     }
 
     pub fn reset(self: Context) void {
+        self.to_read_pos = 0;
+        self.to_read.clearRetainingCapacity();
         self.conn.reset();
     }
+
+    // We sometimes use a Fake reader when we want to simulate the boundary-less
+    // nature of TCP, that is, where a read() might read only a few of the message
+    // bytes (because TCP has no concept of a message).
+    pub const FakeReader = struct {
+        pos: usize,
+        buf: []const u8,
+        random: std.rand.Random,
+
+        pub fn read(self: *FakeReader, buf: []u8,) !usize {
+            const data = self.buf[self.pos..];
+
+            if (data.len == 0 or buf.len == 0) {
+                return 0;
+            }
+
+            // randomly fragment the data
+            const to_read = self.random.intRangeAtMost(usize, 1, @min(data.len, buf.len));
+            @memcpy(buf[0..to_read], data[0..to_read]);
+            self.pos += to_read;
+            return to_read;
+        }
+    };
 };
 
 pub fn randomString(random: std.rand.Random, a: std.mem.Allocator, max: usize) []u8 {

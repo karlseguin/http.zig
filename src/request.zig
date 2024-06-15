@@ -725,7 +725,7 @@ pub const State = struct {
     fn parseHeaders(self: *State, full: []u8) !bool {
         var buf = full;
         var headers = &self.headers;
-        while (true) line: {
+        line: while (buf.len > 0) {
             for (buf, 0..) |bn, i| {
                 switch (bn) {
                     'a'...'z', '0'...'9', '-', '_' => {},
@@ -747,7 +747,6 @@ pub const State = struct {
 
                             const next = j + 1;
                             if (next == value.len) {
-                                std.debug.print("d\n", .{});
                                 // we don't have any more data, we can't tell
                                 return false;
                             }
@@ -763,17 +762,20 @@ pub const State = struct {
                             // we have a valid value (and name)
                             value = value[0..j];
                             break;
+                        } else {
+                            // for loop reached the end without finding a \r
+                            // we need more data
+                            return false;
                         }
 
                         const name = buf[0..i];
                         headers.add(name, value);
 
-
                         // +2 to skip the \r\n
                         const next_line = value_start + skip_len + value.len + 2;
                         self.pos += next_line;
                         buf = buf[next_line..];
-                        break :line;
+                        continue :line;
                     },
                     '\r' => {
                         if (i != 0) {
@@ -798,8 +800,12 @@ pub const State = struct {
                     },
                     else => return error.InvalidHeaderLine,
                 }
+             } else {
+                // didn't find a colon or blank line, we need more data
+                return false;
              }
          }
+         return false;
     }
 
     // we've finished reading the header
@@ -1508,7 +1514,6 @@ test "body: multiFormData invalid" {
     }
 }
 
-// our t.Stream already simulates random TCP fragmentation.
 test "request: fuzz" {
     // We have a bunch of data to allocate for testing, like header names and
     // values. Easier to use this arena and reset it after each test run.
@@ -1517,7 +1522,7 @@ test "request: fuzz" {
 
     var r = t.getRandom();
     const random = r.random();
-    for (0..100) |_| {
+    for (0..1000) |_| {
         // important to test with different buffer sizes, since there's a lot of
         // special handling for different cases (e.g the buffer is full and has
         // some of the body in it, so we need to copy that to a dynamically allocated
@@ -1527,6 +1532,11 @@ test "request: fuzz" {
         var ctx = t.Context.init(.{
             .request = .{ .buffer_size = buffer_size },
         });
+
+        // enable fake mode, we don't go through a real socket, instead we go
+        // through a fake one, that can simulate having data spread across multiple
+        // calls to read()
+        ctx.fake = true;
         defer ctx.deinit();
 
         // how many requests should we make on this 1 individual socket (simulating
@@ -1598,8 +1608,9 @@ test "request: fuzz" {
             }
 
             var conn = ctx.conn;
+            var fake_reader = ctx.fakeReader();
             while (true) {
-                const done = try conn.req_state.parse(ctx.stream);
+                const done = try conn.req_state.parse(&fake_reader);
                 if (done) break;
             }
 
