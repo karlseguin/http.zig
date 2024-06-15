@@ -47,8 +47,8 @@ pub fn ThreadPool(comptime F: anytype) type {
         queue: []Args,
         threads: []Thread,
         mutex: Thread.Mutex,
-        sem: Thread.Semaphore,
-        cond: Thread.Condition,
+        pull_cond: Thread.Condition,
+        push_cond: Thread.Condition,
         queue_end: usize,
         allocator: Allocator,
 
@@ -68,20 +68,20 @@ pub fn ThreadPool(comptime F: anytype) type {
                 .pull = 0,
                 .push = 0,
                 .pending = 0,
-                .cond = .{},
                 .mutex = .{},
                 .stop = false,
                 .queue = queue,
+                .pull_cond = .{},
+                .push_cond = .{},
                 .threads = threads,
                 .allocator = allocator,
                 .queue_end = queue.len - 1,
-                .sem = .{ .permits = queue.len },
             };
 
             var started: usize = 0;
             errdefer {
                 thread_pool.stop = true;
-                thread_pool.cond.broadcast();
+                thread_pool.pull_cond.broadcast();
                 for (0..started) |i| {
                     threads[i].join();
                 }
@@ -105,7 +105,7 @@ pub fn ThreadPool(comptime F: anytype) type {
             self.stop = true;
             self.mutex.unlock();
 
-            self.cond.broadcast();
+            self.pull_cond.broadcast();
             for (self.threads) |thrd| {
                 thrd.join();
             }
@@ -122,14 +122,21 @@ pub fn ThreadPool(comptime F: anytype) type {
         }
 
         pub fn spawn(self: *Self, args: Args) void {
-            self.sem.wait();
+            const queue = self.queue;
+            const len = queue.len;
+
             self.mutex.lock();
+            while (self.pending == len) {
+                self.push_cond.wait(&self.mutex);
+            }
+
             const push = self.push;
             self.queue[push] = args;
             self.push = if (push == self.queue_end) 0 else push + 1;
             self.pending += 1;
             self.mutex.unlock();
-            self.cond.signal();
+
+            self.pull_cond.signal();
         }
 
         fn worker(self: *Self, buffer: []u8) void {
@@ -141,6 +148,7 @@ pub fn ThreadPool(comptime F: anytype) type {
             // concerned, it has a chunk of memory (buffer) which it'll pass
             // to the callback function to do with as it wants.
             defer self.allocator.free(buffer);
+
             while (true) {
                 self.mutex.lock();
                 while (self.pending == 0) {
@@ -148,14 +156,14 @@ pub fn ThreadPool(comptime F: anytype) type {
                         self.mutex.unlock();
                         return;
                     }
-                    self.cond.wait(&self.mutex);
+                    self.pull_cond.wait(&self.mutex);
                 }
                 const pull = self.pull;
                 const args = self.queue[pull];
                 self.pull = if (pull == self.queue_end) 0 else pull + 1;
                 self.pending -= 1;
                 self.mutex.unlock();
-                self.sem.post();
+                self.push_cond.signal();
 
                 // convert Args to FullArgs, i.e. inject buffer as the last argument
                 var full_args: FullArgs = undefined;
@@ -202,4 +210,6 @@ var testSum: u64 = 0;
 fn testIncr(c: u64, buf: []u8) void {
     std.debug.assert(buf.len == 512);
     _ = @atomicRmw(u64, &testSum, .Add, c, .monotonic);
+    // let the threadpool queue get backed up
+    std.time.sleep(std.time.ns_per_us * 100);
 }
