@@ -300,7 +300,7 @@ fn writerExample(req: *httpz.Request, res: *httpz.Response) !void {
 }
 ```
 
-However for temporary allocations that need only exist for the lifetime of the action itself, prefer `req.arena` which can be much faster. `req.arena` uses a FallbackAllocator first trying to allocate using a FixedBufferAllocator based on the `config.thread_pool.buffer_size` and falling back to the `res.arena`.
+Alternatively, you can explicitly call `res.write()`.
 
 ## httpz.Request
 The following fields are the most useful:
@@ -473,7 +473,6 @@ The simplest way to set a body is to set `res.body` to a `[]const u8`. **However
 
 Therefore, `res.body` can be safely used with constant strings. It can also be used with content created with `res.arena` (explained in the next section).
 
-It is possible to call `res.write() !void` directly from your code. This will put the socket into blocking mode and send the full response. This is an advanced feature. Calling `res.write()` again does nothing.
 
 ### Dynamic Content
 You can use the `res.arena` allocator to create dynamic content:
@@ -504,7 +503,7 @@ The `res.json` function will set the content_type to `httpz.ContentType.JSON` an
 
 This function uses `res.writer()` explained above.
 
-## Header Value
+### Header Value
 Set header values using the `res.header(NAME, VALUE)` function:
 
 ```zig
@@ -520,6 +519,21 @@ try res.headerOpts("Location", location, .{.dupe_value = true});
 ```
 
 `HeaderOpts` currently supports `dupe_name: bool` and `dupe_value: bool`, both default to `false`.
+
+### Writing
+By default, httpz will automatically flush your response. In more advance cases, you can use `res.write()` to explicitly flush it. This is useful in cases where you have resources that need to be freed/released only after the response is written. For example, my [LRU cache](https://github.com/karlseguin/cache.zig) uses atomic referencing counting to safely allow concurrent access to cached data. This requires callers to "release" the cached entry:
+
+```zig
+pub fn info(app: *MyApp, _: *httpz.Request, res: *httpz.Response) !void {
+    const cached = app.cache.get("info") orelse {
+        // load the info
+    };
+    defer cached.release();
+
+    res.body = cached.value;
+    res.write();
+}
+```
 
 ## Router
 You can use the `get`, `put`, `post`, `head`, `patch`, `trace`, `delete` or `options` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
@@ -680,11 +694,10 @@ try httpz.listen(allocator, &router, .{
         // pending requests get precedence over processing new requests.
         .backlog = 500,
 
-
         // Size of the static buffer to give each thread. Memory usage will be 
-        // `count * buffer_size`. If you're making heavy use of `req.arena`, 
-        // consider increasing this value to accomodate the size of allocations
-        // you are making.
+        // `count * buffer_size`. If you're making heavy use of either `req.arena` or
+        // `res.arena`, this is likely the single easier way to gain performance. This
+        // will require `count * buffer_size` memory.
         .buffer_size = 8192,
     },
 
@@ -938,7 +951,6 @@ try std.testing.expectEqual(@as(u16, 200), res.status);
 // use res.headers for a std.StringHashMap([]const u8)
 // use res.raw for the full raw response
 ```
-
 
 # HTTP Compliance
 This implementation may never be fully HTTP/1.1 compliant, as it is built with the assumption that it will sit behind a reverse proxy that is tolerant of non-compliant upstreams (e.g. nginx). (One example I know of is that the server doesn't include the mandatory Date header in the response.)
