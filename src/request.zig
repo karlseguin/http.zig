@@ -546,7 +546,7 @@ pub const State = struct {
             .qs = try KeyValue.init(allocator, config.max_query_count orelse 32),
             .fd = try KeyValue.init(allocator, config.max_form_count orelse 0),
             .mfd = try MultiFormKeyValue.init(allocator, config.max_multiform_count orelse 0),
-            .buf = try allocator.alloc(u8, config.buffer_size orelse 32_768),
+            .buf = try allocator.alloc(u8, config.buffer_size orelse 4_096),
             .headers = try KeyValue.init(allocator, config.max_header_count orelse 32),
             .params = try Params.init(allocator, config.max_param_count orelse 10),
         };

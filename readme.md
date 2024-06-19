@@ -499,8 +499,6 @@ try ws.emitString(req.param("name").?);
 try ws.endObject();
 ```
 
-Initially, writes will go to a pre-allocated buffer defined by `config.response.body_buffer_size`. If the buffer becomes full, a larger buffer will either be fetched from the large buffer pool (`config.workers.large_buffer_count`) or dynamically allocated.
-
 ### JSON
 The `res.json` function will set the content_type to `httpz.ContentType.JSON` and serialize the provided value using `std.json.stringify`. The 2nd argument to the json function is the `std.json.StringifyOptions` to pass to the `stringify` function.
 
@@ -534,7 +532,7 @@ pub fn info(app: *MyApp, _: *httpz.Request, res: *httpz.Response) !void {
     defer cached.release();
 
     res.body = cached.value;
-    res.write();
+    return res.write();
 }
 ```
 
@@ -627,6 +625,23 @@ Only the `origin` field is required. The values given to the configuration are p
 ## Configuration
 The third option given to `listen` is an `httpz.Config` instance. When running in <a href=#blocking-mode>blocking mode</a> (e.g. on Windows) a few of these behave slightly, but not drastically, different.
 
+There are many configuration options. 
+
+`thread_pool.buffer_size` is the single most important value to tweak. Usage of `req.arena`, `res.arena`, `res.writer()` and `res.json()` all use a fallback allocator which first uses a fast thread-local buffer and then an underlying arena. The total memory this will require is `thread_pool.count * thread_pool.buffer_size`. Since `thread_pool.count` is usually small, a large `buffer_size` is reasonable.
+
+`request.buffer_size` must be large enough to fit the request header. Any extra space might be used to read the body. However, there can be up to `workers.count * workers.max_conn` pending requests, so a large `reuqest.buffer_size` can take up a lot of memory. Instead, consider keeping `request.buffer_size` only large enough for the header (plus a bit of overhead for decoding URL-escape values) and set `workers.large_buffer_size` to a reasonable size for your incoming request bodies. This will take `workers.count * workers.large_buffer_count * workers.large_buffer_size` memory. 
+
+Buffers for request bodies larger than `workers.large_buffer_size` but smaller than `request.max_body_size` will be dynamic allocated.
+
+In addition to a bit of overhead, at a minimum, httpz will use:
+
+```zig
+(thread_pool.count * thread_pool.buffer_size) +
+(workers.count * workers.large_buffer_count * workers.large_buffer_size) +
+(workers.count * workers.min_conn * request.buffer_size)
+```
+
+
 Possible values, along with their default, are:
 
 ```zig
@@ -667,7 +682,7 @@ try httpz.listen(allocator, &router, .{
         .large_buffer_size = 65536,
 
         // Size of bytes retained for the connection arena between use. This will
-        // result in up to `min_conn * retain_allocated_bytes` of memory usage.
+        // result in up to `count * min_conn * retain_allocated_bytes` of memory usage.
         .retain_allocated_bytes = 4096,
     },
 
@@ -703,14 +718,11 @@ try httpz.listen(allocator, &router, .{
         // Maximum body size that we'll process. We can allocate up 
         // to this much memory per request for the body. Internally, we might
         // keep this memory around for a number of requests as an optimization.
-        // So the maximum amount of memory that our request pool will use is in
-        // the neighborhood of pool_size * max_body_size, but this value should be temporary
-        // (there are more allocations, but this is the biggest chunk).
-        max_body_size: usize = 1_048_576,
+        .max_body_size: usize = 1_048_576,
 
         // This memory is allocated upfront. The request header _must_ fit into
         // this space, else the request will be rejected.
-        .buffer_size: usize = 32_768,
+        .buffer_size: usize = 4_096,
 
         // Maximum number of headers to accept. 
         // Additional headers will be silently ignored.
