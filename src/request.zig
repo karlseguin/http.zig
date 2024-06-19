@@ -26,7 +26,9 @@ const POST = @as(u32, @bitCast([4]u8{ 'P', 'O', 'S', 'T' }));
 const HEAD = @as(u32, @bitCast([4]u8{ 'H', 'E', 'A', 'D' }));
 const PATC = @as(u32, @bitCast([4]u8{ 'P', 'A', 'T', 'C' }));
 const DELE = @as(u32, @bitCast([4]u8{ 'D', 'E', 'L', 'E' }));
+const ETE_ = @as(u32, @bitCast([4]u8{ 'E', 'T', 'E', ' ' }));
 const OPTI = @as(u32, @bitCast([4]u8{ 'O', 'P', 'T', 'I' }));
+const ONS_ = @as(u32, @bitCast([4]u8{ 'O', 'N', 'S', ' ' }));
 const HTTP = @as(u32, @bitCast([4]u8{ 'H', 'T', 'T', 'P' }));
 const V1P0 = @as(u32, @bitCast([4]u8{ '/', '1', '.', '0' }));
 const V1P1 = @as(u32, @bitCast([4]u8{ '/', '1', '.', '1' }));
@@ -624,7 +626,17 @@ pub const State = struct {
 
     fn parseMethod(self: *State, buf: []u8) !bool {
         const buf_len = buf.len;
-        if (buf_len < 4) return false;
+
+        // Shortest method is only 3 characters (+1 trailing space), so
+        // this seems like it should be: if (buf_len < 4)
+        // But the longest method, OPTIONS, is 7 characters (+1 trailing space).
+        // Now even if we have a short method, like "GET ", we'll eventually expect
+        // a URL + protocol. The shorter valid line is: e.g. GET / HTTP/1.1
+        // If buf_len < 8, we _might_ have a method, but we still need more data
+        // and might as well break early.
+        // If buf_len > = 8, then we can safely parse any (valid) method without
+        // having to do any other bound-checking.
+        if (buf_len < 8) return false;
 
         switch (@as(u32, @bitCast(buf[0..4].*))) {
             GET_ => {
@@ -636,32 +648,27 @@ pub const State = struct {
                 self.method = .PUT;
             },
             POST => {
-                if (buf_len < 5) return false;
                 if (buf[4] != ' ') return error.UnknownMethod;
                 self.pos = 5;
                 self.method = .POST;
             },
             HEAD => {
-                if (buf_len < 5) return false;
                 if (buf[4] != ' ') return error.UnknownMethod;
                 self.pos = 5;
                 self.method = .HEAD;
             },
             PATC => {
-                if (buf_len < 6) return false;
                 if (buf[4] != 'H' or buf[5] != ' ') return error.UnknownMethod;
                 self.pos = 6;
                 self.method = .PATCH;
             },
             DELE => {
-                if (buf_len < 7) return false;
-                if (buf[4] != 'T' or buf[5] != 'E' or buf[6] != ' ') return error.UnknownMethod;
+                if (@as(u32, @bitCast(buf[3..7].*)) != ETE_) return error.UnknownMethod;
                 self.pos = 7;
                 self.method = .DELETE;
             },
             OPTI => {
-                if (buf_len < 8) return false;
-                if (buf[4] != 'O' or buf[5] != 'N' or buf[6] != 'S' or buf[7] != ' ') return error.UnknownMethod;
+                if (@as(u32, @bitCast(buf[4..8].*)) != ONS_) return error.UnknownMethod;
                 self.pos = 8;
                 self.method = .OPTIONS;
             },
@@ -960,8 +967,8 @@ test "request: header too big" {
 test "request: parse method" {
     defer t.reset();
     {
-        try expectParseError(error.UnknownMethod, "GETT ", .{});
-        try expectParseError(error.UnknownMethod, " PUT ", .{});
+        try expectParseError(error.UnknownMethod, "GETT / HTTP/1.1 ", .{});
+        try expectParseError(error.UnknownMethod, " PUT / HTTP/1.1", .{});
     }
 
     {
