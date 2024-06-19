@@ -732,7 +732,6 @@ test {
         reuse_server = try leaking_allocator.create(ServerCtx(void, void));
         reuse_server.* = try Server().init(leaking_allocator, .{
             .port = 5995,
-            .response = .{ .body_buffer_size = 100 },
             .workers = .{.count = 1, .min_conn = 1, .max_conn = 1}
         });
         var router = reuse_server.router();
@@ -743,10 +742,7 @@ test {
 
     {
         handle_server = try leaking_allocator.create(ServerCtx(CustomHandler, CustomHandler));
-        handle_server.* = try ServerCtx(CustomHandler, CustomHandler).init(leaking_allocator, .{
-            .port = 5996,
-            .response = .{ .body_buffer_size = 100 },
-        }, CustomHandler{});
+        handle_server.* = try ServerCtx(CustomHandler, CustomHandler).init(leaking_allocator, .{.port = 5996}, CustomHandler{});
         var thread = try handle_server.listenInNewThread();
         thread.detach();
     }

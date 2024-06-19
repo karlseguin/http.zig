@@ -46,8 +46,6 @@ pub const Config = struct {
 
     pub const Response = struct {
         max_header_count: ?usize = null,
-        body_buffer_size: ?usize = null,
-        header_buffer_size: ?usize = null,
     };
 
     pub const Timeout = struct {

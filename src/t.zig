@@ -97,7 +97,7 @@ pub const Context = struct {
         conn_arena.* = std.heap.ArenaAllocator.init(aa);
 
         const req_state = httpz.Request.State.init(aa, conn_arena, bp, &config.request) catch unreachable;
-        const res_state = httpz.Response.State.init(aa, conn_arena, bp, &config.response) catch unreachable;
+        const res_state = httpz.Response.State.init(aa, &config.response) catch unreachable;
 
         const conn = aa.create(Conn) catch unreachable;
         conn.* = .{

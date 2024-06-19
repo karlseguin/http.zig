@@ -644,29 +644,16 @@ try httpz.listen(allocator, &router, .{
     // 1 - accepting connections
     // 2 - reading and parsing requests
     // 3 - passing requests to the thread pool
-    // 4 - writing response
     .workers = .{
         // Number of worker threads
         // (blocking mode: handled differently)
         .count = 2,
 
         // Maximum number of concurrent connection each worker can handle
-        // $max_conn * (
-        //   $request.max_body_size + 
-        //   $response.header_buffer_size + (max($response.body_buffer_size, $your_largest_body)) +
-        //   $a_bit_of_overhead + ($large_buffer_count * $large_buffer_size)
-        // )
-        // is a rough estimate for the most amount of memory httpz will use
         // (blocking mode: currently ignored)
         .max_conn = 500,
 
         // Minimum number of connection states each worker should maintain
-        // $min_conn * (
-        //   $request.buffer_size + 
-        //   $response.header_buffer_size + $response.body_buffer_size +
-        //   $a_bit_of_overhead + ($large_buffer_count * $large_buffer_size)
-        // )
-        // is a rough estimate for the lowest amount of memory httpz will use
         // (blocking mode: currently ignored)
         .min_conn = 32,
 
@@ -699,8 +686,7 @@ try httpz.listen(allocator, &router, .{
 
         // Size of the static buffer to give each thread. Memory usage will be 
         // `count * buffer_size`. If you're making heavy use of either `req.arena` or
-        // `res.arena`, this is likely the single easier way to gain performance. This
-        // will require `count * buffer_size` memory.
+        // `res.arena`, this is likely the single easiest way to gain performance. 
         .buffer_size = 8192,
     },
 
@@ -712,9 +698,9 @@ try httpz.listen(allocator, &router, .{
         .max_age: ?[]const u8,
     },
 
-    // various options for tweaking request processing
+    // options for tweaking request processing
     .request = .{
-        // Maximum body size that we'll process. We'll can allocate up 
+        // Maximum body size that we'll process. We can allocate up 
         // to this much memory per request for the body. Internally, we might
         // keep this memory around for a number of requests as an optimization.
         // So the maximum amount of memory that our request pool will use is in
@@ -723,8 +709,7 @@ try httpz.listen(allocator, &router, .{
         max_body_size: usize = 1_048_576,
 
         // This memory is allocated upfront. The request header _must_ fit into
-        // this space, else the request will be rejected. If it fits, the body will
-        // also be loaded here, else the large_buffer_pool or dynamic allocation is used.
+        // this space, else the request will be rejected.
         .buffer_size: usize = 32_768,
 
         // Maximum number of headers to accept. 
@@ -752,16 +737,8 @@ try httpz.listen(allocator, &router, .{
         .max_multiform_count: usize = 0,
     },
 
-    // various options for tweaking response object
+    // options for tweaking response object
     .response = .{
-        // Used to buffer the response header. If the header is larger, a buffer will be
-        // pulled from the large buffer pool, or dynamic allocations will take place.
-        .header_buffer_size: usize = 1024,
-
-        // Used to buffer the response body. If the body is larger, a buffer will be 
-        // pulled from the large buffer pool, or dynamic allocations will take place.
-        .body_buffer_size: usize = 1024,
-
         // The maximum number of headers to accept. 
         // Additional headers will be silently ignored.
         .max_header_count: usize = 16,

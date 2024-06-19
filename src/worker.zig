@@ -350,7 +350,7 @@ pub const Conn = struct {
         var req_state = try Request.State.init(allocator, arena, buffer_pool, &config.request);
         errdefer req_state.deinit(allocator);
 
-        var res_state = try Response.State.init(allocator, arena, buffer_pool, &config.response);
+        var res_state = try Response.State.init(allocator, &config.response);
         errdefer res_state.deinit(allocator);
 
         return .{
