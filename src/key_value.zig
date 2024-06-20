@@ -38,10 +38,20 @@ pub const KeyValue = struct {
 
     pub fn get(self: KeyValue, needle: []const u8) ?[]const u8 {
         const keys = self.keys[0..self.len];
-        for (keys, 0..) |key, i| {
-            if (mem.eql(u8, key, needle)) {
-                return self.values[i];
+        loop: for (keys, 0..) |key, i| {
+            // This is largely a reminder to myself that std.mem.eql isn't
+            // particularly fast. Here we at least avoid the 1 extra ptr
+            // equality check that std.mem.eql does, but we could do better
+            // TODO: monitor https://github.com/ziglang/zig/issues/8689
+            if (needle.len != key.len) {
+                continue;
             }
+            for (needle, key) |n, k| {
+                if (n != k) {
+                    continue :loop;
+                }
+            }
+            return self.values[i];
         }
 
         return null;
