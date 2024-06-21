@@ -10,7 +10,9 @@ This library supports native Zig module (introduced in 0.11). Add a "httpz" depe
 If you're looking for a higher level web framework with more included functionality, consider [JetZig](https://www.jetzig.dev/) which is built on top of httpz.
 
 # Why not std.http.Server
-`std.http.Server` is slow. Exactly how slow depends on what you're doing and how you're testing. There are many Zig HTTP server implementations. Most wrap `std.http.Server` and tend to be slow; slower than Sinatra. A few wrap some C libraries and are much faster (though some of these are slow too!). http.zig is written in Zig, without using `std.http.Server`. On an M2, a basic request can hit 110K requests per seconds.
+`std.http.Server` is slow. Exactly how slow depends on what you're doing and how you're testing. There are many Zig HTTP server implementations. Most wrap `std.http.Server` and tend to be slow; slower than Sinatra. A few wrap C libraries and are faster (though some of these are slow too!). 
+
+http.zig is written in Zig, without using `std.http.Server`. On an M2, a basic request can hit 140K requests per seconds.
 
 # Usage
 
@@ -71,7 +73,7 @@ fn errorHandler(req: *httpz.Request, res: *httpz.Response, err: anyerror) void {
 ```
 
 ## Complex Use Case 1 - Shared Global Data
-The call to `httpz.Server()` is a wrapper around the more powerful `httpz.ServerCtx(G, R)`. `G` and `R` are types. `G` is the type of the global data `R` is the type of per-request data. For this use case, where we only care about shared global data, we'll make G == R:
+The call to `httpz.Server()` is a wrapper around a generic Server that can take a global context. Use `httpz.ServerApp(G)` and pass an instance of `G` to `init`:
 
 ```zig
 const std = @import("std");
@@ -87,7 +89,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     var global = Global{};
-    var server = try httpz.ServerCtx(*Global, *Global).init(allocator, .{}, &global);
+    var server = try httpz.ServerApp(*Global).init(allocator, .{}, &global);
     var router = server.router();
     router.get("/increment", increment);
     return server.listen();
@@ -105,7 +107,7 @@ fn increment(global: *Global, _: *httpz.Request, res: *httpz.Response) !void {
 }
 ```
 
-There are a few important things to notice. First, the `init` function of `ServerCtx(G, R)` takes a 3rd parameter: the global data. Second, our actions take a new parameter of type `G`. Any custom notFound handler (set via `server.notFound(...)`) or error handler(set via `server.errorHandler(errorHandler)`) must also accept this new parameter. 
+There are a few important things to notice. First, the `init` function of `ServerApp(G)` takes a 3rd parameter: the global data of type `G`. Second, our actions take a new parameter of type `G`. Any custom notFound handler (set via `server.notFound(...)`) or error handler(set via `server.errorHandler(errorHandler)`) must also accept this new parameter. 
 
 Because the new parameter is first, and because of how struct methods are implemented in Zig, the above can also be written as:
 
@@ -133,7 +135,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     var global = &Global{};
-    var server = try httpz.ServerCtx(*Global, *Global).init(allocator, .{}, global);
+    var server = try httpz.ServerApp(*Global).init(allocator, .{}, global);
     var router = server.router();
     router.get("/increment", global.increment);
     return server.listen();
@@ -150,8 +152,9 @@ To understand what the dispatcher does and how to write a custom one, consider t
 ```zig
 fn dispatcher(global: G, action: httpz.Action(R), req: *httpz.Request, res: *httpz.Response) !void {
     // this is how httpz maintains a simple interface when httpz.Server()
-    // is used instead of httpz.ServerCtx(G, R)
-    if (R == void) {
+    // is used instead of httpz.ServerApp(T), or the even more advanced
+    // httpz.ServerCtx(G, R)
+    if (G == void) {
         return action(req, res);
     }
     return action(global, req, res);
@@ -199,7 +202,7 @@ See [router groups](#groups) for a more convenient approach to defining a dispat
 Much like the custom dispatcher explained above, global data can be specified per-route:
 
 ```zig
-var server = try httpz.ServerCtx(*Global, *Global).init(allocator, .{}, &default_global);
+var server = try httpz.ServerApp(*Global).init(allocator, .{}, &default_global);
 
 var router = server.router();
 server.router().deleteC("/v1/session", logout, .{.ctx = &Global{...}});
@@ -208,7 +211,7 @@ server.router().deleteC("/v1/session", logout, .{.ctx = &Global{...}});
 See [router groups](#groups) for a more convenient approach to defining global dta for a group of routes.
 
 ## Complex Use Case 4 - Per-Request Data
-We can combine what we've learned from the above two uses cases and use `ServerCtx(G, R)` where `G != R`. In this case, a dispatcher **must** be provided (failure to provide a dispatcher will result in 500 errors). This is because the dispatcher is needed to generate `R`.
+Where `Server` is used when no state is required, and `ServerApp(G)` is used when there's a single global context, `ServerCtx(G, R)` allows a dispatcher to receive a global context and execute actions with a request-context. In this case, a dispatcher **must** be provided and failure to provide a dispatcher will result in 500 errors. This is because httpz doesn't know how to generate an `R` per request.
 
 ```zig
 const std = @import("std");
@@ -269,6 +272,8 @@ pub fn metrics(_: Context, _: *httpz.Request, res: *httpz.Response) !void {
 }
 ```
 
+Notice that when using `ServerApp(G)`, actions are of type `Action(G)`. And, because an instance of `G` is provided to `http.ServerApp(G).init` an implicit dispatcher is can directly call the action. However, with `ServerCtx(G, R)` actions are of type `Action(R)`. Again an instance of `G` is provided to ServerCtx(G, R).init`, and so a `dispatcher` **must** be provided (because httpz doesn't know how to create `R` which must be passed to the action).
+
 ## Complex Use Case 5 - Dispatch Takeover
 As shown above, a custom dispatcher receives the action to execute as well as a request and response object. Obviously, in order to provide the action, httpz must have already matched the request with a route. Advanced cases might wish to circumvent httpz's router and take over the request and response object as early as possible. This can be achieved by providing a dispatcher with a public `handle` method:
 
@@ -280,7 +285,7 @@ const Dispatcher = struct {
     }
 };
 
-var server = try ServerCtx(Dispatcher, Dispatcher).init(allocator, config, Dispatcher{});
+var server = try ServerApp(Dispatcher).init(allocator, config, Dispatcher{});
 ...
 ```
 
@@ -303,7 +308,7 @@ fn writerExample(req: *httpz.Request, res: *httpz.Response) !void {
 }
 ```
 
-Alternatively, you can explicitly call `res.write()`.
+Alternatively, you can explicitly call `res.write()`. Once `res.write()` returns, the response is sent and your action can cleanup/release any resources.
 
 ## httpz.Request
 The following fields are the most useful:

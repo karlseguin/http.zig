@@ -209,6 +209,10 @@ pub fn Server() type {
     };
 }
 
+pub fn ServerApp(comptime A: type) type {
+    return ServerCtx(A, A);
+}
+
 pub fn ServerCtx(comptime G: type, comptime R: type) type {
     return struct {
         const TP = if (blockingMode()) ThreadPool(worker.Blocking(*Self).handleConnection) else ThreadPool(Self.notifyingHandler);
@@ -676,7 +680,7 @@ test {
     // our testing allocator, it'll report the leak.
     const leaking_allocator = la.allocator();
     {
-        default_server = try leaking_allocator.create(ServerCtx(void, void));
+        default_server = try leaking_allocator.create(ServerApp(void));
         default_server.* = try Server().init(leaking_allocator, .{ .port = 5992 });
         var router = default_server.router();
         router.get("/test/ws", testWS);
@@ -690,8 +694,8 @@ test {
     }
 
     {
-        context_server = try leaking_allocator.create(ServerCtx(u32, u32));
-        context_server.* = try ServerCtx(u32, u32).init(leaking_allocator, .{ .port = 5993 }, 3);
+        context_server = try leaking_allocator.create(ServerApp(u32));
+        context_server.* = try ServerApp(u32).init(leaking_allocator, .{ .port = 5993 }, 3);
         context_server.notFound(testNotFound);
         var router = context_server.router();
         router.get("/", ctxEchoAction);

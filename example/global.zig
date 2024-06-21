@@ -22,7 +22,7 @@ const GlobalContext = struct {
 // small variations in using httpz.
 pub fn start(allocator: Allocator) !void {
     var ctx = GlobalContext{};
-    var server = try httpz.ServerCtx(*GlobalContext, *GlobalContext).init(allocator, .{ .port = 5883 }, &ctx);
+    var server = try httpz.ServerApp(*GlobalContext).init(allocator, .{ .port = 5883 }, &ctx);
     defer server.deinit();
     var router = server.router();
     router.get("/increment", GlobalContext.increment);
