@@ -1664,7 +1664,7 @@ fn expectParseError(expected: anyerror, input: []const u8, config: Config) !void
     try t.expectError(expected, ctx.conn.req_state.parse(ctx.stream));
 }
 
-fn randomMethod(random: std.rand.Random) []const u8 {
+fn randomMethod(random: std.Random) []const u8 {
     return switch (random.uintAtMost(usize, 6)) {
         0 => "GET",
         1 => "PUT",

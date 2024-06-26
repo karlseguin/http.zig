@@ -22,10 +22,10 @@ pub fn reset() void {
     _ = arena.reset(.free_all);
 }
 
-pub fn getRandom() std.rand.DefaultPrng {
+pub fn getRandom() std.Random.DefaultPrng {
     var seed: u64 = undefined;
     std.posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
-    return std.rand.DefaultPrng.init(seed);
+    return std.Random.DefaultPrng.init(seed);
 }
 
 pub const Context = struct {
@@ -44,7 +44,7 @@ pub const Context = struct {
     fake: bool,
     to_read_pos: usize,
     to_read: std.ArrayList(u8),
-    _random: ?std.rand.DefaultPrng = null,
+    _random: ?std.Random.DefaultPrng = null,
 
     pub fn allocInit(ctx_allocator: std.mem.Allocator, config_: httpz.Config) Context {
         var pair: [2]c_int = undefined;
@@ -210,11 +210,11 @@ pub const Context = struct {
         })) catch unreachable;
     }
 
-    fn random(self: *Context) std.rand.Random {
+    fn random(self: *Context) std.Random {
         if (self._random == null) {
             var seed: u64 = undefined;
             std.posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
-            self._random = std.rand.DefaultPrng.init(seed);
+            self._random = std.Random.DefaultPrng.init(seed);
         }
         return self._random.?.random();
     }
@@ -254,7 +254,7 @@ pub const Context = struct {
     pub const FakeReader = struct {
         pos: usize,
         buf: []const u8,
-        random: std.rand.Random,
+        random: std.Random,
 
         pub fn read(self: *FakeReader, buf: []u8,) !usize {
             const data = self.buf[self.pos..];
@@ -272,7 +272,7 @@ pub const Context = struct {
     };
 };
 
-pub fn randomString(random: std.rand.Random, a: std.mem.Allocator, max: usize) []u8 {
+pub fn randomString(random: std.Random, a: std.mem.Allocator, max: usize) []u8 {
     var buf = a.alloc(u8, random.uintAtMost(usize, max) + 1) catch unreachable;
     const valid = "abcdefghijklmnopqrstuvwxyz0123456789-_";
     for (0..buf.len) |i| {
