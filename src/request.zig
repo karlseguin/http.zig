@@ -921,11 +921,11 @@ fn atoi(str: []const u8) ?usize {
 
     var n: usize = 0;
     for (str) |b| {
-        const d = b - '0';
-        if (d > 9) {
+        if (b < '0' or b > '9') {
             return null;
         }
-        n = n * 10 + @as(usize, @intCast(d));
+        n = std.math.mul(usize, n, 10) catch return null;
+        n = std.math.add(usize, n, @intCast(b - '0')) catch return null;
     }
     return n;
 }

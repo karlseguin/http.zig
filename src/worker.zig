@@ -1170,7 +1170,7 @@ fn requestParseError(conn: *Conn, err: anyerror) !void {
             metrics.invalidRequest();
             return writeError(conn, 431, "Request header is too big");
         },
-        error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine => {
+        error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine, error.InvalidContentLength  => {
             metrics.invalidRequest();
             return writeError(conn, 400, "Invalid Request");
         },
