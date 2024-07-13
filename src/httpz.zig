@@ -1107,7 +1107,13 @@ test "websocket: upgrade" {
     var pos: usize = 0;
     var buf: [20]u8 = undefined;
     while (pos < 12) {
-        const n = try stream.read(buf[pos..]);
+        const n = stream.read(buf[pos..]) catch |err| switch (err) {
+            error.WouldBlock => {
+                std.time.sleep(std.time.ns_per_ms);
+                continue;
+            },
+            else => return err,
+        };
         if (n == 0) {
             break;
         }
