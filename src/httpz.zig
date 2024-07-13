@@ -599,7 +599,6 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, context
 
     const conn = res.conn;
     const stream = conn.stream;
-    try conn.blocking();
     res.disown();
 
     try websocket.Handshake.reply(key, stream);

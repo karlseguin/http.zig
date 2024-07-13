@@ -28,6 +28,14 @@ const MAX_TIMEOUT = 2_147_483_647;
 // and largely working in isolation from each other (the only thing they share
 // is the *const config, a reference to the Server and to the Websocket server).
 // The bulk of the code in this file exists to support the NonBlocking Worker.
+// Our listening socket is nonblocking
+// Request sockets are blocking. WHAT?  We'll use epoll/kqueue to know when
+// a read wouldn't block. But we want writes to block because we want a nice
+// and easy API for the app by giving their response a predictable/controllable
+// lifetime.
+// A previous version had the sockets in nonblocking and would switch to blocking
+// as necessary, but I don't see what value that adds. It's just more syscalls
+// and complexity.
 pub fn NonBlocking(comptime S: type) type {
     return struct {
         id: usize,
@@ -160,12 +168,19 @@ pub fn NonBlocking(comptime S: type) type {
                 errdefer posix.close(socket);
                 metrics.connection();
 
-                // set non blocking
-                const flags = (try posix.fcntl(socket, posix.F.GETFL, 0)) | @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
-                _ = try posix.fcntl(socket, posix.F.SETFL, flags);
+                {
+                    // socket is _probably_ in NONBLOCKING mode (it inherits
+                    // the flag from the listening socket).
+                    const flags = try posix.fcntl(socket, posix.F.GETFL, 0);
+                    const nonblocking = @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
+                    if (flags & nonblocking == nonblocking) {
+                        // Yup, it's in nonblocking mode. Disable that flag to
+                        // put it in blocking mode.
+                        _ = try posix.fcntl(socket, posix.F.SETFL, flags & ~nonblocking);
+                    }
+                }
 
                 var conn = try manager.new(now);
-                conn.socket_flags = flags;
                 conn.stream = .{ .handle = socket };
                 conn.address = address;
 
@@ -268,15 +283,6 @@ pub fn NonBlocking(comptime S: type) type {
 // in nonblocking mode. A pointer to the conn is the userdata passed to epoll/kqueue.
 // Should only be created through the worker's ConnPool
 pub const Conn = struct {
-    // In normal operations, sockets are nonblocking. But since Zig doesn't have
-    // async, the applications using httpz have no consistent way to deal with
-    // nonblocking/async. So, if they use some of the more advanced features which
-    // take over the socket directly, we'll switch to blocking.
-    const IOMode = enum {
-        blocking,
-        nonblocking,
-    };
-
     // A connection can be in one of two states: active or keepalive. It begins
     // and stays in "active" until the response is sent. Then, assuming the
     // connection isn't closed, it transitions to "keepalive" until the first
@@ -294,8 +300,6 @@ pub const Conn = struct {
         keepalive,
     };
 
-    io_mode: IOMode,
-
     state: State,
 
     handover: Handover,
@@ -305,12 +309,6 @@ pub const Conn = struct {
 
     // number of requests made on this connection (within a keepalive session)
     request_count: u64,
-
-    // Socket flags. On connect, we get this in order to change to nonblocking.
-    // Since we have it at that point, we might as well store it for the rare cases
-    // we need to alter it. In those cases, storing it here allows us to avoid a
-    // system call to get the flag again.
-    socket_flags: usize,
 
     // whether or not to close the connection after the resposne is sent
     close: bool,
@@ -341,7 +339,7 @@ pub const Conn = struct {
     next: ?*Conn,
     prev: ?*Conn,
 
-    fn init(allocator: Allocator, buffer_pool: *BufferPool, ws: *websocket.Server, io_mode: IOMode, config: *const Config) !Conn {
+    fn init(allocator: Allocator, buffer_pool: *BufferPool, ws: *websocket.Server, config: *const Config) !Conn {
         const arena = try allocator.create(std.heap.ArenaAllocator);
         errdefer allocator.destroy(arena);
 
@@ -359,10 +357,8 @@ pub const Conn = struct {
             .close = false,
             .state = .active,
             .websocket = ws,
-            .io_mode = io_mode,
             .stream = undefined,
             .address = undefined,
-            .socket_flags = undefined,
             .req_state = req_state,
             .res_state = res_state,
             .next = null,
@@ -379,19 +375,6 @@ pub const Conn = struct {
         self.res_state.deinit(allocator);
     }
 
-    // this is the keepalive called by the NonBlocking codepath. It puts the
-    // connection back in blocking mode (if it isn't already.)
-    pub fn keepaliveAndRestore(self: *Conn, retain_allocated_bytes: usize) !void {
-        std.debug.assert(httpz.blockingMode() == false);
-        if (self.io_mode == .blocking) {
-            _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags);
-            self.io_mode = .nonblocking;
-        }
-        self.keepalive(retain_allocated_bytes);
-    }
-
-    // This is called by the above keepaliveAndRestore, but also by the Blocking
-    // worker directly.
     pub fn keepalive(self: *Conn, retain_allocated_bytes: usize) void {
         self.req_state.reset();
         self.res_state.reset();
@@ -405,19 +388,10 @@ pub const Conn = struct {
         self.prev = null;
         self.stream = undefined;
         self.address = undefined;
-        self.io_mode = .nonblocking;
         self.request_count = 0;
         self.req_state.reset();
         self.res_state.reset();
         _ = self.arena.reset(.{ .retain_with_limit = retain_allocated_bytes });
-    }
-
-    pub fn blocking(self: *Conn) !void {
-        if (comptime httpz.blockingMode() == false) {
-            if (self.io_mode == .blocking) return;
-            _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags & ~@as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
-            self.io_mode = .blocking;
-        }
     }
 };
 
@@ -538,10 +512,7 @@ const Manager = struct {
     }
 
     fn keepalive(self: *Manager, conn: *Conn, now: u32) void {
-        conn.keepaliveAndRestore(self.retain_allocated_bytes_keepalive) catch {
-            self.close(conn);
-            return;
-        };
+        conn.keepalive(self.retain_allocated_bytes_keepalive);
         conn.state = .keepalive;
         conn.timeout = now + self.timeout_keepalive;
         self.active_list.remove(conn);
@@ -653,7 +624,7 @@ const ConnPool = struct {
         for (0..min) |i| {
             const conn = try mem_pool.create();
             errdefer mem_pool.destroy(conn);
-            conn.* = try Conn.init(allocator, buffer_pool, ws, .nonblocking, config);
+            conn.* = try Conn.init(allocator, buffer_pool, ws, config);
 
             conns[i] = conn;
             initialized += 1;
@@ -693,7 +664,7 @@ const ConnPool = struct {
 
         const conn = try self.mem_pool.create();
         errdefer self.mem_pool.destroy(conn);
-        conn.* = try Conn.init(self.allocator, self.buffer_pool, self.websocket, .nonblocking, self.config);
+        conn.* = try Conn.init(self.allocator, self.buffer_pool, self.websocket, self.config);
         return conn;
     }
 
@@ -773,8 +744,8 @@ pub fn List(comptime T: type) type {
 const KQueue = struct {
     q: i32,
     change_count: usize,
-    change_buffer: [16]Kevent,
-    event_list: [64]Kevent,
+    change_buffer: [32]Kevent,
+    event_list: [128]Kevent,
 
     const Kevent = posix.Kevent;
 
@@ -859,7 +830,7 @@ const KQueue = struct {
 
 const EPoll = struct {
     q: i32,
-    event_list: [64]EpollEvent,
+    event_list: [128]EpollEvent,
 
     const linux = std.os.linux;
     const EpollEvent = linux.epoll_event;
@@ -1061,7 +1032,7 @@ pub fn Blocking(comptime S: type) type {
             var own = true;
             defer if (own) posix.close(socket);
 
-            var conn = Conn.init(self.allocator, &self.buffer_pool, self.websocket, .blocking, self.config) catch |err| {
+            var conn = Conn.init(self.allocator, &self.buffer_pool, self.websocket, self.config) catch |err| {
                 log.err("Failed to initialize connection: {}", .{err});
                 return;
             };
@@ -1197,15 +1168,7 @@ fn writeError(conn: *Conn, comptime status: u16, comptime msg: []const u8) !void
     try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &timeout);
     while (i < response.len) {
         const n = posix.write(socket, response[i..]) catch |err| switch (err) {
-            error.WouldBlock => {
-                if (conn.io_mode == .blocking) {
-                    // We were in blocking mode, which means we reached our timeout
-                    // We're done trying to send the response.
-                    return error.Timeout;
-                }
-                try conn.blocking();
-                continue;
-            },
+            error.WouldBlock => return error.Timeout,
             else => return err,
         };
 

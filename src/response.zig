@@ -120,7 +120,6 @@ pub const Response = struct {
         self.headers.add("Connection", "keep-alive");
 
         const conn = self.conn;
-        try conn.blocking();
         const stream = conn.stream;
 
         const header_buf = try self.prepareHeader();
@@ -137,8 +136,6 @@ pub const Response = struct {
         const stream = conn.stream;
         if (!self.chunked) {
             self.chunked = true;
-            try conn.blocking();
-
             const header_buf = try self.prepareHeader();
             try stream.writeAll(header_buf);
         }
@@ -482,22 +479,12 @@ pub const Response = struct {
     };
 };
 
-// We don't know if the socket is in blocking or non blocking mode. And we don't
-// care. We'll write the response, if it's blocking, so be it. If it's
-// non-blocking and doesn't block, great  But, if it's non-blocking and  DOES
-// block, we'll switch to blocking and retry.
 fn writeAllIOVec(conn: *Conn, vec: []std.posix.iovec_const) !void {
     const socket = conn.stream.handle;
 
     var i: usize = 0;
     while (true) {
-        var n = std.posix.writev(socket, vec[i..]) catch |err| switch (err) {
-            error.WouldBlock => {
-                try conn.blocking();
-                continue;
-            },
-            else => return err,
-        };
+        var n = try std.posix.writev(socket, vec[i..]);
         while (n >= vec[i].len) {
             n -= vec[i].len;
             i += 1;
