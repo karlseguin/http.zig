@@ -141,13 +141,9 @@ pub const Testing = struct {
 
     pub fn json(self: *Testing, value: anytype) void {
         var arr = ArrayList(u8).init(self.arena);
-        defer arr.deinit();
-
         std.json.stringify(value, .{}, arr.writer()) catch unreachable;
-
-        const bd = self.arena.alloc(u8, arr.items.len) catch unreachable;
-        @memcpy(bd, arr.items);
-        self.body(bd);
+        self.req.body_buffer = .{ .type = .static, .data = arr.items };
+        self.req.body_len = arr.items.len;
     }
 
     pub fn form(self: *Testing, data: anytype) void {
