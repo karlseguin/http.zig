@@ -226,10 +226,15 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         _notFoundHandler: Action(G),
         _cond: Thread.Condition,
         _thread_pool: *TP,
-        _signals: [][2]fd_t,
+        _signalers: []Signalers,
         _max_request_per_connection: u64,
 
         const Self = @This();
+
+        const Signalers = struct {
+            pipe: [2]fd_t,
+            lock: Thread.Mutex,
+        };
 
         pub fn init(allocator: Allocator, config: Config, ctx: G) !Self {
             const nfh = if (comptime G == void) defaultNotFound else defaultNotFoundWithContext;
@@ -251,15 +256,15 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             });
             errdefer thread_pool.deinit();
 
-            const signals = try allocator.alloc([2]fd_t, config.workers.count orelse Config.DEFAULT_WORKERS);
-            errdefer allocator.free(signals);
+            const signalers = try allocator.alloc(Signalers, config.workers.count orelse Config.DEFAULT_WORKERS);
+            errdefer allocator.free(signalers);
 
             return .{
                 .ctx = ctx,
                 .config = var_config,
                 .allocator = allocator,
                 ._cond = .{},
-                ._signals = signals,
+                ._signalers = signalers,
                 ._errorHandler = erh,
                 ._notFoundHandler = nfh,
                 ._thread_pool = thread_pool,
@@ -270,7 +275,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self.allocator.free(self._signals);
+            self.allocator.free(self._signalers);
             self._router.deinit(self.allocator);
             self._thread_pool.deinit();
         }
@@ -366,7 +371,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 thrd.join();
             } else {
                 const Worker = worker.NonBlocking(*Self);
-                var signals = self._signals;
+                var signalers = self._signalers;
                 const worker_count = config.workers.count orelse Config.DEFAULT_WORKERS;
                 const workers = try allocator.alloc(Worker, worker_count);
                 const threads = try allocator.alloc(Thread, worker_count);
@@ -375,7 +380,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
                 defer {
                     for (0..started) |i| {
-                        posix.close(signals[i][1]);
+                        posix.close(signalers[i].pipe[1]);
                         threads[i].join();
                         workers[i].deinit();
                     }
@@ -384,13 +389,16 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 }
 
                 for (0..workers.len) |i| {
-                    signals[i] = try posix.pipe2(.{.NONBLOCK = true});
-                    errdefer posix.close(signals[i][1]);
+                    signalers[i] = .{
+                        .lock = .{},
+                        .pipe = try posix.pipe2(.{.NONBLOCK = true}),
+                    };
+                    errdefer posix.close(signalers[i].pipe[1]);
 
                     workers[i] = try Worker.init(allocator, i, self, &ws, &config);
                     errdefer workers[i].deinit();
 
-                    threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], socket, signals[i][0] });
+                    threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], socket, signalers[i].pipe[0] });
                     started += 1;
                 }
 
@@ -459,12 +467,18 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
         pub fn notifyingHandler(self: *Self, w: *worker.NonBlocking(*Self), conn: *Conn, thread_buf: []u8) void {
             self.handler(conn, thread_buf);
-            const signal = self._signals[w.id][1];
+
+            var signaler = self._signalers[w.id];
+            const pipe = signaler.pipe[1];
             const buf = std.mem.asBytes(&@intFromPtr(conn));
 
             var to_write: usize = @sizeOf(usize);
+
+            signaler.lock.lock();
+            defer signaler.lock.unlock();
+
             while (to_write > 0) {
-                to_write -= std.posix.write(signal, buf) catch @panic("TODO");
+                to_write -= std.posix.write(pipe, buf) catch @panic("TODO");
             }
         }
 
