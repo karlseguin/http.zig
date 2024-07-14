@@ -857,7 +857,7 @@ In blocking mode, `config.workers.max_conn` and `config.workers.min_conn` are ig
 If you aren't using a reverse proxy, you should always set the `config.timeout.request`, `config.timeout.keepalive` and `config.timeout.request_count` settings. In blocking mode, consider using conservative values: say 5/5/5 (5 second request timeout, 5 second keepalive timeout, and 5 keepalive count). You can monitor the `httpz_timeout_active` metric to see if the request timeout is too low.
 
 # Testing
-The `httpz.testing` namespace exists to help application developers setup `*httpz.Requests` and assert `*httpz.Responses`.
+The `httpz.testing` namespace exists to help application developers setup an `*httpz.Request` and assert an `*httpz.Response`.
 
 Imagine we have the following partial action:
 
@@ -906,6 +906,9 @@ web_test.header("Authorization", "admin");
 web_test.body("over 9000!");
 // OR
 web_test.json(.{.over = 9000});
+// OR 
+// This requires ht.init(.{.request = .{.max_form_count = 10}})
+web_test.form(.{.over = "9000"});
 
 // at this point, web_test.req has a param value, a query string value, a header value and a body.
 ```
