@@ -150,6 +150,29 @@ pub const Testing = struct {
         self.body(bd);
     }
 
+    pub fn form(self: *Testing, data: anytype) void {
+        var arr = ArrayList(u8).init(self.arena);
+
+        inline for (@typeInfo(@TypeOf(data)).Struct.fields) |field| {
+            const name = escapeString(self.arena, field.name) catch unreachable;
+            const value = escapeString(self.arena,  @field(data, field.name)) catch unreachable;
+            arr.appendSlice(name) catch unreachable;
+            arr.append('=') catch unreachable;
+            arr.appendSlice(value) catch unreachable;
+            arr.append('&') catch unreachable;
+        }
+
+        const items = arr.items;
+        if (items.len == 0) {
+            return;
+        }
+
+        // strip out the last &
+        const bd = items[0..items.len - 1];
+        self.req.body_buffer = .{ .type = .static, .data = bd};
+        self.req.body_len = bd.len;
+    }
+
     pub fn expectGzip(self: *Testing) !void {
         var res = try self.parseResponse();
         if (res.headers.get("Content-Encoding")) |ce| {
@@ -543,6 +566,16 @@ test "testing: json" {
 
     ht.json(.{ .over = 9000 });
     try t.expectString("{\"over\":9000}", ht.req.body().?);
+}
+
+test "testing: form" {
+    var ht = init(.{.request = .{.max_form_count = 2}});
+    defer ht.deinit();
+
+    ht.form(.{ .over = "(9000)", .hello = "wo rld" });
+    const fd = try ht.req.formData();
+    try t.expectString("(9000)", fd.get("over").?);
+    try t.expectString("wo rld", fd.get("hello").?);
 }
 
 test "testing: expectBody empty" {

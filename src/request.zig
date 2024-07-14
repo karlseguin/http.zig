@@ -236,7 +236,6 @@ pub const Request = struct {
                 if (value_res.buffered) {
                     buf = buf[value_res.value.len..];
                 }
-
                 fd.add(key_res.value, value_res.value);
             } else {
                 const key_res = try Url.unescape(allocator, buf, pair);
