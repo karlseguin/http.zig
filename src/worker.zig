@@ -868,28 +868,17 @@ const EPoll = struct {
 
     fn wait(self: *EPoll, timeout_sec: ?i32) !Iterator {
         const event_list = &self.event_list;
-        const event_count = blk: while (true) {
-            const rc = linux.syscall6(
-                .epoll_pwait2,
-                @as(usize, @bitCast(@as(isize, self.q))),
-                @intFromPtr(event_list.ptr),
-                event_list.len,
-                if (timeout_sec) |ts| @intFromPtr(&posix.timespec{ .tv_sec = @intCast(ts), .tv_nsec = 0 }) else 0,
-                0,
-                @sizeOf(linux.sigset_t),
-            );
-
-            // taken from std.os.epoll_waits
-            switch (posix.errno(rc)) {
-                .SUCCESS => break :blk @as(usize, @intCast(rc)),
-                .INTR => continue,
-                .BADF => unreachable,
-                .FAULT => unreachable,
-                .INVAL => unreachable,
-                else => unreachable,
+        var timeout: i32 = -1;
+        if (timeout_sec) |sec| {
+            if (sec > 2147483) {
+                // max supported timeout by epoll_wait.
+                timeout = 2147483647;
+            } else {
+                timeout = sec * 1000;
             }
-        };
+        }
 
+        const event_count = posix.epoll_wait(self.q, event_list, timeout);
         return .{
             .index = 0,
             .events = event_list[0..event_count],
