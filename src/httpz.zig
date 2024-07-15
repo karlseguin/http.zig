@@ -224,6 +224,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         _router: Router(G, R),
         _errorHandler: ErrorHandlerAction(G),
         _notFoundHandler: Action(G),
+        _mut: Thread.Mutex,
         _cond: Thread.Condition,
         _thread_pool: *TP,
         _signalers: []Signalers,
@@ -263,6 +264,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 .ctx = ctx,
                 .config = var_config,
                 .allocator = allocator,
+                ._mut = .{},
                 ._cond = .{},
                 ._signalers = signalers,
                 ._errorHandler = erh,
@@ -290,6 +292,9 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         }
 
         pub fn listen(self: *Self) !void {
+            self._mut.lock();
+            errdefer self._mut.unlock();
+
             const net = std.net;
             const posix = std.posix;
             const config = self.config;
@@ -340,7 +345,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 try posix.bind(socket, &address.any, socklen);
                 try posix.listen(socket, 1204); // kernel backlog
             }
-            defer posix.close(socket);
+            errdefer posix.close(socket);
 
             const allocator = self.allocator;
 
@@ -357,19 +362,19 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             defer ws.deinit(allocator);
 
             if (comptime blockingMode()) {
+                errdefer posix.close(socket);
                 var w = try worker.Blocking(*Self).init(allocator, self, &ws, &config);
                 defer w.deinit();
 
                 const thrd = try Thread.spawn(.{}, worker.Blocking(*Self).listen, .{&w, socket});
 
-                // is this really the best way?
-                var mutex = Thread.Mutex{};
-                mutex.lock();
-                self._cond.wait(&mutex);
-                mutex.unlock();
+                self._cond.wait(&self._mut);
+
                 w.stop();
+                posix.close(socket);
                 thrd.join();
             } else {
+                defer posix.close(socket);
                 const Worker = worker.NonBlocking(*Self);
                 var signalers = self._signalers;
                 const worker_count = config.workers.count orelse Config.DEFAULT_WORKERS;
@@ -403,10 +408,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 }
 
                 // is this really the best way?
-                var mutex = Thread.Mutex{};
-                mutex.lock();
-                self._cond.wait(&mutex);
-                mutex.unlock();
+                self._cond.wait(&self._mut);
             }
         }
 
@@ -415,6 +417,12 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         }
 
         pub fn stop(self: *Self) void {
+            // this locking, along with the locking in listen() is necessary
+            // for handling the case where stop() is called before the server is
+            // up. The cond.signal() will only be called after the cond.wait() is
+            // registered
+            self._mut.lock();
+            defer self._mut.unlock();
             self._cond.signal();
         }
 
@@ -600,13 +608,14 @@ pub fn blockingMode() bool {
 }
 
 const t = @import("t.zig");
-var la = std.heap.GeneralPurposeAllocator(.{}){};
+var global_test_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
-var default_server: *ServerCtx(void, void) = undefined;
-var context_server: *ServerCtx(u32, u32) = undefined;
-var cors_server: *ServerCtx(u32, u32) = undefined;
-var reuse_server: *ServerCtx(void, void) = undefined;
-var handle_server: *ServerCtx(CustomHandler, CustomHandler) = undefined;
+var default_server: ServerCtx(void, void) = undefined;
+var context_server: ServerCtx(u32, u32) = undefined;
+var cors_server: ServerCtx(u32, u32) = undefined;
+var reuse_server: ServerCtx(void, void) = undefined;
+var handle_server: ServerCtx(CustomHandler, CustomHandler) = undefined;
+var test_server_threads: [5]Thread = undefined;
 
 pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, context: anytype) !bool {
     const key = ensureWebsocketRequest(req) orelse return false;
@@ -688,13 +697,12 @@ const FallbackAllocator = struct {
     }
 };
 
-test {
+test "tests:beforeAll" {
     // this will leak since the server will run until the process exits. If we use
     // our testing allocator, it'll report the leak.
-    const leaking_allocator = la.allocator();
+    const ga = global_test_allocator.allocator();
     {
-        default_server = try leaking_allocator.create(ServerApp(void));
-        default_server.* = try Server().init(leaking_allocator, .{ .port = 5992 });
+        default_server = try Server().init(ga, .{ .port = 5992 });
         var router = default_server.router();
         router.get("/test/ws", testWS);
         router.get("/test/json", testJsonRes);
@@ -702,13 +710,11 @@ test {
         router.get("/test/stream", testEventStream);
         router.get("/test/chunked", testChunked);
         router.allC("/test/dispatcher", testDispatcherAction, .{ .dispatcher = testDispatcher1 });
-        var thread = try default_server.listenInNewThread();
-        thread.detach();
+        test_server_threads[0] = try default_server.listenInNewThread();
     }
 
     {
-        context_server = try leaking_allocator.create(ServerApp(u32));
-        context_server.* = try ServerApp(u32).init(leaking_allocator, .{ .port = 5993 }, 3);
+        context_server = try ServerApp(u32).init(ga, .{ .port = 5993 }, 3);
         context_server.notFound(testNotFound);
         var router = context_server.router();
         router.get("/", ctxEchoAction);
@@ -727,44 +733,57 @@ test {
         debug_routes.head("/ping", ctxEchoAction);
         debug_routes.options("/stats", ctxEchoAction);
 
-        var thread = try context_server.listenInNewThread();
-        thread.detach();
+        test_server_threads[1] = try context_server.listenInNewThread();
     }
 
     {
-        cors_server = try leaking_allocator.create(ServerCtx(u32, u32));
-        cors_server.* = try ServerCtx(u32, u32).init(leaking_allocator, .{
+        cors_server = try ServerCtx(u32, u32).init(ga, .{
             .port = 5994,
             .cors = .{ .origin = "httpz.local", .headers = "content-type", .methods = "GET,POST", .max_age = "300" },
         }, 100);
         var router = cors_server.router();
         router.all("/echo", ctxEchoAction);
-        var thread = try cors_server.listenInNewThread();
-        thread.detach();
+        test_server_threads[2] = try cors_server.listenInNewThread();
     }
 
     {
         // with only 1 worker, and a min/max conn of 1, each request should
         // hit our reset path.
-        reuse_server = try leaking_allocator.create(ServerCtx(void, void));
-        reuse_server.* = try Server().init(leaking_allocator, .{
+        reuse_server = try Server().init(ga, .{
             .port = 5995,
             .workers = .{.count = 1, .min_conn = 1, .max_conn = 1}
         });
         var router = reuse_server.router();
         router.get("/test/writer", testWriter);
-        var thread = try reuse_server.listenInNewThread();
-        thread.detach();
+        test_server_threads[3] = try reuse_server.listenInNewThread();
     }
 
     {
-        handle_server = try leaking_allocator.create(ServerCtx(CustomHandler, CustomHandler));
-        handle_server.* = try ServerCtx(CustomHandler, CustomHandler).init(leaking_allocator, .{.port = 5996}, CustomHandler{});
-        var thread = try handle_server.listenInNewThread();
-        thread.detach();
+        handle_server = try ServerCtx(CustomHandler, CustomHandler).init(ga, .{.port = 5996}, CustomHandler{});
+        test_server_threads[4] = try handle_server.listenInNewThread();
     }
 
     std.testing.refAllDecls(@This());
+}
+
+test "tests:afterAll" {
+    default_server.stop();
+    context_server.stop();
+    cors_server.stop();
+    reuse_server.stop();
+    handle_server.stop();
+
+    for (test_server_threads) |thread| {
+        thread.join();
+    }
+
+    default_server.deinit();
+    context_server.deinit();
+    cors_server.deinit();
+    reuse_server.deinit();
+    handle_server.deinit();
+
+    try t.expectEqual(false, global_test_allocator.detectLeaks());
 }
 
 test "httpz: invalid request" {

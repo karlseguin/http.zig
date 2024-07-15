@@ -988,13 +988,12 @@ pub fn Blocking(comptime S: type) type {
         pub fn listen(self: *Self, listener: posix.socket_t) void {
             var server = self.server;
             while (true) {
-                if (@atomicLoad(bool, &self.running, .monotonic) == false) {
-                    return;
-                }
-
                 var address: std.net.Address = undefined;
                 var address_len: posix.socklen_t = @sizeOf(std.net.Address);
                 const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
+                    if (@atomicLoad(bool, &self.running, .monotonic) == false) {
+                        return;
+                    }
                     log.err("Failed to accept socket: {}", .{err});
                     continue;
                 };
