@@ -607,16 +607,6 @@ pub fn blockingMode() bool {
     };
 }
 
-const t = @import("t.zig");
-var global_test_allocator = std.heap.GeneralPurposeAllocator(.{}){};
-
-var default_server: ServerCtx(void, void) = undefined;
-var context_server: ServerCtx(u32, u32) = undefined;
-var cors_server: ServerCtx(u32, u32) = undefined;
-var reuse_server: ServerCtx(void, void) = undefined;
-var handle_server: ServerCtx(CustomHandler, CustomHandler) = undefined;
-var test_server_threads: [5]Thread = undefined;
-
 pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, context: anytype) !bool {
     const key = ensureWebsocketRequest(req) orelse return false;
 
@@ -697,6 +687,16 @@ const FallbackAllocator = struct {
     }
 };
 
+
+const t = @import("t.zig");
+var global_test_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+
+var default_server: ServerCtx(void, void) = undefined;
+var context_server: ServerCtx(u32, u32) = undefined;
+var cors_server: ServerCtx(u32, u32) = undefined;
+var reuse_server: ServerCtx(void, void) = undefined;
+var handle_server: ServerCtx(CustomHandler, CustomHandler) = undefined;
+var test_server_threads: [5]Thread = undefined;
 test "tests:beforeAll" {
     // this will leak since the server will run until the process exits. If we use
     // our testing allocator, it'll report the leak.

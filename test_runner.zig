@@ -3,7 +3,7 @@
 //   .target = target,
 //   .optimize = optimize,
 //   .test_runner = "test_runner.zig", // add this line
-//   .root_source_file = .{ .path = "src/main.zig" },
+//   .root_source_file = b.path("src/main.zig"),
 // });
 
 const std = @import("std");
