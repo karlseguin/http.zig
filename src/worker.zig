@@ -587,8 +587,8 @@ const Manager = struct {
                 return .{ .count = count, .timeout = timeout };
             }
             count += 1;
-            self.close(c);
             conn = c.next;
+            self.close(c);
         }
         return .{ .count = count, .timeout = null };
     }
