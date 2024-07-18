@@ -292,8 +292,10 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         }
 
         pub fn listen(self: *Self) !void {
+            // incase "stop" is waiting
+            defer self._cond.signal();
             self._mut.lock();
-            errdefer self._mut.unlock();
+            defer self._mut.unlock();
 
             const net = std.net;
             const posix = std.posix;
@@ -368,6 +370,10 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
                 const thrd = try Thread.spawn(.{}, worker.Blocking(*Self).listen, .{&w, socket});
 
+                // incase listenInNewThread was used and is waiting for us to start
+                self._cond.signal();
+
+                // now wait for stop() to be called
                 self._cond.wait(&self._mut);
 
                 w.stop();
@@ -407,13 +413,23 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                     started += 1;
                 }
 
-                // is this really the best way?
+                // incase listenInNewThread was used and is waiting for us to start
+                self._cond.signal();
+
+                // now wait for stop() to be called
                 self._cond.wait(&self._mut);
             }
         }
 
         pub fn listenInNewThread(self: *Self) !std.Thread {
-            return try std.Thread.spawn(.{}, listen, .{self});
+            self._mut.lock();
+            defer self._mut.unlock();
+            const thrd = try std.Thread.spawn(.{}, listen, .{self});
+
+            // we don't return until listen() signals us that the server is up
+            self._cond.wait(&self._mut);
+
+            return thrd;
         }
 
         pub fn stop(self: *Self) void {
@@ -422,8 +438,10 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             // up. The cond.signal() will only be called after the cond.wait() is
             // registered
             self._mut.lock();
-            defer self._mut.unlock();
             self._cond.signal();
+
+            // we don't return until listen signals us that the server is down
+            self._cond.timedWait(&self._mut, std.time.ns_per_s * 5) catch {};
         }
 
         pub fn notFound(self: *Self, nfa: Action(G)) void {
@@ -687,7 +705,6 @@ const FallbackAllocator = struct {
     }
 };
 
-
 const t = @import("t.zig");
 var global_test_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -784,6 +801,14 @@ test "tests:afterAll" {
     handle_server.deinit();
 
     try t.expectEqual(false, global_test_allocator.detectLeaks());
+}
+
+test "httpz: quick shutdown" {
+    var server = try Server().init(t.allocator, .{ .port = 6992 });
+    const thrd = try server.listenInNewThread();
+    server.stop();
+    server.deinit();
+    thrd.join();
 }
 
 test "httpz: invalid request" {

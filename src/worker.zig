@@ -986,6 +986,11 @@ pub fn Blocking(comptime S: type) type {
         }
 
         pub fn listen(self: *Self, listener: posix.socket_t) void {
+            if (@atomicLoad(bool, &self.running, .monotonic) == false) {
+                // silly, but try to minimize the window where things can go
+                // bad if the server is stopped just as it starts
+                return;
+            }
             var server = self.server;
             while (true) {
                 var address: std.net.Address = undefined;
