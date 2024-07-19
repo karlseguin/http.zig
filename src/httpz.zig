@@ -283,7 +283,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         }
 
         pub fn dispatchUndefined(_: *Self) Dispatcher(G, R) {
-            return struct{
+            return struct {
                 fn dispatch(ctx: G, action: Action(R), req: *Request, res: *Response) !void {
                     _ = ctx;
                     return action(undefined, req, res);
@@ -345,7 +345,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             {
                 const socklen = address.getOsSockLen();
                 try posix.bind(socket, &address.any, socklen);
-                try posix.listen(socket, 1204); // kernel backlog
+                try posix.listen(socket, 1024); // kernel backlog
             }
             errdefer posix.close(socket);
 
@@ -368,7 +368,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 var w = try worker.Blocking(*Self).init(allocator, self, &ws, &config);
                 defer w.deinit();
 
-                const thrd = try Thread.spawn(.{}, worker.Blocking(*Self).listen, .{&w, socket});
+                const thrd = try Thread.spawn(.{}, worker.Blocking(*Self).listen, .{ &w, socket });
 
                 // incase listenInNewThread was used and is waiting for us to start
                 self._cond.signal();
@@ -402,7 +402,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 for (0..workers.len) |i| {
                     signalers[i] = .{
                         .lock = .{},
-                        .pipe = try posix.pipe2(.{.NONBLOCK = true}),
+                        .pipe = try posix.pipe2(.{ .NONBLOCK = true }),
                     };
                     errdefer posix.close(signalers[i].pipe[1]);
 
@@ -537,7 +537,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             var res = Response.init(allocator, conn);
 
             if (comptime hasHandle(G)) {
-                @call(.auto, G.handle, .{self.ctx, &req, &res});
+                @call(.auto, G.handle, .{ self.ctx, &req, &res });
             } else {
                 const dispatchable_action = self._router.route(req.method, req.url.path, &req.params);
                 self.dispatch(dispatchable_action, &req, &res) catch |err| {
@@ -609,7 +609,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
 fn hasHandle(comptime T: type) bool {
     switch (@typeInfo(T)) {
-        .Struct =>  return @hasDecl(T, "handle"),
+        .Struct => return @hasDecl(T, "handle"),
         .Pointer => |ptr| return hasHandle(ptr.child),
         else => return false,
     }
@@ -766,17 +766,14 @@ test "tests:beforeAll" {
     {
         // with only 1 worker, and a min/max conn of 1, each request should
         // hit our reset path.
-        reuse_server = try Server().init(ga, .{
-            .port = 5995,
-            .workers = .{.count = 1, .min_conn = 1, .max_conn = 1}
-        });
+        reuse_server = try Server().init(ga, .{ .port = 5995, .workers = .{ .count = 1, .min_conn = 1, .max_conn = 1 } });
         var router = reuse_server.router();
         router.get("/test/writer", testWriter);
         test_server_threads[3] = try reuse_server.listenInNewThread();
     }
 
     {
-        handle_server = try ServerCtx(CustomHandler, CustomHandler).init(ga, .{.port = 5996}, CustomHandler{});
+        handle_server = try ServerCtx(CustomHandler, CustomHandler).init(ga, .{ .port = 5996 }, CustomHandler{});
         test_server_threads[4] = try handle_server.listenInNewThread();
     }
 
@@ -1086,12 +1083,12 @@ test "httpz: writer re-use" {
             .id = try std.fmt.allocPrint(t.arena.allocator(), "id-{d}", .{i}),
             .power = i,
         };
-        try stream.writeAll(try std.fmt.bufPrint(&buf, "GET /test/writer?count={d} HTTP/1.1\r\nContent-Length: 0\r\n\r\n", .{i+1}));
+        try stream.writeAll(try std.fmt.bufPrint(&buf, "GET /test/writer?count={d} HTTP/1.1\r\nContent-Length: 0\r\n\r\n", .{i + 1}));
 
         var res = testReadParsed(stream);
         defer res.deinit();
 
-        try res.expectJson(.{ .data = expected[0..i+1]});
+        try res.expectJson(.{ .data = expected[0 .. i + 1] });
     }
 }
 
@@ -1259,7 +1256,7 @@ fn testJsonRes(_: *Request, res: *Response) !void {
 
 fn testEventStream(_: *Request, res: *Response) !void {
     res.status = 818;
-    try res.startEventStream(StreamContext{.data = "hello"}, StreamContext.handle);
+    try res.startEventStream(StreamContext{ .data = "hello" }, StreamContext.handle);
 }
 
 const StreamContext = struct {
@@ -1352,7 +1349,7 @@ fn testWriter(req: *Request, res: *Response) !void {
             .power = i,
         };
     }
-    return res.json(.{.data = data}, .{});
+    return res.json(.{ .data = data }, .{});
 }
 
 fn testStream(port: u16) std.net.Stream {
