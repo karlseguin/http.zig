@@ -6,6 +6,20 @@ http.zig is used by [logdk](https://github.com/karlseguin/logdk), my log aggrega
 # Installation
 This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`. This library only imports [websocket.zig](https://github.com/karlseguin/websocket.zig) and [metrics.zig](https://github.com/karlseguin/metrics.zig) - two libraries that I've written which have no other dependencies.
 
+```
+zig fetch --save git+https://github.com/karlseguin/http.zig
+```
+
+In your `build.zig.zon`:
+```zig
+pub fn build(b: *std.Build) void {
+    // your target/optimize setup
+    // your `exe` declaration
+    const httpz_module = b.dependency("httpz", .{.target = target, .optimize = optimize}).module("httpz");
+    exe.root_module.addImport("httpz", httpz_module);
+}
+```
+
 # Alternatives
 If you're looking for a higher level web framework with more included functionality, consider [JetZig](https://www.jetzig.dev/) which is built on top of httpz.
 
