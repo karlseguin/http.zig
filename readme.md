@@ -85,13 +85,14 @@ pub fn main() void {
     server = try httpz.Server().init(allocator, .{.port = 5882});
     defer server.deinit();
 
+    // now that our server is up, we register our intent to handle SIGINT
     try std.posix.sigaction(std.posix.SIG.INT, &.{
         .handler = .{.handler = shutdown},
         .mask = std.posix.empty_sigset,
         .flags = 0,
     }, null);
 
-    // setup routes and actions
+    // TODO: setup your routes and things like normal
 
     // this will block until server.stop() is called
     // which will then run the server.deinit() we setup above with `defer`
