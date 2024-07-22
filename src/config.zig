@@ -84,12 +84,19 @@ pub const Config = struct {
         // config.workers.count = 1
 
         if (httpz.blockingMode()) {
-            const worker_count = self.workers.count orelse DEFAULT_WORKERS;
+            const worker_count = self.workerCount();
             if (worker_count > 1) {
                 return thread_count + worker_count - 1;
             }
         }
 
         return thread_count;
+    }
+
+    pub fn workerCount(self: *const Config) u32 {
+        if (httpz.blockingMode()) {
+            return 1;
+        }
+        return self.workers.count orelse DEFAULT_WORKERS;
     }
 };

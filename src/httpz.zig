@@ -16,7 +16,9 @@ pub const Url = @import("url.zig").Url;
 pub const Config = @import("config.zig").Config;
 
 const Thread = std.Thread;
-const fd_t = std.posix.fd_t;
+const net = std.net;
+const posix = std.posix;
+const fd_t = posix.fd_t;
 const Allocator = std.mem.Allocator;
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 
@@ -257,7 +259,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             });
             errdefer thread_pool.deinit();
 
-            const signalers = try allocator.alloc(Signalers, config.workers.count orelse Config.DEFAULT_WORKERS);
+            const signalers = try allocator.alloc(Signalers, config.workerCount());
             errdefer allocator.free(signalers);
 
             return .{
@@ -292,13 +294,9 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         }
 
         pub fn listen(self: *Self) !void {
-            // incase "stop" is waiting
-            defer self._cond.signal();
             self._mut.lock();
-            defer self._mut.unlock();
+            errdefer self._mut.unlock();
 
-            const net = std.net;
-            const posix = std.posix;
             const config = self.config;
 
             var no_delay = true;
@@ -373,26 +371,28 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 // incase listenInNewThread was used and is waiting for us to start
                 self._cond.signal();
 
-                // now wait for stop() to be called
-                self._cond.wait(&self._mut);
-
-                w.stop();
-                posix.close(socket);
+                // this is what we'll shutdown when stop() is called
+                // signalers[0].pipe[0] is invalid, but stop only cares about
+                // pipe[1]
+                self._signalers[0] = .{.lock = .{}, .pipe = [2]fd_t{0, socket}};
+                self._mut.unlock();
                 thrd.join();
             } else {
                 defer posix.close(socket);
                 const Worker = worker.NonBlocking(*Self);
                 var signalers = self._signalers;
-                const worker_count = config.workers.count orelse Config.DEFAULT_WORKERS;
+                const worker_count = config.workerCount();
                 const workers = try allocator.alloc(Worker, worker_count);
                 const threads = try allocator.alloc(Thread, worker_count);
 
                 var started: usize = 0;
+                errdefer for (0..started) |i| {
+                    // on success, these will be closed by a call to stop();
+                    posix.close(signalers[i].pipe[1]);
+                };
 
                 defer {
                     for (0..started) |i| {
-                        posix.close(signalers[i].pipe[1]);
-                        threads[i].join();
                         workers[i].deinit();
                     }
                     allocator.free(workers);
@@ -415,9 +415,11 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
 
                 // incase listenInNewThread was used and is waiting for us to start
                 self._cond.signal();
+                self._mut.unlock();
 
-                // now wait for stop() to be called
-                self._cond.wait(&self._mut);
+                for (threads) |thrd |{
+                    thrd.join();
+                }
             }
         }
 
@@ -433,15 +435,18 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         }
 
         pub fn stop(self: *Self) void {
-            // this locking, along with the locking in listen() is necessary
-            // for handling the case where stop() is called before the server is
-            // up. The cond.signal() will only be called after the cond.wait() is
-            // registered
             self._mut.lock();
-            self._cond.signal();
+            defer self._mut.unlock();
+            for (self._signalers) |*s| {
+                // not clear that this locking is necessary/does anything, but
+                // also don't think there's any harm
+                s.lock.lock();
+                defer s.lock.unlock();
 
-            // we don't return until listen signals us that the server is down
-            self._cond.timedWait(&self._mut, std.time.ns_per_s * 5) catch {};
+                // pipe[0] is not valid when blockingMode() == true, don't
+                // access it!
+                posix.close(s.pipe[1]);
+            }
         }
 
         pub fn notFound(self: *Self, nfa: Action(G)) void {
@@ -504,7 +509,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             defer signaler.lock.unlock();
 
             while (to_write > 0) {
-                to_write -= std.posix.write(pipe, buf) catch @panic("TODO");
+                to_write -= posix.write(pipe, buf) catch @panic("TODO");
             }
         }
 
@@ -653,7 +658,7 @@ fn ensureWebsocketRequest(req: *Request) ?[]const u8 {
     return req.header("sec-websocket-key");
 }
 
-fn websocketHandler(comptime H: type, server: *websocket.Server, stream: std.net.Stream, context: anytype) void {
+fn websocketHandler(comptime H: type, server: *websocket.Server, stream: net.Stream, context: anytype) void {
     errdefer stream.close();
     var conn = server.newConn(stream);
     var handler = H.init(&conn, context) catch return;
@@ -1262,7 +1267,7 @@ fn testEventStream(_: *Request, res: *Response) !void {
 const StreamContext = struct {
     data: []const u8,
 
-    fn handle(self: StreamContext, stream: std.net.Stream) void {
+    fn handle(self: StreamContext, stream: net.Stream) void {
         stream.writeAll(self.data) catch unreachable;
         stream.writeAll("a message") catch unreachable;
     }
@@ -1352,20 +1357,20 @@ fn testWriter(req: *Request, res: *Response) !void {
     return res.json(.{ .data = data }, .{});
 }
 
-fn testStream(port: u16) std.net.Stream {
-    const timeout = std.mem.toBytes(std.posix.timeval{
+fn testStream(port: u16) net.Stream {
+    const timeout = std.mem.toBytes(posix.timeval{
         .tv_sec = 0,
         .tv_usec = 20_000,
     });
 
-    const address = std.net.Address.parseIp("127.0.0.1", port) catch unreachable;
-    const stream = std.net.tcpConnectToAddress(address) catch unreachable;
-    std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &timeout) catch unreachable;
-    std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, &timeout) catch unreachable;
+    const address = net.Address.parseIp("127.0.0.1", port) catch unreachable;
+    const stream = net.tcpConnectToAddress(address) catch unreachable;
+    posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeout) catch unreachable;
+    posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &timeout) catch unreachable;
     return stream;
 }
 
-fn testReadAll(stream: std.net.Stream, buf: []u8) []u8 {
+fn testReadAll(stream: net.Stream, buf: []u8) []u8 {
     var pos: usize = 0;
     var blocked = false;
     while (true) {
@@ -1388,13 +1393,13 @@ fn testReadAll(stream: std.net.Stream, buf: []u8) []u8 {
     unreachable;
 }
 
-fn testReadParsed(stream: std.net.Stream) testing.Testing.Response {
+fn testReadParsed(stream: net.Stream) testing.Testing.Response {
     var buf: [4096]u8 = undefined;
     const data = testReadAll(stream, &buf);
     return testing.parse(data) catch unreachable;
 }
 
-fn testReadHeader(stream: std.net.Stream) testing.Testing.Response {
+fn testReadHeader(stream: net.Stream) testing.Testing.Response {
     var pos: usize = 0;
     var blocked = false;
     var buf: [1024]u8 = undefined;

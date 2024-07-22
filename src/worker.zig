@@ -915,7 +915,6 @@ fn timestamp() u32 {
 pub fn Blocking(comptime S: type) type {
     return struct {
         server: S,
-        running: bool,
         config: *const Config,
         allocator: Allocator,
         websocket: *websocket.Server,
@@ -964,7 +963,6 @@ pub fn Blocking(comptime S: type) type {
             const retain_allocated_bytes_keepalive = config.workers.retain_allocated_bytes orelse 8192;
 
             return .{
-                .running = true,
                 .server = server,
                 .config = config,
                 .websocket = ws,
@@ -981,22 +979,13 @@ pub fn Blocking(comptime S: type) type {
             self.buffer_pool.deinit();
         }
 
-        pub fn stop(self: *Self) void {
-            @atomicStore(bool, &self.running, false, .monotonic);
-        }
-
         pub fn listen(self: *Self, listener: posix.socket_t) void {
-            if (@atomicLoad(bool, &self.running, .monotonic) == false) {
-                // silly, but try to minimize the window where things can go
-                // bad if the server is stopped just as it starts
-                return;
-            }
             var server = self.server;
             while (true) {
                 var address: std.net.Address = undefined;
                 var address_len: posix.socklen_t = @sizeOf(std.net.Address);
                 const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
-                    if (@atomicLoad(bool, &self.running, .monotonic) == false) {
+                    if (err == error.ConnectionAborted) {
                         return;
                     }
                     log.err("Failed to accept socket: {}", .{err});

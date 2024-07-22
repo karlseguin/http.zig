@@ -72,6 +72,38 @@ fn errorHandler(req: *httpz.Request, res: *httpz.Response, err: anyerror) void {
 }
 ```
 
+## Shutdown
+To cleanly shutdown, call `server.stop()` followed by `server.deinit()`. On systems with sigaction, this likely requires that your server instance be a global:
+
+```zig
+var server: httpz.ServerCtx(void, void) = undefined;
+
+pub fn main() void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    server = try httpz.Server().init(allocator, .{.port = 5882});
+    defer server.deinit();
+
+    try std.posix.sigaction(std.posix.SIG.INT, &.{
+        .handler = .{.handler = shutdown},
+        .mask = std.posix.empty_sigset,
+        .flags = 0,
+    }, null);
+
+    // setup routes and actions
+
+    // this will block until server.stop() is called
+    // which will then run the server.deinit() we setup above with `defer`
+    try server.listen(); 
+}
+
+fn shutdown(_: c_int) callconv(.C) void {
+    // this will unblock the server.listen()
+    server.stop();
+}
+```
+
 ## Complex Use Case 1 - Shared Global Data
 The call to `httpz.Server()` is a wrapper around a generic Server that can take a global context. Use `httpz.ServerApp(G)` and pass an instance of `G` to `init`:
 
