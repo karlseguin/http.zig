@@ -763,21 +763,21 @@ const KQueue = struct {
     }
 
     fn monitorAccept(self: *KQueue, fd: c_int) !void {
-        try self.change(fd, 0, posix.system.EVFILT_READ, posix.system.EV_ADD);
+        try self.change(fd, 0, posix.system.EVFILT.READ, posix.system.EV.ADD);
     }
 
     fn monitorSignal(self: *KQueue, fd: c_int) !void {
-        try self.change(fd, 1, posix.system.EVFILT_READ, posix.system.EV_ADD);
+        try self.change(fd, 1, posix.system.EVFILT.READ, posix.system.EV.ADD);
     }
 
     fn monitorRead(self: *KQueue, conn: *Conn, comptime rearm: bool) !void {
         _ = rearm; // used by epoll
-        try self.change(conn.stream.handle, @intFromPtr(conn), posix.system.EVFILT_READ, posix.system.EV_ADD | posix.system.EV_ENABLE | posix.system.EV_DISPATCH);
+        try self.change(conn.stream.handle, @intFromPtr(conn), posix.system.EVFILT.READ, posix.system.EV.ADD | posix.system.EV.ENABLE | posix.system.EV.DISPATCH);
     }
 
     fn remove(self: *KQueue, conn: *Conn) !void {
         const fd = conn.stream.handle;
-        try self.change(fd, 0, posix.system.EVFILT_READ, posix.system.EV_DELETE);
+        try self.change(fd, 0, posix.system.EVFILT.READ, posix.system.EV.DELETE);
     }
 
     fn change(self: *KQueue, fd: posix.fd_t, data: usize, filter: i16, flags: u16) !void {
@@ -802,7 +802,7 @@ const KQueue = struct {
 
     fn wait(self: *KQueue, timeout_sec: ?i32) !Iterator {
         const event_list = &self.event_list;
-        const timeout: ?posix.timespec = if (timeout_sec) |ts| posix.timespec{ .tv_sec = ts, .tv_nsec = 0 } else null;
+        const timeout: ?posix.timespec = if (timeout_sec) |ts| posix.timespec{ .sec = ts, .nsec = 0 } else null;
         const event_count = try posix.kevent(self.q, self.change_buffer[0..self.change_count], event_list, if (timeout) |ts| &ts else null);
         self.change_count = 0;
 
@@ -907,7 +907,7 @@ fn timestamp() u32 {
     }
     var ts: posix.timespec = undefined;
     posix.clock_gettime(posix.CLOCK.REALTIME, &ts) catch unreachable;
-    return @intCast(ts.tv_sec);
+    return @intCast(ts.sec);
 }
 
 // This is our Blocking worker. It's very different than NonBlocking and much
@@ -932,7 +932,7 @@ pub fn Blocking(comptime S: type) type {
             fn init(sec: ?u32) Timeout {
                 return .{
                     .sec = if (sec) |s| s else MAX_TIMEOUT,
-                    .timeval = std.mem.toBytes(std.posix.timeval{ .tv_sec = @intCast(sec orelse 0), .tv_usec = 0 }),
+                    .timeval = std.mem.toBytes(std.posix.timeval{ .sec = @intCast(sec orelse 0), .usec = 0 }),
                 };
             }
         };
@@ -1146,7 +1146,7 @@ fn writeError(conn: *Conn, comptime status: u16, comptime msg: []const u8) !void
 
     var i: usize = 0;
 
-    const timeout = std.mem.toBytes(std.posix.timeval{ .tv_sec = 5, .tv_usec = 0 });
+    const timeout = std.mem.toBytes(std.posix.timeval{ .sec = 5, .usec = 0 });
     try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &timeout);
     while (i < response.len) {
         const n = posix.write(socket, response[i..]) catch |err| switch (err) {

@@ -55,8 +55,8 @@ pub const Context = struct {
 
         {
             const timeout = std.mem.toBytes(std.posix.timeval{
-                .tv_sec = 0,
-                .tv_usec = 20_000,
+                .sec = 0,
+                .usec = 20_000,
             });
             std.posix.setsockopt(pair[0], std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &timeout) catch unreachable;
             std.posix.setsockopt(pair[0], std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, &timeout) catch unreachable;
@@ -190,8 +190,8 @@ pub const Context = struct {
         // let's check, with a shor timeout, which could let things slip, but
         // else we slow down fuzz tests too much
         std.posix.setsockopt(self.client.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &std.mem.toBytes(std.posix.timeval{
-            .tv_sec = 0,
-            .tv_usec = 1_000,
+            .sec = 0,
+            .usec = 1_000,
         })) catch unreachable;
 
         const n: usize = self.client.read(buf[0..]) catch |err| blk: {
@@ -203,8 +203,8 @@ pub const Context = struct {
         try expectEqual(0, n);
 
         std.posix.setsockopt(self.client.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &std.mem.toBytes(std.posix.timeval{
-            .tv_sec = 0,
-            .tv_usec = 20_000,
+            .sec = 0,
+            .usec = 20_000,
         })) catch unreachable;
     }
 

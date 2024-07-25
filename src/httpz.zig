@@ -1359,8 +1359,8 @@ fn testWriter(req: *Request, res: *Response) !void {
 
 fn testStream(port: u16) net.Stream {
     const timeout = std.mem.toBytes(posix.timeval{
-        .tv_sec = 0,
-        .tv_usec = 20_000,
+        .sec = 0,
+        .usec = 20_000,
     });
 
     const address = net.Address.parseIp("127.0.0.1", port) catch unreachable;
