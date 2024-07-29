@@ -151,7 +151,7 @@ pub const Testing = struct {
 
         inline for (@typeInfo(@TypeOf(data)).Struct.fields) |field| {
             const name = escapeString(self.arena, field.name) catch unreachable;
-            const value = escapeString(self.arena,  @field(data, field.name)) catch unreachable;
+            const value = escapeString(self.arena, @field(data, field.name)) catch unreachable;
             arr.appendSlice(name) catch unreachable;
             arr.append('=') catch unreachable;
             arr.appendSlice(value) catch unreachable;
@@ -164,8 +164,8 @@ pub const Testing = struct {
         }
 
         // strip out the last &
-        const bd = items[0..items.len - 1];
-        self.req.body_buffer = .{ .type = .static, .data = bd};
+        const bd = items[0 .. items.len - 1];
+        self.req.body_buffer = .{ .type = .static, .data = bd };
         self.req.body_len = bd.len;
     }
 
@@ -565,7 +565,7 @@ test "testing: json" {
 }
 
 test "testing: form" {
-    var ht = init(.{.request = .{.max_form_count = 2}});
+    var ht = init(.{ .request = .{ .max_form_count = 2 } });
     defer ht.deinit();
 
     ht.form(.{ .over = "(9000)", .hello = "wo rld" });

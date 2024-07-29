@@ -55,8 +55,8 @@ pub const Context = struct {
 
         {
             const timeout = std.mem.toBytes(std.posix.timeval{
-                .tv_sec = 0,
-                .tv_usec = 20_000,
+                .sec = 0,
+                .usec = 20_000,
             });
             std.posix.setsockopt(pair[0], std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &timeout) catch unreachable;
             std.posix.setsockopt(pair[0], std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, &timeout) catch unreachable;
@@ -107,13 +107,14 @@ pub const Context = struct {
             .address = std.net.Address.initIp4([_]u8{ 127, 0, 0, 200 }, 0),
             .req_state = req_state,
             .res_state = res_state,
-            .websocket = undefined,
             .next = null,
             .prev = null,
             .timeout = 0,
             .request_count = 0,
             .close = false,
             .arena = conn_arena,
+            .ws_conn = null,
+            .ws_conn_manager = undefined,
         };
 
         return .{
@@ -190,8 +191,8 @@ pub const Context = struct {
         // let's check, with a shor timeout, which could let things slip, but
         // else we slow down fuzz tests too much
         std.posix.setsockopt(self.client.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &std.mem.toBytes(std.posix.timeval{
-            .tv_sec = 0,
-            .tv_usec = 1_000,
+            .sec = 0,
+            .usec = 1_000,
         })) catch unreachable;
 
         const n: usize = self.client.read(buf[0..]) catch |err| blk: {
@@ -203,8 +204,8 @@ pub const Context = struct {
         try expectEqual(0, n);
 
         std.posix.setsockopt(self.client.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &std.mem.toBytes(std.posix.timeval{
-            .tv_sec = 0,
-            .tv_usec = 20_000,
+            .sec = 0,
+            .usec = 20_000,
         })) catch unreachable;
     }
 
@@ -254,7 +255,10 @@ pub const Context = struct {
         buf: []const u8,
         random: std.Random,
 
-        pub fn read(self: *FakeReader, buf: []u8,) !usize {
+        pub fn read(
+            self: *FakeReader,
+            buf: []u8,
+        ) !usize {
             const data = self.buf[self.pos..];
 
             if (data.len == 0 or buf.len == 0) {

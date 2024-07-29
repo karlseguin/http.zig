@@ -76,10 +76,7 @@ pub const Response = struct {
             .conn = conn,
             .status = 200,
             .arena = arena,
-            .buffer = Buffer{
-                .pos = 0,
-                .data = ""
-            },
+            .buffer = Buffer{ .pos = 0, .data = "" },
             .chunked = false,
             .disowned = false,
             .written = false,
@@ -331,7 +328,6 @@ pub const Response = struct {
             pos = end;
         }
 
-
         for (names, values) |name, value| {
             {
                 // write the name
@@ -376,9 +372,9 @@ pub const Response = struct {
             break :blk "Content-Length: 0\r\n\r\n";
         };
 
-      const end = pos + fin.len;
-      @memcpy(buf[pos..end], fin);
-      return buf[0..end];
+        const end = pos + fin.len;
+        @memcpy(buf[pos..end], fin);
+        return buf[0..end];
     }
 
     // std.io.Writer.
@@ -389,7 +385,7 @@ pub const Response = struct {
         pub const IOWriter = std.io.Writer(Writer, error{OutOfMemory}, Writer.write);
 
         fn init(res: *Response) Writer {
-            return .{.res = res};
+            return .{ .res = res };
         }
 
         pub fn truncate(self: Writer, n: usize) void {

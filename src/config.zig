@@ -2,7 +2,6 @@ const httpz = @import("httpz.zig");
 const request = @import("request.zig");
 const response = @import("response.zig");
 
-
 pub const Config = struct {
 
     // don't like using CPU detection since hyperthread cores are marketing.

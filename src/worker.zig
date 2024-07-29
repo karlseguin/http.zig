@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 
 const httpz = @import("httpz.zig");
 const metrics = @import("metrics.zig");
-const websocket = httpz.websocket;
+const ws = @import("websocket").server;
 
 const Config = httpz.Config;
 const Request = httpz.Request;
@@ -15,14 +15,248 @@ const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-const Stream = std.net.Stream;
-const NetConn = std.net.StreamServer.Connection;
-
 const net = std.net;
+const Stream = net.Stream;
+const NetConn = net.StreamServer.Connection;
+
 const posix = std.posix;
 const log = std.log.scoped(.httpz);
 
 const MAX_TIMEOUT = 2_147_483_647;
+
+// This is our Blocking worker. It's very different than NonBlocking and much
+// simpler. (WSH is our websocket handler, and can be void)
+pub fn Blocking(comptime S: type, comptime WSH: type) type {
+    return struct {
+        server: S,
+        running: bool,
+        config: *const Config,
+        conn_pool: ConnPool,
+        allocator: Allocator,
+        buffer_pool: *BufferPool,
+        websocket: *ws.Worker(WSH),
+        timeout_request: ?Timeout,
+        timeout_keepalive: ?Timeout,
+        timeout_write_error: Timeout,
+        retain_allocated_bytes_keepalive: usize,
+
+        const Timeout = struct {
+            sec: u32,
+            timeval: [@sizeOf(std.posix.timeval)]u8,
+
+            // if sec is null, it means we want to cancel the timeout.
+            fn init(sec: ?u32) Timeout {
+                return .{
+                    .sec = if (sec) |s| s else MAX_TIMEOUT,
+                    .timeval = std.mem.toBytes(std.posix.timeval{ .sec = @intCast(sec orelse 0), .usec = 0 }),
+                };
+            }
+        };
+
+        const Self = @This();
+
+        pub fn init(allocator: Allocator, server: S, config: *const Config) !Self {
+            const buffer_pool = try initializeBufferPool(allocator, config);
+            errdefer allocator.destroy(buffer_pool);
+
+            errdefer buffer_pool.deinit();
+
+            var timeout_request: ?Timeout = null;
+            if (config.timeout.request) |sec| {
+                timeout_request = Timeout.init(sec);
+            } else if (config.timeout.keepalive != null) {
+                // We have to set this up, so that when we transition from
+                // keepalive state to a request parsing state, we remove the timeout
+                timeout_request = Timeout.init(0);
+            }
+
+            var timeout_keepalive: ?Timeout = null;
+            if (config.timeout.keepalive) |sec| {
+                timeout_keepalive = Timeout.init(sec);
+            } else if (timeout_request != null) {
+                // We have to set this up, so that when we transition from
+                // request processing state to a kepealive state, we remove the timeout
+                timeout_keepalive = Timeout.init(0);
+            }
+
+            const websocket = try allocator.create(ws.Worker(WSH));
+            errdefer allocator.destroy(websocket);
+            websocket.* = try ws.Worker(WSH).init(allocator, &server._websocket_state);
+            errdefer websocket.deinit();
+
+            const conn_pool = try ConnPool.init(allocator, buffer_pool, websocket, config);
+            errdefer conn_pool.deinit();
+
+            const retain_allocated_bytes_keepalive = config.workers.retain_allocated_bytes orelse 8192;
+
+            return .{
+                .running = true,
+                .server = server,
+                .config = config,
+                .allocator = allocator,
+                .conn_pool = conn_pool,
+                .websocket = websocket,
+                .buffer_pool = buffer_pool,
+                .timeout_request = timeout_request,
+                .timeout_keepalive = timeout_keepalive,
+                .timeout_write_error = Timeout.init(5),
+                .retain_allocated_bytes_keepalive = retain_allocated_bytes_keepalive,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            const allocator = self.allocator;
+
+            self.websocket.deinit();
+            allocator.destroy(self.websocket);
+
+            self.conn_pool.deinit();
+
+            self.buffer_pool.deinit();
+            allocator.destroy(self.buffer_pool);
+        }
+
+        pub fn stop(self: *Self) void {
+            @atomicStore(bool, &self.running, false, .monotonic);
+        }
+
+        pub fn listen(self: *Self, listener: posix.socket_t) void {
+            if (@atomicLoad(bool, &self.running, .monotonic) == false) {
+                // silly, but try to minimize the window where things can go
+                // bad if the server is stopped just as it starts
+                return;
+            }
+            var server = self.server;
+            while (true) {
+                var address: net.Address = undefined;
+                var address_len: posix.socklen_t = @sizeOf(net.Address);
+                const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
+                    if (@atomicLoad(bool, &self.running, .monotonic) == false) {
+                        self.websocket.shutdown();
+                        return;
+                    }
+                    log.err("Failed to accept socket: {}", .{err});
+                    continue;
+                };
+                metrics.connection();
+                // calls handleConnection through the server's thread_pool
+                server._thread_pool.spawn(.{ self, socket, address });
+            }
+        }
+
+        const HandleResult = enum {
+            keepalive,
+            close,
+            disown,
+        };
+
+        // Called in a worker thread. `thread_buf` is a thread-specific buffer that
+        // we are free to use as needed.
+        pub fn handleConnection(self: *Self, socket: posix.socket_t, address: net.Address, thread_buf: []u8) void {
+            var conn = self.conn_pool.acquire() catch |err| {
+                log.err("Failed to initialize connection: {}", .{err});
+                return;
+            };
+
+            conn.stream = .{ .handle = socket };
+            conn.address = address;
+
+            var is_keepalive = false;
+            while (true) {
+                switch (self.handleRequest(conn, is_keepalive, thread_buf) catch .close) {
+                    .keepalive => {
+                        is_keepalive = true;
+                        conn.keepalive(self.retain_allocated_bytes_keepalive);
+                    },
+                    .close => {
+                        posix.close(socket);
+                        self.conn_pool.release(conn);
+                        return;
+                    },
+                    .disown => {
+                        const ws_conn = conn.ws_conn;
+                        self.conn_pool.release(conn);
+                        if (ws_conn) |ptr| {
+                            const hc: *ws.HandlerConn(WSH) = @ptrCast(@alignCast(ptr));
+                            // blocking read loop
+                            self.handleWebSocket(hc) catch |err| {
+                                log.err("({} websocket connection error: {}", .{address, err});
+                            };
+                        }
+                        return;
+                    },
+                }
+            }
+        }
+
+        fn handleRequest(self: *const Self, conn: *Conn, is_keepalive: bool, thread_buf: []u8) !Conn.Handover {
+            const stream = conn.stream;
+            const timeout: ?Timeout = if (is_keepalive) self.timeout_keepalive else self.timeout_request;
+
+            var deadline: ?i64 = null;
+
+            if (timeout) |to| {
+                if (is_keepalive == false) {
+                    deadline = timestamp() + to.sec;
+                }
+                try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &to.timeval);
+            }
+
+            var is_first = true;
+            while (true) {
+                const done = conn.req_state.parse(stream) catch |err| {
+                    if (err == error.WouldBlock) {
+                        if (is_keepalive and is_first) {
+                            metrics.timeoutKeepalive(1);
+                        } else {
+                            metrics.timeoutActive(1);
+                        }
+                        return .close;
+                    }
+                    requestParseError(conn, err) catch {};
+                    return .close;
+                };
+                if (done) {
+                    // we have a complete request, time to process it
+                    break;
+                }
+
+                if (is_keepalive) {
+                    if (is_first) {
+                        if (self.timeout_request) |to| {
+                            // This was the first data from a keepalive request.
+                            // We would have been on a keepalive timeout (if there was one),
+                            // and now need to switch to a request timeout. This might be
+                            // an actual timeout, or it could just be removing the keepalive timeout
+                            // either way, it's the same code (timeval will just be set to 0 for
+                            // the second case)
+                            deadline = timestamp() + to.sec;
+                            try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &to.timeval);
+                        }
+                        is_first = false;
+                    }
+                } else if (deadline) |dl| {
+                    if (timestamp() > dl) {
+                        metrics.timeoutActive(1);
+                        return .close;
+                    }
+                }
+            }
+
+            metrics.request();
+            self.server.handleRequest(conn, thread_buf);
+            return conn.handover;
+        }
+
+        fn handleWebSocket(self: *const Self, hc: *ws.HandlerConn(WSH)) !void {
+            posix.setsockopt(hc.socket, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(posix.timeval{.sec = 0, .usec = 0})) catch |err| {
+                self.websocket.cleanupConn(hc);
+                return err;
+            };
+            return self.websocket.worker.readLoop(hc);
+        }
+    };
+}
 
 // This is a NonBlocking worker. We have N workers, each accepting connections
 // and largely working in isolation from each other (the only thing they share
@@ -36,7 +270,7 @@ const MAX_TIMEOUT = 2_147_483_647;
 // A previous version had the sockets in nonblocking and would switch to blocking
 // as necessary, but I don't see what value that adds. It's just more syscalls
 // and complexity.
-pub fn NonBlocking(comptime S: type) type {
+pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
     return struct {
         id: usize,
 
@@ -51,7 +285,7 @@ pub fn NonBlocking(comptime S: type) type {
         // worker is responsible for, as well as buffer connections can use to
         // get larger []u8, and a pool of re-usable connection objects to reduce
         // dynamic allocations needed for new requests.
-        manager: Manager,
+        manager: ConnManager,
 
         // the maximum connection a worker should manage, we won't accept more than this
         max_conn: usize,
@@ -61,6 +295,8 @@ pub fn NonBlocking(comptime S: type) type {
         signal_pos: usize,
         signal_buf: [64]usize,
 
+        websocket: *ws.Worker(WSH),
+
         const Self = @This();
 
         const Loop = switch (builtin.os.tag) {
@@ -69,12 +305,18 @@ pub fn NonBlocking(comptime S: type) type {
             else => unreachable,
         };
 
-        pub fn init(allocator: Allocator, id: usize, server: S, ws: *websocket.Server, config: *const Config) !Self {
+        pub fn init(allocator: Allocator, id: usize, server: S, config: *const Config) !Self {
             const loop = try Loop.init();
             errdefer loop.deinit();
 
-            const manager = try Manager.init(allocator, ws, config);
+            const websocket = try allocator.create(ws.Worker(WSH));
+            errdefer allocator.destroy(websocket);
+            websocket.* = try ws.Worker(WSH).init(allocator, &server._websocket_state);
+            errdefer websocket.deinit();
+
+            const manager = try ConnManager.init(allocator, websocket, config);
             errdefer manager.deinit();
+
 
             return .{
                 .id = id,
@@ -82,6 +324,7 @@ pub fn NonBlocking(comptime S: type) type {
                 .config = config,
                 .server = server,
                 .manager = manager,
+                .websocket = websocket,
                 .signal_pos = 0,
                 .signal_buf = undefined,
                 .allocator = allocator,
@@ -90,6 +333,8 @@ pub fn NonBlocking(comptime S: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            self.websocket.deinit();
+            self.allocator.destroy(self.websocket);
             self.manager.deinit();
             self.loop.deinit();
         }
@@ -139,11 +384,15 @@ pub fn NonBlocking(comptime S: type) type {
                     }
 
                     const conn: *align(8) Conn = @ptrFromInt(data);
-                    manager.active(conn, now);
-                    if (self.handleRequest(conn) == false) {
-                        // error in parsing/handling the request, we're closing
-                        // this connection
-                        manager.close(conn);
+                    if (conn.state == .websocket) {
+
+                    } else {
+                        manager.active(conn, now);
+                        if (self.handleRequest(conn) == false) {
+                            // error in parsing/handling the request, we're closing
+                            // this connection
+                            manager.close(conn);
+                        }
                     }
                 }
             }
@@ -156,8 +405,8 @@ pub fn NonBlocking(comptime S: type) type {
             var len = manager.len;
 
             while (len < max_conn) {
-                var address: std.net.Address = undefined;
-                var address_len: posix.socklen_t = @sizeOf(std.net.Address);
+                var address: net.Address = undefined;
+                var address_len: posix.socklen_t = @sizeOf(net.Address);
 
                 const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
                     // When available, we use SO_REUSEPORT_LB or SO_REUSEPORT, so WouldBlock
@@ -208,7 +457,7 @@ pub fn NonBlocking(comptime S: type) type {
 
             metrics.request();
             const server = self.server;
-            server._thread_pool.spawn(.{ server, self, conn });
+            server._thread_pool.spawn(.{ server, self.id, conn });
             return true;
         }
 
@@ -236,7 +485,31 @@ pub fn NonBlocking(comptime S: type) type {
                 const data_start = (i * s_t);
                 const data_end = data_start + s_t;
                 const conn: *Conn = @ptrFromInt(@as(*usize, @alignCast(@ptrCast(buf[data_start..data_end]))).*);
-                self.processHandover(conn, now);
+                switch (conn.handover) {
+                    .keepalive => {
+                        self.loop.monitorRead(conn, true) catch {
+                            metrics.internalError();
+                            self.manager.close(conn);
+                            continue;
+                        };
+                        self.manager.keepalive(conn, now);
+                    },
+                    .close => self.manager.close(conn),
+                    .disown => {
+                        if (self.loop.remove(conn)) {
+                            self.manager.disown(conn);
+                        } else |_| {
+                            self.manager.close(conn);
+                            continue;
+                        }
+                        if (conn.ws_conn) |ptr| {
+                            const hc: *ws.HandlerConn(WSH) = @ptrCast(@alignCast(ptr));
+                            self.handleWebSocket(hc) catch |err| {
+                                log.err("({} websocket connection error: {}", .{conn.address, err});
+                            };
+                        }
+                    },
+                }
             }
 
             const partial_len = @mod(pos, s_t);
@@ -248,154 +521,17 @@ pub fn NonBlocking(comptime S: type) type {
             return false;
         }
 
-        fn processHandover(self: *Self, conn: *Conn, now: u32) void {
-            switch (conn.handover) {
-                .keepalive => {
-                    self.loop.monitorRead(conn, true) catch {
-                        metrics.internalError();
-                        self.manager.close(conn);
-                        return;
-                    };
-                    self.manager.keepalive(conn, now);
-                },
-                .close => self.manager.close(conn),
-                .disown => {
-                    if (self.loop.remove(conn)) {
-                        self.manager.disown(conn);
-                    } else |_| {
-                        self.manager.close(conn);
-                    }
-                },
-            }
+        fn handleWebSocket(self: *const Self, hc: *ws.HandlerConn(WSH)) !void {
+            posix.setsockopt(hc.socket, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(posix.timeval{.sec = 0, .usec = 0})) catch |err| {
+                self.websocket.cleanupConn(hc);
+                return err;
+            };
+            return self.loop.monitorRead(hc, true);
         }
     };
 }
 
-// Wraps a socket with a application-specific details, such as information needed
-// to manage the connection's lifecycle (e.g. timeouts). Conns are placed in a
-// linked list, hence the next/prev.
-//
-// The Conn can be re-used (as parf of a pool), either for keepalive, or for
-// completely different tcp connections. From the Conn's point of view, there's
-// no difference, just need to `reset` between each request.
-//
-// The Conn contains request and response state information necessary to operate
-// in nonblocking mode. A pointer to the conn is the userdata passed to epoll/kqueue.
-// Should only be created through the worker's ConnPool
-pub const Conn = struct {
-    // A connection can be in one of two states: active or keepalive. It begins
-    // and stays in "active" until the response is sent. Then, assuming the
-    // connection isn't closed, it transitions to "keepalive" until the first
-    // byte of a new request is received.
-    // The main purpose of the two different states is to support a different
-    // keepalive_timeout and request_timeout.
-    const State = enum {
-        active,
-        keepalive,
-    };
-
-    const Handover = enum {
-        disown,
-        close,
-        keepalive,
-    };
-
-    state: State,
-
-    handover: Handover,
-
-    // unix timestamp (seconds) where this connection should timeout
-    timeout: u32,
-
-    // number of requests made on this connection (within a keepalive session)
-    request_count: u64,
-
-    // whether or not to close the connection after the resposne is sent
-    close: bool,
-
-    stream: std.net.Stream,
-    address: std.net.Address,
-
-    // Data needed to parse a request. This contains pre-allocated memory, e.g.
-    // as a read buffer and to store parsed headers. It also contains the state
-    // necessary to parse the request over successive nonblocking read calls.
-    req_state: Request.State,
-
-    // Data needed to create the response. This contains pre-allocate memory, .e.
-    // header buffer to write the buffer. It also contains the state necessary
-    // to write the response over successive nonblocking write calls.
-    res_state: Response.State,
-
-    // Memory that is needed for the lifetime of a request, specifically from the
-    // point where the request is parsed to after the response is sent, can be
-    // allocated in this arena. An allocator for this arena is available to the
-    // application as req.arena and res.arena.
-    arena: *std.heap.ArenaAllocator,
-
-    // Reference to our websocket server
-    websocket: *websocket.Server,
-
-    // Workers maintain their active conns in a linked list. The link list is intrusive.
-    next: ?*Conn,
-    prev: ?*Conn,
-
-    fn init(allocator: Allocator, buffer_pool: *BufferPool, ws: *websocket.Server, config: *const Config) !Conn {
-        const arena = try allocator.create(std.heap.ArenaAllocator);
-        errdefer allocator.destroy(arena);
-
-        arena.* = std.heap.ArenaAllocator.init(allocator);
-
-        var req_state = try Request.State.init(allocator, arena, buffer_pool, &config.request);
-        errdefer req_state.deinit(allocator);
-
-        var res_state = try Response.State.init(allocator, &config.response);
-        errdefer res_state.deinit(allocator);
-
-        return .{
-            .handover = .close,
-            .arena = arena,
-            .close = false,
-            .state = .active,
-            .websocket = ws,
-            .stream = undefined,
-            .address = undefined,
-            .req_state = req_state,
-            .res_state = res_state,
-            .next = null,
-            .prev = null,
-            .timeout = 0,
-            .request_count = 0,
-        };
-    }
-
-    pub fn deinit(self: *Conn, allocator: Allocator) void {
-        self.arena.deinit();
-        allocator.destroy(self.arena);
-        self.req_state.deinit(allocator);
-        self.res_state.deinit(allocator);
-    }
-
-    pub fn keepalive(self: *Conn, retain_allocated_bytes: usize) void {
-        self.req_state.reset();
-        self.res_state.reset();
-        _ = self.arena.reset(.{ .retain_with_limit = retain_allocated_bytes });
-    }
-
-    // getting put back into the pool
-    pub fn reset(self: *Conn, retain_allocated_bytes: usize) void {
-        self.close = false;
-        self.next = null;
-        self.prev = null;
-        self.stream = undefined;
-        self.address = undefined;
-        self.request_count = 0;
-        self.req_state.reset();
-        self.res_state.reset();
-        _ = self.arena.reset(.{ .retain_with_limit = retain_allocated_bytes });
-    }
-};
-
-const Manager = struct {
+const ConnManager = struct {
     // Double linked list of Conn a worker is actively servicing. An "active"
     // connection is one where we've at least received 1 byte of the request and
     // continues to be "active" until the response is sent.
@@ -422,26 +558,17 @@ const Manager = struct {
     timeout_request: u32,
     timeout_keepalive: u32,
 
-    // how many bytes should we retain in our arena allocator between usage (can be 0)
-    retain_allocated_bytes: usize,
-
     // how many bytes should we retain in our arena allocator between keepalive usage
     retain_allocated_bytes_keepalive: usize,
 
-    fn init(allocator: Allocator, ws: *websocket.Server, config: *const Config) !Manager {
-        const buffer_pool = try allocator.create(BufferPool);
-        errdefer allocator.destroy(buffer_pool);
-
-        buffer_pool.* = try initializeBufferPool(allocator, config);
+    fn init(allocator: Allocator, websocket: *anyopaque, config: *const Config) !ConnManager {
+        var buffer_pool = try initializeBufferPool(allocator, config);
         errdefer buffer_pool.deinit();
 
-        const conn_pool = try ConnPool.init(allocator, buffer_pool, ws, config);
+        const conn_pool = try ConnPool.init(allocator, buffer_pool, websocket, config);
         errdefer conn_pool.deinit();
 
         const retain_allocated_bytes = config.workers.retain_allocated_bytes orelse 4096;
-        // always retain at least 8192, but if we're configured to retain more
-        // between non-keepalive usage, we might as well keep more between
-        // keepalive usage.
         const retain_allocated_bytes_keepalive = @max(retain_allocated_bytes, 8192);
 
         return .{
@@ -451,14 +578,13 @@ const Manager = struct {
             .conn_pool = conn_pool,
             .allocator = allocator,
             .buffer_pool = buffer_pool,
-            .retain_allocated_bytes = retain_allocated_bytes,
             .retain_allocated_bytes_keepalive = retain_allocated_bytes_keepalive,
             .timeout_request = config.timeout.request orelse MAX_TIMEOUT,
             .timeout_keepalive = config.timeout.keepalive orelse MAX_TIMEOUT,
         };
     }
 
-    pub fn deinit(self: *Manager) void {
+    pub fn deinit(self: *ConnManager) void {
         const allocator = self.allocator;
         var conn_pool = self.conn_pool;
 
@@ -489,7 +615,7 @@ const Manager = struct {
         allocator.destroy(self.buffer_pool);
     }
 
-    fn new(self: *Manager, now: u32) !*Conn {
+    fn new(self: *ConnManager, now: u32) !*Conn {
         const conn = try self.conn_pool.acquire();
         self.active_list.insert(conn);
         conn.request_count = 1;
@@ -498,7 +624,7 @@ const Manager = struct {
         return conn;
     }
 
-    fn active(self: *Manager, conn: *Conn, now: u32) void {
+    fn active(self: *ConnManager, conn: *Conn, now: u32) void {
         if (conn.state == .active) return;
 
         // If we're here, it means the connection is going from a keepalive
@@ -511,7 +637,7 @@ const Manager = struct {
         self.active_list.insert(conn);
     }
 
-    fn keepalive(self: *Manager, conn: *Conn, now: u32) void {
+    fn keepalive(self: *ConnManager, conn: *Conn, now: u32) void {
         conn.keepalive(self.retain_allocated_bytes_keepalive);
         conn.state = .keepalive;
         conn.timeout = now + self.timeout_keepalive;
@@ -519,27 +645,27 @@ const Manager = struct {
         self.keepalive_list.insert(conn);
     }
 
-    fn close(self: *Manager, conn: *Conn) void {
+    fn close(self: *ConnManager, conn: *Conn) void {
         conn.stream.close();
         switch (conn.state) {
             .active => self.active_list.remove(conn),
             .keepalive => self.keepalive_list.remove(conn),
         }
-        self.conn_pool.release(conn, self.retain_allocated_bytes);
+        self.conn_pool.release(conn);
         self.len -= 1;
     }
 
-    fn disown(self: *Manager, conn: *Conn) void {
+    fn disown(self: *ConnManager, conn: *Conn) void {
         switch (conn.state) {
             .active => self.active_list.remove(conn),
             .keepalive => self.keepalive_list.remove(conn),
         }
-        self.conn_pool.release(conn, self.retain_allocated_bytes);
+        self.conn_pool.release(conn);
         self.len -= 1;
     }
 
     // Enforces timeouts, and returns when the next timeout should be checked.
-    fn prepareToWait(self: *Manager, now: u32) ?i32 {
+    fn prepareToWait(self: *ConnManager, now: u32) ?i32 {
         const next_active = self.enforceTimeout(self.active_list, now);
         const next_keepalive = self.enforceTimeout(self.keepalive_list, now);
 
@@ -578,7 +704,7 @@ const Manager = struct {
     // lists are ordered from soonest to timeout to last, as soon as we find
     // a connection that isn't timed out, we can break;
     // This returns the next timeout
-    fn enforceTimeout(self: *Manager, list: List(Conn), now: u32) TimeoutResult {
+    fn enforceTimeout(self: *ConnManager, list: List(Conn), now: u32) TimeoutResult {
         var conn = list.head;
         var count: usize = 0;
         while (conn) |c| {
@@ -591,95 +717,6 @@ const Manager = struct {
             self.close(c);
         }
         return .{ .count = count, .timeout = null };
-    }
-};
-
-// ConnPool is only used in nonblocking mode.
-// TODO: Can ConnPool be used in blocking mode too?
-const ConnPool = struct {
-    conns: []*Conn,
-    available: usize,
-    allocator: Allocator,
-    config: *const Config,
-    buffer_pool: *BufferPool,
-    websocket: *websocket.Server,
-    mem_pool: std.heap.MemoryPool(Conn),
-
-    fn init(allocator: Allocator, buffer_pool: *BufferPool, ws: *websocket.Server, config: *const Config) !ConnPool {
-        const min = config.workers.min_conn orelse config.workers.max_conn orelse 32;
-
-        var conns = try allocator.alloc(*Conn, min);
-        errdefer allocator.free(conns);
-
-        var mem_pool = std.heap.MemoryPool(Conn).init(allocator);
-
-        var initialized: usize = 0;
-        errdefer {
-            for (0..initialized) |i| {
-                conns[i].deinit(allocator);
-                mem_pool.destroy(conns[i]);
-            }
-        }
-
-        for (0..min) |i| {
-            const conn = try mem_pool.create();
-            errdefer mem_pool.destroy(conn);
-            conn.* = try Conn.init(allocator, buffer_pool, ws, config);
-
-            conns[i] = conn;
-            initialized += 1;
-        }
-
-        return .{
-            .conns = conns,
-            .websocket = ws,
-            .config = config,
-            .available = min,
-            .allocator = allocator,
-            .mem_pool = mem_pool,
-            .buffer_pool = buffer_pool,
-        };
-    }
-
-    fn deinit(self: *ConnPool) void {
-        const allocator = self.allocator;
-        // the rest of the conns are "checked out" and owned by the Manager
-        // whichi will free them.
-        for (self.conns[0..self.available]) |conn| {
-            conn.deinit(allocator);
-            self.mem_pool.destroy(conn);
-        }
-        allocator.free(self.conns);
-        self.mem_pool.deinit();
-    }
-
-    fn acquire(self: *ConnPool) !*Conn {
-        const available = self.available;
-
-        if (available > 0) {
-            const index = available - 1;
-            self.available = index;
-            return self.conns[index];
-        }
-
-        const conn = try self.mem_pool.create();
-        errdefer self.mem_pool.destroy(conn);
-        conn.* = try Conn.init(self.allocator, self.buffer_pool, self.websocket, self.config);
-        return conn;
-    }
-
-    fn release(self: *ConnPool, conn: *Conn, retain_allocated_bytes: usize) void {
-        const conns = self.conns;
-        const available = self.available;
-        if (available == conns.len) {
-            conn.deinit(self.allocator);
-            self.mem_pool.destroy(conn);
-            return;
-        }
-
-        conn.reset(retain_allocated_bytes);
-        conns[available] = conn;
-        self.available = available + 1;
     }
 };
 
@@ -763,21 +800,21 @@ const KQueue = struct {
     }
 
     fn monitorAccept(self: *KQueue, fd: c_int) !void {
-        try self.change(fd, 0, posix.system.EVFILT_READ, posix.system.EV_ADD);
+        try self.change(fd, 0, posix.system.EVFILT.READ, posix.system.EV.ADD);
     }
 
     fn monitorSignal(self: *KQueue, fd: c_int) !void {
-        try self.change(fd, 1, posix.system.EVFILT_READ, posix.system.EV_ADD);
+        try self.change(fd, 1, posix.system.EVFILT.READ, posix.system.EV.ADD);
     }
 
     fn monitorRead(self: *KQueue, conn: *Conn, comptime rearm: bool) !void {
         _ = rearm; // used by epoll
-        try self.change(conn.stream.handle, @intFromPtr(conn), posix.system.EVFILT_READ, posix.system.EV_ADD | posix.system.EV_ENABLE | posix.system.EV_DISPATCH);
+        try self.change(conn.stream.handle, @intFromPtr(conn), posix.system.EVFILT.READ, posix.system.EV.ADD | posix.system.EV.ENABLE | posix.system.EV.DISPATCH);
     }
 
     fn remove(self: *KQueue, conn: *Conn) !void {
         const fd = conn.stream.handle;
-        try self.change(fd, 0, posix.system.EVFILT_READ, posix.system.EV_DELETE);
+        try self.change(fd, 0, posix.system.EVFILT.READ, posix.system.EV.DELETE);
     }
 
     fn change(self: *KQueue, fd: posix.fd_t, data: usize, filter: i16, flags: u16) !void {
@@ -802,7 +839,7 @@ const KQueue = struct {
 
     fn wait(self: *KQueue, timeout_sec: ?i32) !Iterator {
         const event_list = &self.event_list;
-        const timeout: ?posix.timespec = if (timeout_sec) |ts| posix.timespec{ .tv_sec = ts, .tv_nsec = 0 } else null;
+        const timeout: ?posix.timespec = if (timeout_sec) |ts| posix.timespec{ .sec = ts, .nsec = 0 } else null;
         const event_count = try posix.kevent(self.q, self.change_buffer[0..self.change_count], event_list, if (timeout) |ts| &ts else null);
         self.change_count = 0;
 
@@ -901,217 +938,243 @@ const EPoll = struct {
     };
 };
 
-fn timestamp() u32 {
+// There's some shared logic between the NonBlocking and Blocking workers.
+// Whatever we can de-duplicate, goes here.
+
+const ConnPool = struct {
+    conns: []*Conn,
+    available: usize,
+    allocator: Allocator,
+    config: *const Config,
+    buffer_pool: *BufferPool,
+    retain_allocated_bytes: usize,
+    mem_pool: std.heap.MemoryPool(Conn),
+
+    // we erase the type because we don't want Conn, and therefore Request and
+    // Response to have to carry this type around. This is all about making the
+    // API cleaner.
+    websocket: *anyopaque,
+
+    fn init(allocator: Allocator, buffer_pool: *BufferPool, websocket: *anyopaque, config: *const Config) !ConnPool {
+        const min = config.workers.min_conn orelse config.workers.max_conn orelse 32;
+
+        var conns = try allocator.alloc(*Conn, min);
+        errdefer allocator.free(conns);
+
+        var mem_pool = std.heap.MemoryPool(Conn).init(allocator);
+
+        var initialized: usize = 0;
+        errdefer {
+            for (0..initialized) |i| {
+                conns[i].deinit(allocator);
+                mem_pool.destroy(conns[i]);
+            }
+        }
+
+        for (0..min) |i| {
+            const conn = try mem_pool.create();
+            errdefer mem_pool.destroy(conn);
+            conn.* = try Conn.init(allocator, buffer_pool, websocket, config);
+
+            conns[i] = conn;
+            initialized += 1;
+        }
+
+        return .{
+            .conns = conns,
+            .config = config,
+            .available = min,
+            .mem_pool = mem_pool,
+            .websocket = websocket,
+            .allocator = allocator,
+            .buffer_pool = buffer_pool,
+            .retain_allocated_bytes = config.workers.retain_allocated_bytes orelse 4096,
+        };
+    }
+
+    fn deinit(self: *ConnPool) void {
+        const allocator = self.allocator;
+        // the rest of the conns are "checked out" and owned by the Manager
+        // whichi will free them.
+        for (self.conns[0..self.available]) |conn| {
+            conn.deinit(allocator);
+            self.mem_pool.destroy(conn);
+        }
+        allocator.free(self.conns);
+        self.mem_pool.deinit();
+    }
+
+    fn acquire(self: *ConnPool) !*Conn {
+        const available = self.available;
+
+        if (available > 0) {
+            const index = available - 1;
+            self.available = index;
+            return self.conns[index];
+        }
+
+        const conn = try self.mem_pool.create();
+        errdefer self.mem_pool.destroy(conn);
+        conn.* = try Conn.init(self.allocator, self.buffer_pool, self.websocket, self.config);
+        return conn;
+    }
+
+    fn release(self: *ConnPool, conn: *Conn) void {
+        const conns = self.conns;
+        const available = self.available;
+        if (available == conns.len) {
+            conn.deinit(self.allocator);
+            self.mem_pool.destroy(conn);
+            return;
+        }
+
+        conn.reset(self.retain_allocated_bytes);
+        conns[available] = conn;
+        self.available = available + 1;
+    }
+};
+
+// Wraps a socket with a application-specific details, such as information needed
+// to manage the connection's lifecycle (e.g. timeouts). Conns are placed in a
+// linked list, hence the next/prev.
+//
+// The Conn can be re-used (as parf of a pool), either for keepalive, or for
+// completely different tcp connections. From the Conn's point of view, there's
+// no difference, just need to `reset` between each request.
+//
+// The Conn contains request and response state information necessary to operate
+// in nonblocking mode. A pointer to the conn is the userdata passed to epoll/kqueue.
+// Should only be created through the worker's ConnPool
+pub const Conn = struct {
+    // A connection can be in one of two states: active or keepalive. It begins
+    // and stays in "active" until the response is sent. Then, assuming the
+    // connection isn't closed, it transitions to "keepalive" until the first
+    // byte of a new request is received.
+    // The main purpose of the two different states is to support a different
+    // keepalive_timeout and request_timeout.
+    const State = enum {
+        active,
+        keepalive,
+    };
+
+    const Handover = enum {
+        disown,
+        close,
+        keepalive,
+    };
+
+    state: State,
+
+    handover: Handover,
+
+    // unix timestamp (seconds) where this connection should timeout
+    timeout: u32,
+
+    // number of requests made on this connection (within a keepalive session)
+    request_count: u64,
+
+    // whether or not to close the connection after the resposne is sent
+    close: bool,
+
+    stream: net.Stream,
+    address: net.Address,
+
+    // Data needed to parse a request. This contains pre-allocated memory, e.g.
+    // as a read buffer and to store parsed headers. It also contains the state
+    // necessary to parse the request over successive nonblocking read calls.
+    req_state: Request.State,
+
+    // Data needed to create the response. This contains pre-allocate memory, .e.
+    // header buffer to write the buffer. It also contains the state necessary
+    // to write the response over successive nonblocking write calls.
+    res_state: Response.State,
+
+    // Memory that is needed for the lifetime of a request, specifically from the
+    // point where the request is parsed to after the response is sent, can be
+    // allocated in this arena. An allocator for this arena is available to the
+    // application as req.arena and res.arena.
+    arena: *std.heap.ArenaAllocator,
+
+    // This is our WebSocketManager(H) but the type is erased so that Conn isn't
+    // a generic. We don't want Conn to be a generic, because we don't want
+    // Request and/or Response to be generics since that would make using the
+    // library unecessarily complex (especially since not everyone cares about
+    // websockets).
+    ws_conn: ?*anyopaque,
+    ws_conn_manager: *anyopaque,
+
+    // Workers maintain their active conns in a linked list. The link list is intrusive.
+    next: ?*Conn,
+    prev: ?*Conn,
+
+    fn init(allocator: Allocator, buffer_pool: *BufferPool, ws_conn_manager: *anyopaque, config: *const Config) !Conn {
+        const arena = try allocator.create(std.heap.ArenaAllocator);
+        errdefer allocator.destroy(arena);
+
+        arena.* = std.heap.ArenaAllocator.init(allocator);
+
+        var req_state = try Request.State.init(allocator, arena, buffer_pool, &config.request);
+        errdefer req_state.deinit(allocator);
+
+        var res_state = try Response.State.init(allocator, &config.response);
+        errdefer res_state.deinit(allocator);
+
+        return .{
+            .handover = .close,
+            .arena = arena,
+            .close = false,
+            .state = .active,
+            .stream = undefined,
+            .address = undefined,
+            .req_state = req_state,
+            .res_state = res_state,
+            .next = null,
+            .prev = null,
+            .timeout = 0,
+            .request_count = 0,
+            .ws_conn = null,
+            .ws_conn_manager = ws_conn_manager,
+        };
+    }
+
+    pub fn deinit(self: *Conn, allocator: Allocator) void {
+        self.arena.deinit();
+        allocator.destroy(self.arena);
+        self.req_state.deinit(allocator);
+        self.res_state.deinit(allocator);
+    }
+
+    pub fn keepalive(self: *Conn, retain_allocated_bytes: usize) void {
+        self.req_state.reset();
+        self.res_state.reset();
+        _ = self.arena.reset(.{ .retain_with_limit = retain_allocated_bytes });
+    }
+
+    // getting put back into the pool
+    pub fn reset(self: *Conn, retain_allocated_bytes: usize) void {
+        self.close = false;
+        self.next = null;
+        self.prev = null;
+        self.ws_conn = null;
+        self.stream = undefined;
+        self.address = undefined;
+        self.request_count = 0;
+        self.req_state.reset();
+        self.res_state.reset();
+        _ = self.arena.reset(.{ .retain_with_limit = retain_allocated_bytes });
+    }
+};
+
+pub fn timestamp() u32 {
     if (comptime @hasDecl(std.c, "CLOCK") == false) {
         return @intCast(std.time.timestamp());
     }
     var ts: posix.timespec = undefined;
     posix.clock_gettime(posix.CLOCK.REALTIME, &ts) catch unreachable;
-    return @intCast(ts.tv_sec);
+    return @intCast(ts.sec);
 }
 
-// This is our Blocking worker. It's very different than NonBlocking and much
-// simpler.
-pub fn Blocking(comptime S: type) type {
-    return struct {
-        server: S,
-        running: bool,
-        config: *const Config,
-        allocator: Allocator,
-        websocket: *websocket.Server,
-        buffer_pool: BufferPool,
-        timeout_request: ?Timeout,
-        timeout_keepalive: ?Timeout,
-        timeout_write_error: Timeout,
-        retain_allocated_bytes_keepalive: usize,
-
-        const Timeout = struct {
-            sec: u32,
-            timeval: [@sizeOf(std.posix.timeval)]u8,
-
-            // if sec is null, it means we want to cancel the timeout.
-            fn init(sec: ?u32) Timeout {
-                return .{
-                    .sec = if (sec) |s| s else MAX_TIMEOUT,
-                    .timeval = std.mem.toBytes(std.posix.timeval{ .tv_sec = @intCast(sec orelse 0), .tv_usec = 0 }),
-                };
-            }
-        };
-
-        const Self = @This();
-
-        pub fn init(allocator: Allocator, server: S, ws: *websocket.Server, config: *const Config) !Self {
-            const buffer_pool = try initializeBufferPool(allocator, config);
-            errdefer buffer_pool.deinit();
-
-            var timeout_request: ?Timeout = null;
-            if (config.timeout.request) |sec| {
-                timeout_request = Timeout.init(sec);
-            } else if (config.timeout.keepalive != null) {
-                // We have to set this up, so that when we transition from
-                // keepalive state to a request parsing state, we remove the timeout
-                timeout_request = Timeout.init(0);
-            }
-
-            var timeout_keepalive: ?Timeout = null;
-            if (config.timeout.keepalive) |sec| {
-                timeout_keepalive = Timeout.init(sec);
-            } else if (timeout_request != null) {
-                // We have to set this up, so that when we transition from
-                // request processing state to a kepealive state, we remove the timeout
-                timeout_keepalive = Timeout.init(0);
-            }
-            const retain_allocated_bytes_keepalive = config.workers.retain_allocated_bytes orelse 8192;
-
-            return .{
-                .running = true,
-                .server = server,
-                .config = config,
-                .websocket = ws,
-                .allocator = allocator,
-                .buffer_pool = buffer_pool,
-                .timeout_request = timeout_request,
-                .timeout_keepalive = timeout_keepalive,
-                .timeout_write_error = Timeout.init(5),
-                .retain_allocated_bytes_keepalive = retain_allocated_bytes_keepalive,
-            };
-        }
-
-        pub fn deinit(self: *Self) void {
-            self.buffer_pool.deinit();
-        }
-
-        pub fn stop(self: *Self) void {
-            @atomicStore(bool, &self.running, false, .monotonic);
-        }
-
-        pub fn listen(self: *Self, listener: posix.socket_t) void {
-            if (@atomicLoad(bool, &self.running, .monotonic) == false) {
-                // silly, but try to minimize the window where things can go
-                // bad if the server is stopped just as it starts
-                return;
-            }
-            var server = self.server;
-            while (true) {
-                var address: std.net.Address = undefined;
-                var address_len: posix.socklen_t = @sizeOf(std.net.Address);
-                const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
-                    if (@atomicLoad(bool, &self.running, .monotonic) == false) {
-                        return;
-                    }
-                    log.err("Failed to accept socket: {}", .{err});
-                    continue;
-                };
-                metrics.connection();
-                // calls handleConnection through the server's thread_pool
-                server._thread_pool.spawn(.{ self, socket });
-            }
-        }
-
-        const HandleResult = enum {
-            keepalive,
-            close,
-            disown,
-        };
-
-        // Called in a worker thread. `thread_buf` is a thread-specific buffer that
-        // we are free to use as needed.
-        pub fn handleConnection(self: *Self, socket: posix.socket_t, thread_buf: []u8) void {
-            // Tracks whether or not we own `socket`. This almost always stays true
-            // but ownership/responsibility can be taken over. For example, if
-            // the connection is upgraded to a websocket connect, then the websocket
-            // code takes over and this function will just exit without closing
-            // the underlying socket.
-            var own = true;
-            defer if (own) posix.close(socket);
-
-            var conn = Conn.init(self.allocator, &self.buffer_pool, self.websocket, self.config) catch |err| {
-                log.err("Failed to initialize connection: {}", .{err});
-                return;
-            };
-            defer conn.deinit(self.allocator);
-
-            conn.stream = .{ .handle = socket };
-
-            var is_keepalive = false;
-            while (true) {
-                switch (self.handleRequest(&conn, is_keepalive, thread_buf) catch .close) {
-                    .keepalive => conn.keepalive(self.retain_allocated_bytes_keepalive),
-                    .close => break,
-                    .disown => {
-                        // something (e.g. websocket) has taken over ownership of the socket
-                        own = false;
-                        break;
-                    },
-                }
-                is_keepalive = true;
-            }
-        }
-
-        fn handleRequest(self: *const Self, conn: *Conn, is_keepalive: bool, thread_buf: []u8) !Conn.Handover {
-            const stream = conn.stream;
-            const timeout: ?Timeout = if (is_keepalive) self.timeout_keepalive else self.timeout_request;
-
-            var deadline: ?i64 = null;
-
-            if (timeout) |to| {
-                if (is_keepalive == false) {
-                    deadline = timestamp() + to.sec;
-                }
-                try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &to.timeval);
-            }
-
-            var is_first = true;
-            while (true) {
-                const done = conn.req_state.parse(stream) catch |err| {
-                    if (err == error.WouldBlock) {
-                        if (is_keepalive and is_first) {
-                            metrics.timeoutKeepalive(1);
-                        } else {
-                            metrics.timeoutActive(1);
-                        }
-                        return .close;
-                    }
-                    requestParseError(conn, err) catch {};
-                    return .close;
-                };
-                if (done) {
-                    // we have a complete request, time to process it
-                    break;
-                }
-
-                if (is_keepalive) {
-                    if (is_first) {
-                        if (self.timeout_request) |to| {
-                            // This was the first data from a keepalive request.
-                            // We would have been on a keepalive timeout (if there was one),
-                            // and now need to switch to a request timeout. This might be
-                            // an actual timeout, or it could just be removing the keepalive timeout
-                            // eitehr way, it's the same code (timeval will just be set to 0 for
-                            // the second case)
-                            deadline = timestamp() + to.sec;
-                            try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &to.timeval);
-                        }
-                        is_first = false;
-                    }
-                } else if (deadline) |dl| {
-                    if (timestamp() > dl) {
-                        metrics.timeoutActive(1);
-                        return .close;
-                    }
-                }
-            }
-
-            metrics.request();
-            self.server.handler(conn, thread_buf);
-            return conn.handover;
-        }
-    };
-}
-
-// There's some shared logic between the NonBlocking and Blocking workers.
-// Whatever we can de-duplicate, goes here.
-fn initializeBufferPool(allocator: Allocator, config: *const Config) !BufferPool {
+fn initializeBufferPool(allocator: Allocator, config: *const Config) !*BufferPool {
     const large_buffer_count = config.workers.large_buffer_count orelse blk: {
         if (httpz.blockingMode()) {
             break :blk config.threadPoolCount();
@@ -1120,7 +1183,12 @@ fn initializeBufferPool(allocator: Allocator, config: *const Config) !BufferPool
         }
     };
     const large_buffer_size = config.workers.large_buffer_size orelse config.request.max_body_size orelse 65536;
-    return BufferPool.init(allocator, large_buffer_count, large_buffer_size);
+
+    const buffer_pool = try allocator.create(BufferPool);
+    errdefer allocator.destroy(buffer_pool);
+
+    buffer_pool.* = try BufferPool.init(allocator, large_buffer_count, large_buffer_size);
+    return buffer_pool;
 }
 
 // Handles parsing errors. If this returns true, it means Conn has a body ready
@@ -1134,7 +1202,7 @@ fn requestParseError(conn: *Conn, err: anyerror) !void {
             metrics.invalidRequest();
             return writeError(conn, 431, "Request header is too big");
         },
-        error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine, error.InvalidContentLength  => {
+        error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine, error.InvalidContentLength => {
             metrics.invalidRequest();
             return writeError(conn, 400, "Invalid Request");
         },
@@ -1157,7 +1225,7 @@ fn writeError(conn: *Conn, comptime status: u16, comptime msg: []const u8) !void
 
     var i: usize = 0;
 
-    const timeout = std.mem.toBytes(std.posix.timeval{ .tv_sec = 5, .tv_usec = 0 });
+    const timeout = std.mem.toBytes(std.posix.timeval{ .sec = 5, .usec = 0 });
     try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &timeout);
     while (i < response.len) {
         const n = posix.write(socket, response[i..]) catch |err| switch (err) {
@@ -1192,13 +1260,13 @@ test "ConnPool" {
     try t.expectEqual(true, s1.req_state.buf.ptr != s3.req_state.buf.ptr);
     try t.expectEqual(true, s2.req_state.buf.ptr != s3.req_state.buf.ptr);
 
-    p.release(s2, 4096);
+    p.release(s2);
     const s4 = try p.acquire();
     try t.expectEqual(true, s4.req_state.buf.ptr == s2.req_state.buf.ptr);
 
-    p.release(s1, 0);
-    p.release(s3, 0);
-    p.release(s4, 0);
+    p.release(s1);
+    p.release(s3);
+    p.release(s4);
 }
 
 test "List: insert & remove" {

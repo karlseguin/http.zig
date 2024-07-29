@@ -8,10 +8,6 @@ pub fn build(b: *std.Build) !void {
     const metrics_module = b.dependency("metrics", dep_opts).module("metrics");
     const websocket_module = b.dependency("websocket", dep_opts).module("websocket");
 
-    // const websocket_module = b.addModule("websocket", .{
-    //     .root_source_file = b.path("..//websocket.zig/src/websocket.zig"),
-    // });
-
     const httpz_module = b.addModule("httpz", .{
         .root_source_file = b.path("src/httpz.zig"),
         .imports = &.{
@@ -56,11 +52,19 @@ pub fn build(b: *std.Build) !void {
             .test_runner = b.path("test_runner.zig"),
         });
         tests.linkLibC();
-        const options = b.addOptions();
-        options.addOption(bool, "force_blocking", false);
-        tests.root_module.addOptions("build", options);
+        {
+            const options = b.addOptions();
+            options.addOption(bool, "httpz_blocking", false);
+            tests.root_module.addOptions("build", options);
+        }
+        {
+            const options = b.addOptions();
+            options.addOption(bool, "ws_blocking", false);
+            websocket_module.addOptions("build", options);
+        }
         tests.root_module.addImport("metrics", metrics_module);
         tests.root_module.addImport("websocket", websocket_module);
+
         const run_test = b.addRunArtifact(tests);
         run_test.has_side_effects = true;
 
@@ -77,10 +81,16 @@ pub fn build(b: *std.Build) !void {
             .test_runner = b.path("test_runner.zig"),
         });
         tests.linkLibC();
-        const options = b.addOptions();
-        options.addOption(bool, "force_blocking", true);
-        tests.root_module.addOptions("build", options);
-
+        {
+            const options = b.addOptions();
+            options.addOption(bool, "httpz_blocking", true);
+            tests.root_module.addOptions("build", options);
+        }
+        {
+            const options = b.addOptions();
+            options.addOption(bool, "websocket_blocking", true);
+            websocket_module.addOptions("build", options);
+        }
         tests.root_module.addImport("metrics", metrics_module);
         tests.root_module.addImport("websocket", websocket_module);
         const run_test = b.addRunArtifact(tests);

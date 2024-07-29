@@ -67,7 +67,7 @@ pub const MultiFormKeyValue = struct {
     keys: [][]const u8,
     values: []Value,
 
-   pub const Value = struct {
+    pub const Value = struct {
         value: []const u8,
         filename: ?[]const u8 = null,
     };
@@ -153,13 +153,13 @@ test "MultiFormKeyValue: get" {
     defer kv.deinit(t.allocator);
 
     var key = "username".*;
-    kv.add(&key, .{.value = "leto"});
+    kv.add(&key, .{ .value = "leto" });
 
     try t.expectEqual("leto", kv.get("username").?.value);
 
     kv.reset();
     try t.expectEqual(null, kv.get("username"));
-    kv.add(&key, .{.value = "leto2"});
+    kv.add(&key, .{ .value = "leto2" });
     try t.expectEqual("leto2", kv.get("username").?.value);
 }
 
@@ -168,13 +168,13 @@ test "MultiFormKeyValue: ignores beyond max" {
     defer kv.deinit(t.allocator);
 
     var n1 = "username".*;
-    kv.add(&n1, .{.value = "leto"});
+    kv.add(&n1, .{ .value = "leto" });
 
     var n2 = "password".*;
-    kv.add(&n2, .{.value = "ghanima"});
+    kv.add(&n2, .{ .value = "ghanima" });
 
     var n3 = "other".*;
-    kv.add(&n3, .{.value = "hack"});
+    kv.add(&n3, .{ .value = "hack" });
 
     try t.expectEqual("leto", kv.get("username").?.value);
     try t.expectEqual("ghanima", kv.get("password").?.value);
