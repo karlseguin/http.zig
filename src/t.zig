@@ -5,7 +5,7 @@
 const std = @import("std");
 const httpz = @import("httpz.zig");
 
-const Conn = @import("worker.zig").Conn;
+const Conn = @import("worker.zig").HTTPConn;
 const BufferPool = @import("buffer.zig").Pool;
 
 pub fn expectEqual(expected: anytype, actual: anytype) !void {
@@ -101,20 +101,17 @@ pub const Context = struct {
 
         const conn = aa.create(Conn) catch unreachable;
         conn.* = .{
-            .handover = .close,
             .state = .active,
+            .handover = .close,
             .stream = server,
             .address = std.net.Address.initIp4([_]u8{ 127, 0, 0, 200 }, 0),
             .req_state = req_state,
             .res_state = res_state,
-            .next = null,
-            .prev = null,
             .timeout = 0,
             .request_count = 0,
             .close = false,
             .arena = conn_arena,
-            .ws_conn = null,
-            .ws_conn_manager = undefined,
+            .ws_worker = undefined,
         };
 
         return .{

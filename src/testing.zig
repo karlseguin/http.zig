@@ -4,7 +4,7 @@ const std = @import("std");
 const t = @import("t.zig");
 const httpz = @import("httpz.zig");
 
-const Conn = @import("worker.zig").Conn;
+const Conn = @import("worker.zig").HTTPConn;
 
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;

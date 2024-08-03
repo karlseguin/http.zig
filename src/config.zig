@@ -2,11 +2,10 @@ const httpz = @import("httpz.zig");
 const request = @import("request.zig");
 const response = @import("response.zig");
 
+// don't like using CPU detection since hyperthread cores are marketing.
+const DEFAULT_WORKERS = 2;
+
 pub const Config = struct {
-
-    // don't like using CPU detection since hyperthread cores are marketing.
-    pub const DEFAULT_WORKERS = 2;
-
     port: ?u16 = null,
     address: ?[]const u8 = null,
     unix_path: ?[]const u8 = null,
@@ -69,6 +68,13 @@ pub const Config = struct {
         large_buffer_pool_count: u16 = 8,
         large_buffer_size: usize = 32768,
     };
+
+    pub fn workerCount(self: *const Config) u32 {
+        if (httpz.blockingMode()) {
+            return 1;
+        }
+        return self.workers.count orelse DEFAULT_WORKERS;
+    }
 
     pub fn threadPoolCount(self: *const Config) u32 {
         const thread_count = self.thread_pool.count orelse 4;

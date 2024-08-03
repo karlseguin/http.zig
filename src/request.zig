@@ -8,7 +8,7 @@ const metrics = @import("metrics.zig");
 const Self = @This();
 
 const Url = @import("url.zig").Url;
-const Conn = @import("worker.zig").Conn;
+const HTTPConn = @import("worker.zig").HTTPConn;
 const Params = @import("params.zig").Params;
 const KeyValue = @import("key_value.zig").KeyValue;
 const MultiFormKeyValue = @import("key_value.zig").MultiFormKeyValue;
@@ -85,7 +85,7 @@ pub const Request = struct {
     pub const Config = Self.Config;
     pub const Reader = Self.Reader;
 
-    pub fn init(arena: Allocator, conn: *Conn) Request {
+    pub fn init(arena: Allocator, conn: *HTTPConn) Request {
         const state = &conn.req_state;
         return .{
             .arena = arena,
