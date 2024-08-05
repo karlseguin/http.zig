@@ -242,7 +242,22 @@ pub fn Server(comptime H: type) type {
 
             const default_dispatcher = if (comptime Handler == void) defaultDispatcher else defaultDispatcherWithHandler;
 
-            var websocket_state = try ws.WorkerState.init(allocator, .{});
+            var websocket_state = try ws.WorkerState.init(allocator, .{
+                .max_message_size = config.websocket.max_message_size,
+                .buffers = .{
+                    .small_size = config.websocket.small_buffer_size,
+                    .small_pool = config.websocket.small_buffer_pool,
+                    .large_size = config.websocket.large_buffer_size,
+                    .large_pool = config.websocket.large_buffer_pool,
+                },
+                // disable handshake memory allocation since httpz is handling
+                // the handshake request directly
+                .handshake = .{
+                    .count = 0,
+                    .max_size = 0,
+                    .max_headers = 0,
+                },
+            });
             errdefer websocket_state.deinit();
 
             return .{
@@ -557,7 +572,8 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: an
     hc.handler = try H.init(&hc.conn, ctx);
     try http_conn.stream.writeAll(&ws.Handshake.createReply(key));
     if (comptime std.meta.hasFn(H, "afterInit")) {
-        try hc.handler.afterInit(ctx);
+        const params = @typeInfo(@TypeOf(H.afterInit)).Fn.params;
+        try if (comptime params.len == 1) hc.handler.afterInit() else hc.handler.afterInit(ctx);
     }
 
     res.written = true;

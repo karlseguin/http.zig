@@ -14,8 +14,8 @@ pub const Config = struct {
     response: Response = .{},
     timeout: Timeout = .{},
     cors: ?CORS = null,
-    websocket: ?Websocket = null,
     thread_pool: ThreadPool = .{},
+    websocket: Websocket = .{},
 
     pub const ThreadPool = struct {
         count: ?u16 = null,
@@ -60,13 +60,11 @@ pub const Config = struct {
     };
 
     pub const Websocket = struct {
-        max_size: usize = 65536,
-        buffer_size: usize = 4096,
-        handle_ping: bool = false,
-        handle_pong: bool = false,
-        handle_close: bool = false,
-        large_buffer_pool_count: u16 = 8,
-        large_buffer_size: usize = 32768,
+        max_message_size: ?usize = null,
+        small_buffer_size: ?usize = null,
+        small_buffer_pool: ?usize = null,
+        large_buffer_size: ?usize = null,
+        large_buffer_pool: ?u16 = null,
     };
 
     pub fn workerCount(self: *const Config) u32 {
