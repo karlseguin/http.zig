@@ -282,14 +282,6 @@ pub fn Server(comptime H: type) type {
             self._websocket_state.deinit();
         }
 
-        pub fn dispatchUndefined(_: *Self) Dispatcher(Handler, ActionArg) {
-            return struct {
-                fn dispatch(_: Handler, action: ActionArg, req: *Request, res: *Response) !void {
-                    return action(undefined, req, res);
-                }
-            }.dispatch;
-        }
-
         pub fn listen(self: *Self) !void {
             // incase "stop" is waiting
             defer self._cond.signal();
