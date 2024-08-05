@@ -7,9 +7,9 @@ var metrics = Metrics{
     .requests = m.Counter(usize).Impl.init("httpz_requests", .{}),
     .timeout_active = m.Counter(usize).Impl.init("httpz_timeout_active", .{}),
     .timeout_keepalive = m.Counter(usize).Impl.init("httpz_timeout_keepalive", .{}),
-    .alloc_buffer_empty = m.Counter(u64).Impl.init("httpz_alloc_buffer_empty", .{}),
-    .alloc_buffer_large = m.Counter(u64).Impl.init("httpz_alloc_buffer_large", .{}),
-    .alloc_unescape = m.Counter(u64).Impl.init("httpz_alloc_unescape", .{}),
+    .alloc_buffer_empty = m.Counter(usize).Impl.init("httpz_alloc_buffer_empty", .{}),
+    .alloc_buffer_large = m.Counter(usize).Impl.init("httpz_alloc_buffer_large", .{}),
+    .alloc_unescape = m.Counter(usize).Impl.init("httpz_alloc_unescape", .{}),
     .internal_error = m.Counter(usize).Impl.init("httpz_internal_error", .{}),
     .invalid_request = m.Counter(usize).Impl.init("httpz_invalid_request", .{}),
     .header_too_big = m.Counter(usize).Impl.init("httpz_header_too_big", .{}),
@@ -32,15 +32,15 @@ const Metrics = struct {
 
     // size, in bytes, of dynamically allocated memory by our buffer pool,
     // caused by the large buffer pool being empty.
-    alloc_buffer_empty: m.Counter(u64).Impl,
+    alloc_buffer_empty: m.Counter(usize).Impl,
 
     // size, in bytes, of dynamically allocated memory by our buffer pool,
     // caused by the required memory being larger than the large buffer size
-    alloc_buffer_large: m.Counter(u64).Impl,
+    alloc_buffer_large: m.Counter(usize).Impl,
 
     // size, in bytes, of dynamically allocated memory used for unescaping URL
     // or form parameters
-    alloc_unescape: m.Counter(u64).Impl,
+    alloc_unescape: m.Counter(usize).Impl,
 
     // some internal processing error (should be 0!)
     internal_error: m.Counter(usize).Impl,
