@@ -366,10 +366,10 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
 
                     const conn: *Conn(WSH) = @ptrFromInt(data);
-                    switch (conn.protocol) {
-                        .http => self.handleHTTPData(conn, now),
-                        .websocket => thread_pool.spawn(.{self, conn}),
+                    if (conn.protocol == .http) {
+                        manager.active(conn, now);
                     }
+                    thread_pool.spawn(.{self, conn});
                 }
             }
         }
@@ -459,33 +459,6 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             return true;
         }
 
-        // still executing in our worker thread
-        fn handleHTTPData(self: *Self, conn: *Conn(WSH), now: u32) void {
-            var manager = &self.manager;
-            manager.active(conn, now);
-
-            const http_conn = conn.protocol.http;
-            const stream = http_conn.stream;
-
-            const done = http_conn.req_state.parse(stream) catch |err| {
-                requestParseError(http_conn, err) catch {};
-                manager.close(conn);
-                return;
-            };
-
-            if (done == false) {
-                // we need to wait for more data
-                self.loop.monitorRead(stream.handle, @intFromPtr(conn), true) catch |err| {
-                    serverError(http_conn, "unknown event loop error: {}", err) catch {};
-                    manager.close(conn);
-                };
-                return;
-            }
-
-            metrics.request();
-            self.server._thread_pool.spawn(.{ self, conn });
-        }
-
         // Entry-point of our thread pool. `thread_buf` is a thread-specific buffer
         // that we are free to use as needed.
         // Currently, for an HTTP connection, this is only called when we have a
@@ -494,6 +467,26 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         pub fn processData(self: *Self, conn: *Conn(WSH), thread_buf: []u8) void {
             switch (conn.protocol) {
                 .http => |http_conn| {
+                    const stream = http_conn.stream;
+
+                    const done = http_conn.req_state.parse(stream) catch |err| {
+                        requestParseError(http_conn, err) catch {};
+                        http_conn.handover = .close;
+                        self.signal.write(@intFromPtr(conn)) catch @panic("todo");
+                        return;
+                    };
+
+                    if (done == false) {
+                        // we need to wait for more data
+                        self.loop.monitorRead(stream.handle, @intFromPtr(conn), true) catch |err| {
+                            serverError(http_conn, "unknown event loop error: {}", err) catch {};
+                            http_conn.handover = .close;
+                            self.signal.write(@intFromPtr(conn)) catch @panic("todo");
+                        };
+                        return;
+                    }
+
+                    metrics.request();
                     self.server.handleRequest(http_conn, thread_buf);
                     self.signal.write(@intFromPtr(conn)) catch @panic("todo");
                 },
@@ -514,7 +507,6 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     }
                 }
             }
-
         }
     };
 }
