@@ -69,15 +69,15 @@ pub fn write(writer: anytype) !void {
     try metrics.body_too_big.write(writer);
 }
 
-pub fn allocBufferEmpty(size: u64) void {
+pub fn allocBufferEmpty(size: usize) void {
     metrics.alloc_buffer_empty.incrBy(size);
 }
 
-pub fn allocBufferLarge(size: u64) void {
+pub fn allocBufferLarge(size: usize) void {
     metrics.alloc_buffer_large.incrBy(size);
 }
 
-pub fn allocUnescape(size: u64) void {
+pub fn allocUnescape(size: usize) void {
     metrics.alloc_unescape.incrBy(size);
 }
 
