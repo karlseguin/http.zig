@@ -10,6 +10,7 @@ const Allocator = std.mem.Allocator;
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = if (builtin.mode == .Debug) gpa.allocator() else std.heap.c_allocator;
+    defer _ = gpa.detectLeaks();
 
     // This example starts 3 separate servers, each listening on a different
     // port.

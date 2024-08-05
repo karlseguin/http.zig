@@ -356,7 +356,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                     if (data == 1) {
                         if (self.processSignal(now) == false) {
-                            // TODO: shutdown connection
+                            self.manager.shutdown();
+                            self.websocket.shutdown();
                             // signal was closed, we're being told to shutdown
                             return;
                         }
@@ -671,27 +672,6 @@ fn ConnManager(comptime WSH: type) type {
 
         pub fn deinit(self: *Self) void {
             const allocator = self.allocator;
-
-            {
-                var conn = self.active_list.head;
-                while (conn) |c| {
-                    conn = c.next;
-                    const http_conn = c.protocol.http;
-                    http_conn.stream.close();
-                    http_conn.deinit(allocator);
-                }
-            }
-
-            {
-                var conn = self.keepalive_list.head;
-                while (conn) |c| {
-                    conn = c.next;
-                    const http_conn = c.protocol.http;
-                    http_conn.stream.close();
-                    http_conn.deinit(allocator);
-                }
-            }
-
             self.buffer_pool.deinit();
             self.conn_mem_pool.deinit();
             self.http_conn_pool.deinit();
@@ -766,12 +746,28 @@ fn ConnManager(comptime WSH: type) type {
             self.conn_mem_pool.destroy(conn);
         }
 
-
         fn upgrade(self: *Self, conn: *Conn(WSH), hc: *ws.HandlerConn(WSH)) void {
             std.debug.assert(conn.protocol.http.state == .active);
             self.active_list.remove(conn);
             self.http_conn_pool.release(conn.protocol.http);
             conn.protocol = .{.websocket = hc};
+        }
+
+        fn shutdown(self: *Self) void {
+            self.shutdownList(&self.active_list);
+            self.shutdownList(&self.keepalive_list);
+        }
+
+        fn shutdownList(self: *Self, list: *List(Conn(WSH))) void {
+            const allocator = self.allocator;
+
+            var conn = list.head;
+            while (conn) |c| {
+                conn = c.next;
+                const http_conn = c.protocol.http;
+                posix.close(http_conn.stream.handle);
+                http_conn.deinit(allocator);
+            }
         }
 
         // Enforces timeouts, and returns when the next timeout should be checked.
