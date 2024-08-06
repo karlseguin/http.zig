@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) !void {
     const websocket_module = b.dependency("websocket", dep_opts).module("websocket");
 
     // const websocket_module = b.addModule("websocket", .{
-    //     .root_source_file = b.path("..//websocket.zig/src/websocket.zig"),
+    //     .root_source_file = b.path("../websocket.zig/src/websocket.zig"),
     // });
 
     const httpz_module = b.addModule("httpz", .{
