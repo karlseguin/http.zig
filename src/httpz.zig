@@ -825,7 +825,7 @@ test "httpz: invalid request" {
 test "httpz: invalid request path" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("TEA /helo\rn\nWorld:test HTTP/1.1\r\n\r\n");
+    try stream.writeAll("TEA /hello\rn\nWorld:test HTTP/1.1\r\n\r\n");
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));

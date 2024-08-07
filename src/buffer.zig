@@ -180,7 +180,7 @@ test "BufferPool" {
 
         try t.expectEqual(false, &buf1.data[0] == &buf2.data[0]);
 
-        // no more buffers in the pool, creats a dynamic buffer
+        // no more buffers in the pool, creates a dynamic buffer
         const buf3 = try pool.alloc(6);
         try t.expectEqual(.dynamic, buf3.type);
         try t.expectEqual(6, buf3.data.len);
