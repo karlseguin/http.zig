@@ -4,20 +4,21 @@ const mem = std.mem;
 const ascii = std.ascii;
 const Allocator = std.mem.Allocator;
 
-fn MakeKeyValue(keyType: type, valueType: type, equalFn: fn (lhs: keyType, rhs: keyType) bool) type {
+fn MakeKeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) bool) type {
     return struct {
         len: usize,
-        keys: []keyType,
-        values: []valueType,
+        keys: []K,
+        values: []V,
 
-        // This is used in some tests for 
-        pub const Value = valueType;
+        pub const Value = V;
+
         const Self = @This();
+
         pub fn init(allocator: Allocator, max: usize) !Self {
             return .{
                 .len = 0,
-                .keys = try allocator.alloc(keyType, max),
-                .values = try allocator.alloc(valueType, max),
+                .keys = try allocator.alloc(K, max),
+                .values = try allocator.alloc(V, max),
             };
         }
 
@@ -26,7 +27,7 @@ fn MakeKeyValue(keyType: type, valueType: type, equalFn: fn (lhs: keyType, rhs: 
             allocator.free(self.values);
         }
 
-        pub fn add(self: *Self, key: keyType, value: valueType) void {
+        pub fn add(self: *Self, key: K, value: V) void {
             const len = self.len;
             var keys = self.keys;
             if (len == keys.len) {
@@ -38,7 +39,7 @@ fn MakeKeyValue(keyType: type, valueType: type, equalFn: fn (lhs: keyType, rhs: 
             self.len = len + 1;
         }
 
-        pub fn get(self: *const Self, needle: keyType) ?valueType {
+        pub fn get(self: *const Self, needle: K) ?V {
             const keys = self.keys[0..self.len];
             for (keys, 0..) |key, i| {
                 if (equalFn(key, needle)) {
@@ -76,7 +77,6 @@ const MultiForm = struct {
     filename: ?[]const u8 = null,
 };
 pub const MultiFormKeyValue = MakeKeyValue([]const u8, MultiForm, strEql);
-
 
 const t = @import("t.zig");
 test "KeyValue: get" {
