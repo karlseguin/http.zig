@@ -310,7 +310,7 @@ pub const Conn = struct {
     // number of requests made on this connection (within a keepalive session)
     request_count: u64,
 
-    // whether or not to close the connection after the resposne is sent
+    // whether or not to close the connection after the response is sent
     close: bool,
 
     stream: std.net.Stream,
@@ -1076,7 +1076,7 @@ pub fn Blocking(comptime S: type) type {
                             // We would have been on a keepalive timeout (if there was one),
                             // and now need to switch to a request timeout. This might be
                             // an actual timeout, or it could just be removing the keepalive timeout
-                            // eitehr way, it's the same code (timeval will just be set to 0 for
+                            // either way, it's the same code (timeval will just be set to 0 for
                             // the second case)
                             deadline = timestamp() + to.sec;
                             try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &to.timeval);
@@ -1114,7 +1114,7 @@ fn initializeBufferPool(allocator: Allocator, config: *const Config) !BufferPool
 
 // Handles parsing errors. If this returns true, it means Conn has a body ready
 // to write. In this case the worker (blocking or nonblocking) will want to send
-// the resposne. If it returns false, the worker probably wants to close the connection.
+// the response. If it returns false, the worker probably wants to close the connection.
 // This function ensures that both Blocking and NonBlocking workers handle these
 // errors with the same response
 fn requestParseError(conn: *Conn, err: anyerror) !void {
