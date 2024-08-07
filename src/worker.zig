@@ -1245,7 +1245,7 @@ pub const HTTPConn = struct {
     // number of requests made on this connection (within a keepalive session)
     request_count: u64,
 
-    // whether or not to close the connection after the resposne is sent
+    // whether or not to close the connection after the response is sent
     close: bool,
 
     stream: net.Stream,
@@ -1354,7 +1354,7 @@ fn initializeBufferPool(allocator: Allocator, config: *const Config) !*BufferPoo
 
 // Handles parsing errors. If this returns true, it means Conn has a body ready
 // to write. In this case the worker (blocking or nonblocking) will want to send
-// the resposne. If it returns false, the worker probably wants to close the connection.
+// the response. If it returns false, the worker probably wants to close the connection.
 // This function ensures that both Blocking and NonBlocking workers handle these
 // errors with the same response
 fn requestParseError(conn: *HTTPConn, err: anyerror) !void {

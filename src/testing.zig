@@ -304,7 +304,7 @@ fn decodeChunkedEncoding(full_dest: []u8, full_src: []u8) usize {
 
         if (src.len < next_start and clean_trailer == false) {
             // This should not happen, but...When http.zig writes a chunked
-            // response, the trailing empty chunk ony gets written deep in the
+            // response, the trailing empty chunk only gets written deep in the
             // library. When calling a handler directly from a test, that part
             // of the library isn't executed, and thus an invalid chunked encoded
             // body is written (it's missing that empty trailing chunk).

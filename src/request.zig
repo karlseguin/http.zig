@@ -342,7 +342,7 @@ pub const Request = struct {
     // I'm sorry
     fn parseMultiPartEntry(entry: []const u8) !MultiPartField {
         var pos: usize = 0;
-        var attributes: ?ContentDispostionAttributes = null;
+        var attributes: ?ContentDispositionAttributes = null;
 
         while (true) {
             const end_line_pos = std.mem.indexOfScalarPos(u8, entry, pos, '\n') orelse return error.InvalidMultiPartEncoding;
@@ -387,13 +387,13 @@ pub const Request = struct {
         };
     }
 
-    const ContentDispostionAttributes = struct {
+    const ContentDispositionAttributes = struct {
         name: []const u8,
         filename: ?[]const u8 = null,
     };
 
     // I'm sorry
-    fn getContentDispotionAttributes(fields: []u8) !ContentDispostionAttributes {
+    fn getContentDispotionAttributes(fields: []u8) !ContentDispositionAttributes {
         var pos: usize = 0;
 
         var name: ?[]const u8 = null;
@@ -841,7 +841,7 @@ pub const State = struct {
             return true;
         }
 
-        // how much fo the body are we missing
+        // how much of the body are we missing
         const missing = cl - read;
 
         // how much spare space we have in our static buffer
@@ -1381,7 +1381,7 @@ test "body: multiFormData valid" {
 test "body: multiFormData invalid" {
     defer t.reset();
     {
-        // large boudary
+        // large boundary
         var r = try testParse(buildRequest(&.{ "POST / HTTP/1.0", "Content-Type: multipart/form-data; boundary=12345678901234567890123456789012345678901234567890123456789012345678901" }, &.{"garbage"}), .{});
         try t.expectError(error.InvalidMultiPartFormDataHeader, r.multiFormData());
     }
@@ -1393,7 +1393,7 @@ test "body: multiFormData invalid" {
     }
 
     {
-        // no content-dispostion field header
+        // no content-dispotion field header
         var r = try testParse(buildRequest(&.{ "POST / HTTP/1.0", "Content-Type: multipart/form-data; boundary=-90x" }, &.{ "---90x\r\n", "the-desc\r\n", "---90x--\r\n" }), .{ .max_multiform_count = 5 });
         try t.expectError(error.InvalidMultiPartEncoding, r.multiFormData());
     }
@@ -1472,7 +1472,7 @@ test "request: fuzz" {
                 const value = t.randomString(random, aa, 20);
                 if (!query.contains(key)) {
                     // TODO: figure out how we want to handle duplicate query values
-                    // (the spec doesn't specifiy what to do)
+                    // (the spec doesn't specify what to do)
                     query.put(key, value) catch unreachable;
                     ctx.write(key);
                     ctx.write("=");
