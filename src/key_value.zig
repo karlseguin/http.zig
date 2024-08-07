@@ -4,116 +4,79 @@ const mem = std.mem;
 const ascii = std.ascii;
 const Allocator = std.mem.Allocator;
 
-pub const KeyValue = struct {
-    len: usize,
-    keys: [][]const u8,
-    values: [][]const u8,
+fn MakeKeyValue(keyType: type, valueType: type, equalFn: fn (lhs: keyType, rhs: keyType) bool) type {
+    return struct {
+        len: usize,
+        keys: []keyType,
+        values: []valueType,
 
-    pub fn init(allocator: Allocator, max: usize) !KeyValue {
-        const keys = try allocator.alloc([]const u8, max);
-        const values = try allocator.alloc([]const u8, max);
-        return .{
-            .len = 0,
-            .keys = keys,
-            .values = values,
-        };
-    }
-
-    pub fn deinit(self: *KeyValue, allocator: Allocator) void {
-        allocator.free(self.keys);
-        allocator.free(self.values);
-    }
-
-    pub fn add(self: *KeyValue, key: []const u8, value: []const u8) void {
-        const len = self.len;
-        var keys = self.keys;
-        if (len == keys.len) {
-            return;
+        // This is used in some tests for 
+        pub const Value = valueType;
+        const Self = @This();
+        pub fn init(allocator: Allocator, max: usize) !Self {
+            return .{
+                .len = 0,
+                .keys = try allocator.alloc(keyType, max),
+                .values = try allocator.alloc(valueType, max),
+            };
         }
 
-        keys[len] = key;
-        self.values[len] = value;
-        self.len = len + 1;
-    }
+        pub fn deinit(self: *Self, allocator: Allocator) void {
+            allocator.free(self.keys);
+            allocator.free(self.values);
+        }
 
-    pub fn get(self: KeyValue, needle: []const u8) ?[]const u8 {
-        const keys = self.keys[0..self.len];
-        loop: for (keys, 0..) |key, i| {
-            // This is largely a reminder to myself that std.mem.eql isn't
-            // particularly fast. Here we at least avoid the 1 extra ptr
-            // equality check that std.mem.eql does, but we could do better
-            // TODO: monitor https://github.com/ziglang/zig/issues/8689
-            if (needle.len != key.len) {
-                continue;
+        pub fn add(self: *Self, key: keyType, value: valueType) void {
+            const len = self.len;
+            var keys = self.keys;
+            if (len == keys.len) {
+                return;
             }
-            for (needle, key) |n, k| {
-                if (n != k) {
-                    continue :loop;
+
+            keys[len] = key;
+            self.values[len] = value;
+            self.len = len + 1;
+        }
+
+        pub fn get(self: *const Self, needle: keyType) ?valueType {
+            const keys = self.keys[0..self.len];
+            for (keys, 0..) |key, i| {
+                if (equalFn(key, needle)) {
+                    // return key;
+                    return self.values[i];
                 }
             }
-            return self.values[i];
+            return null;
         }
 
-        return null;
-    }
-
-    pub fn reset(self: *KeyValue) void {
-        self.len = 0;
-    }
-};
-
-pub const MultiFormKeyValue = struct {
-    len: usize,
-    keys: [][]const u8,
-    values: []Value,
-
-   pub const Value = struct {
-        value: []const u8,
-        filename: ?[]const u8 = null,
+        pub fn reset(self: *Self) void {
+            self.len = 0;
+        }
     };
+}
 
-    pub fn init(allocator: Allocator, max: usize) !MultiFormKeyValue {
-        const keys = try allocator.alloc([]const u8, max);
-        const values = try allocator.alloc(Value, max);
-        return .{
-            .len = 0,
-            .keys = keys,
-            .values = values,
-        };
+fn strEql(lhs: []const u8, rhs: []const u8) bool {
+    // This is largely a reminder to myself that std.mem.eql isn't
+    // particularly fast. Here we at least avoid the 1 extra ptr
+    // equality check that std.mem.eql does, but we could do better
+    // TODO: monitor https://github.com/ziglang/zig/issues/8689
+    if (lhs.len != rhs.len) {
+        return false;
     }
-
-    pub fn deinit(self: *MultiFormKeyValue, allocator: Allocator) void {
-        allocator.free(self.keys);
-        allocator.free(self.values);
+    for (lhs, rhs) |l, r| {
+        if (l != r) return false;
     }
+    return true;
+}
 
-    pub fn add(self: *MultiFormKeyValue, key: []const u8, value: Value) void {
-        const len = self.len;
-        var keys = self.keys;
-        if (len == keys.len) {
-            return;
-        }
+pub const KeyValue = MakeKeyValue([]const u8, []const u8, strEql);
 
-        keys[len] = key;
-        self.values[len] = value;
-        self.len = len + 1;
-    }
-
-    pub fn get(self: MultiFormKeyValue, needle: []const u8) ?Value {
-        const keys = self.keys[0..self.len];
-        for (keys, 0..) |key, i| {
-            if (mem.eql(u8, key, needle)) {
-                return self.values[i];
-            }
-        }
-
-        return null;
-    }
-
-    pub fn reset(self: *MultiFormKeyValue) void {
-        self.len = 0;
-    }
+const MultiForm = struct {
+    value: []const u8,
+    filename: ?[]const u8 = null,
 };
+pub const MultiFormKeyValue = MakeKeyValue([]const u8, MultiForm, strEql);
+
 
 const t = @import("t.zig");
 test "KeyValue: get" {
