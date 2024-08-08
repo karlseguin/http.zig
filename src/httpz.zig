@@ -411,7 +411,12 @@ pub fn Server(comptime H: type) type {
             self._mut.lock();
             defer self._mut.unlock();
             for (self._signals) |s| {
-                // pipe[0] is not valid when blockingMode() == true, don't access it!
+                if (blockingMode()) {
+                    // necessary to unblock accept on linux
+                    // (which might not be that necessary since, on Linux,
+                    // NonBlocking should be used)
+                    posix.shutdown(s, .recv) catch {};
+                }
                 posix.close(s);
             }
         }

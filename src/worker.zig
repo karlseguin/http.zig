@@ -122,7 +122,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 var address: net.Address = undefined;
                 var address_len: posix.socklen_t = @sizeOf(net.Address);
                 const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
-                    if (err == error.ConnectionAborted) {
+                    if (err == error.ConnectionAborted or err == error.SocketNotListening) {
                         return;
                     }
                     log.err("Failed to accept socket: {}", .{err});
@@ -1327,7 +1327,7 @@ pub const HTTPConn = struct {
 };
 
 pub fn timestamp() u32 {
-    if (comptime @hasDecl(std.c, "CLOCK") == false) {
+    if (comptime @hasDecl(posix, "CLOCK") == false or posix.CLOCK == void) {
         return @intCast(std.time.timestamp());
     }
     var ts: posix.timespec = undefined;
