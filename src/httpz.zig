@@ -79,30 +79,7 @@ pub const ContentType = enum {
     XML,
     UNKNOWN,
 
-    const JS_BIT = @as(u16, @bitCast([2]u8{ 'j', 's' }));
-    const GZ_BIT = @as(u16, @bitCast([2]u8{ 'g', 'z' }));
-    const CSS_BIT = @as(u24, @bitCast([3]u8{ 'c', 's', 's' }));
-    const CSV_BIT = @as(u24, @bitCast([3]u8{ 'c', 's', 'v' }));
-    const EOT_BIT = @as(u24, @bitCast([3]u8{ 'e', 'o', 't' }));
-    const GIF_BIT = @as(u24, @bitCast([3]u8{ 'g', 'i', 'f' }));
-    const HTM_BIT = @as(u24, @bitCast([3]u8{ 'h', 't', 'm' }));
-    const ICO_BIT = @as(u24, @bitCast([3]u8{ 'i', 'c', 'o' }));
-    const JPG_BIT = @as(u24, @bitCast([3]u8{ 'j', 'p', 'g' }));
-    const OTF_BIT = @as(u24, @bitCast([3]u8{ 'o', 't', 'f' }));
-    const PDF_BIT = @as(u24, @bitCast([3]u8{ 'p', 'd', 'f' }));
-    const PNG_BIT = @as(u24, @bitCast([3]u8{ 'p', 'n', 'g' }));
-    const SVG_BIT = @as(u24, @bitCast([3]u8{ 's', 'v', 'g' }));
-    const TAR_BIT = @as(u24, @bitCast([3]u8{ 't', 'a', 'r' }));
-    const TTF_BIT = @as(u24, @bitCast([3]u8{ 't', 't', 'f' }));
-    const XML_BIT = @as(u24, @bitCast([3]u8{ 'x', 'm', 'l' }));
-    const JPEG_BIT = @as(u32, @bitCast([4]u8{ 'j', 'p', 'e', 'g' }));
-    const JSON_BIT = @as(u32, @bitCast([4]u8{ 'j', 's', 'o', 'n' }));
-    const HTML_BIT = @as(u32, @bitCast([4]u8{ 'h', 't', 'm', 'l' }));
-    const TEXT_BIT = @as(u32, @bitCast([4]u8{ 't', 'e', 'x', 't' }));
-    const WASM_BIT = @as(u32, @bitCast([4]u8{ 'w', 'a', 's', 'm' }));
-    const WOFF_BIT = @as(u32, @bitCast([4]u8{ 'w', 'o', 'f', 'f' }));
-    const WEBP_BIT = @as(u32, @bitCast([4]u8{ 'w', 'e', 'b', 'p' }));
-    const WOFF2_BIT = @as(u40, @bitCast([5]u8{ 'w', 'o', 'f', 'f', '2' }));
+    const asUint = @import("url.zig").asUint;
 
     pub fn forExtension(ext: []const u8) ContentType {
         if (ext.len == 0) return .UNKNOWN;
@@ -117,45 +94,45 @@ pub const ContentType = enum {
         switch (temp.len) {
             2 => {
                 switch (@as(u16, @bitCast(normalized[0..2].*))) {
-                    JS_BIT => return .JS,
-                    GZ_BIT => return .GZ,
+                    asUint("js") => return .JS,
+                    asUint("gz") => return .GZ,
                     else => return .UNKNOWN,
                 }
             },
             3 => {
                 switch (@as(u24, @bitCast(normalized[0..3].*))) {
-                    CSS_BIT => return .CSS,
-                    CSV_BIT => return .CSV,
-                    EOT_BIT => return .EOT,
-                    GIF_BIT => return .GIF,
-                    HTM_BIT => return .HTML,
-                    ICO_BIT => return .ICO,
-                    JPG_BIT => return .JPG,
-                    OTF_BIT => return .OTF,
-                    PDF_BIT => return .PDF,
-                    PNG_BIT => return .PNG,
-                    SVG_BIT => return .SVG,
-                    TAR_BIT => return .TAR,
-                    TTF_BIT => return .TTF,
-                    XML_BIT => return .XML,
+                    asUint("css") => return .CSS,
+                    asUint("csv") => return .CSV,
+                    asUint("eot") => return .EOT,
+                    asUint("gif") => return .GIF,
+                    asUint("htm") => return .HTML,
+                    asUint("ico") => return .ICO,
+                    asUint("jpg") => return .JPG,
+                    asUint("otf") => return .OTF,
+                    asUint("pdf") => return .PDF,
+                    asUint("png") => return .PNG,
+                    asUint("svg") => return .SVG,
+                    asUint("tar") => return .TAR,
+                    asUint("ttf") => return .TTF,
+                    asUint("xml") => return .XML,
                     else => return .UNKNOWN,
                 }
             },
             4 => {
                 switch (@as(u32, @bitCast(normalized[0..4].*))) {
-                    JPEG_BIT => return .JPG,
-                    JSON_BIT => return .JSON,
-                    HTML_BIT => return .HTML,
-                    TEXT_BIT => return .TEXT,
-                    WASM_BIT => return .WASM,
-                    WOFF_BIT => return .WOFF,
-                    WEBP_BIT => return .WEBP,
+                    asUint("jpeg") => return .JPG,
+                    asUint("json") => return .JSON,
+                    asUint("html") => return .HTML,
+                    asUint("text") => return .TEXT,
+                    asUint("wasm") => return .WASM,
+                    asUint("woff") => return .WOFF,
+                    asUint("webp") => return .WEBP,
                     else => return .UNKNOWN,
                 }
             },
             5 => {
                 switch (@as(u40, @bitCast(normalized[0..5].*))) {
-                    WOFF2_BIT => return .WOFF2,
+                    asUint("woff2") => return .WOFF2,
                     else => return .UNKNOWN,
                 }
             },

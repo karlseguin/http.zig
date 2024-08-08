@@ -3,28 +3,6 @@ const metrics = @import("metrics.zig");
 
 const Allocator = std.mem.Allocator;
 
-const ENC_20 = @as(u16, @bitCast([2]u8{ '2', '0' }));
-const ENC_21 = @as(u16, @bitCast([2]u8{ '2', '1' }));
-const ENC_22 = @as(u16, @bitCast([2]u8{ '2', '2' }));
-const ENC_23 = @as(u16, @bitCast([2]u8{ '2', '3' }));
-const ENC_24 = @as(u16, @bitCast([2]u8{ '2', '4' }));
-const ENC_25 = @as(u16, @bitCast([2]u8{ '2', '5' }));
-const ENC_26 = @as(u16, @bitCast([2]u8{ '2', '6' }));
-const ENC_27 = @as(u16, @bitCast([2]u8{ '2', '7' }));
-const ENC_28 = @as(u16, @bitCast([2]u8{ '2', '8' }));
-const ENC_29 = @as(u16, @bitCast([2]u8{ '2', '9' }));
-const ENC_2A = @as(u16, @bitCast([2]u8{ '2', 'A' }));
-const ENC_2B = @as(u16, @bitCast([2]u8{ '2', 'B' }));
-const ENC_2C = @as(u16, @bitCast([2]u8{ '2', 'C' }));
-const ENC_2F = @as(u16, @bitCast([2]u8{ '2', 'F' }));
-const ENC_3A = @as(u16, @bitCast([2]u8{ '3', 'A' }));
-const ENC_3B = @as(u16, @bitCast([2]u8{ '3', 'B' }));
-const ENC_3D = @as(u16, @bitCast([2]u8{ '3', 'D' }));
-const ENC_3F = @as(u16, @bitCast([2]u8{ '3', 'F' }));
-const ENC_40 = @as(u16, @bitCast([2]u8{ '4', '0' }));
-const ENC_5B = @as(u16, @bitCast([2]u8{ '5', 'B' }));
-const ENC_5D = @as(u16, @bitCast([2]u8{ '5', 'D' }));
-
 pub const Url = struct {
     raw: []const u8 = "",
     path: []const u8 = "",
@@ -109,27 +87,27 @@ pub const Url = struct {
             if (b == '%') {
                 const enc = input[in_i + 1 .. in_i + 3];
                 out[i] = switch (@as(u16, @bitCast(enc[0..2].*))) {
-                    ENC_20 => ' ',
-                    ENC_21 => '!',
-                    ENC_22 => '"',
-                    ENC_23 => '#',
-                    ENC_24 => '$',
-                    ENC_25 => '%',
-                    ENC_26 => '&',
-                    ENC_27 => '\'',
-                    ENC_28 => '(',
-                    ENC_29 => ')',
-                    ENC_2A => '*',
-                    ENC_2B => '+',
-                    ENC_2C => ',',
-                    ENC_2F => '/',
-                    ENC_3A => ':',
-                    ENC_3B => ';',
-                    ENC_3D => '=',
-                    ENC_3F => '?',
-                    ENC_40 => '@',
-                    ENC_5B => '[',
-                    ENC_5D => ']',
+                    asUint("20") => ' ',
+                    asUint("21") => '!',
+                    asUint("22") => '"',
+                    asUint("23") => '#',
+                    asUint("24") => '$',
+                    asUint("25") => '%',
+                    asUint("26") => '&',
+                    asUint("27") => '\'',
+                    asUint("28") => '(',
+                    asUint("29") => ')',
+                    asUint("2A") => '*',
+                    asUint("2B") => '+',
+                    asUint("2C") => ',',
+                    asUint("2F") => '/',
+                    asUint("3A") => ':',
+                    asUint("3B") => ';',
+                    asUint("3D") => '=',
+                    asUint("3F") => '?',
+                    asUint("40") => '@',
+                    asUint("5B") => '[',
+                    asUint("5D") => ']',
                     else => HEX_DECODE[enc[0]] << 4 | HEX_DECODE[enc[1]],
                 };
                 in_i += 3;
@@ -173,6 +151,22 @@ pub const Url = struct {
         return true;
     }
 };
+
+/// converts ascii to unsigned int of appropriate size
+pub fn asUint(comptime string: anytype) @Type(std.builtin.Type{
+    .Int = .{
+        .bits = @bitSizeOf(@TypeOf(string.*)) - 8, // (- 8) to exclude sentinel 0
+        .signedness = .unsigned,
+    }
+}) {
+    const byteLength = @bitSizeOf(@TypeOf(string.*))/8 - 1;
+    const expectedType = *const [byteLength: 0]u8;
+    if (@TypeOf(string) != expectedType) {
+        @compileError("expected : "++@typeName(expectedType)++", got: "++@typeName(@TypeOf(string)));
+    }
+
+    return @bitCast(@as(*const [byteLength]u8, string).*);
+}
 
 const HEX_CHAR = blk: {
     var all = std.mem.zeroes([255]bool);
@@ -282,4 +276,21 @@ test "url: isValid" {
             slice[idx] = 'a'; // revert this index to a valid value
         }
     }
+}
+
+test "toUint" {
+    const ASCII_x = @as(u8, @bitCast([1]u8{ 'x' }));
+    const ASCII_ab = @as(u16, @bitCast([2]u8{ 'a', 'b' }));
+    const ASCII_xyz = @as(u24, @bitCast([3]u8{ 'x', 'y', 'z' }));
+    const ASCII_abcd = @as(u32, @bitCast([4]u8{ 'a', 'b', 'c', 'd' }));
+
+    try t.expectEqual(ASCII_x, asUint("x"));
+    try t.expectEqual(ASCII_ab, asUint("ab"));
+    try t.expectEqual(ASCII_xyz, asUint("xyz"));
+    try t.expectEqual(ASCII_abcd, asUint("abcd"));
+
+    try t.expectEqual(u8, @TypeOf(asUint("x")));
+    try t.expectEqual(u16, @TypeOf(asUint("ab")));
+    try t.expectEqual(u24, @TypeOf(asUint("xyz")));
+    try t.expectEqual(u32, @TypeOf(asUint("abcd")));
 }

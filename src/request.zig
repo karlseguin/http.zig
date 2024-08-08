@@ -19,20 +19,6 @@ const Address = std.net.Address;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-// this approach to matching method name comes from zhp
-const GET_ = @as(u32, @bitCast([4]u8{ 'G', 'E', 'T', ' ' }));
-const PUT_ = @as(u32, @bitCast([4]u8{ 'P', 'U', 'T', ' ' }));
-const POST = @as(u32, @bitCast([4]u8{ 'P', 'O', 'S', 'T' }));
-const HEAD = @as(u32, @bitCast([4]u8{ 'H', 'E', 'A', 'D' }));
-const PATC = @as(u32, @bitCast([4]u8{ 'P', 'A', 'T', 'C' }));
-const DELE = @as(u32, @bitCast([4]u8{ 'D', 'E', 'L', 'E' }));
-const ETE_ = @as(u32, @bitCast([4]u8{ 'E', 'T', 'E', ' ' }));
-const OPTI = @as(u32, @bitCast([4]u8{ 'O', 'P', 'T', 'I' }));
-const ONS_ = @as(u32, @bitCast([4]u8{ 'O', 'N', 'S', ' ' }));
-const HTTP = @as(u32, @bitCast([4]u8{ 'H', 'T', 'T', 'P' }));
-const V1P0 = @as(u32, @bitCast([4]u8{ '/', '1', '.', '0' }));
-const V1P1 = @as(u32, @bitCast([4]u8{ '/', '1', '.', '1' }));
-
 pub const Request = struct {
     // The URL of the request
     url: Url,
@@ -531,6 +517,8 @@ pub const State = struct {
 
     arena: *ArenaAllocator,
 
+    const asUint = @import("url.zig").asUint;
+
     pub fn init(allocator: Allocator, arena: *ArenaAllocator, buffer_pool: *buffer.Pool, config: *const Config) !Request.State {
         return .{
             .pos = 0,
@@ -637,37 +625,38 @@ pub const State = struct {
         // having to do any other bound-checking.
         if (buf_len < 8) return false;
 
+        // this approach to matching method name comes from zhp
         switch (@as(u32, @bitCast(buf[0..4].*))) {
-            GET_ => {
+            asUint("GET ") => {
                 self.pos = 4;
                 self.method = .GET;
             },
-            PUT_ => {
+            asUint("PUT ") => {
                 self.pos = 4;
                 self.method = .PUT;
             },
-            POST => {
+            asUint("POST") => {
                 if (buf[4] != ' ') return error.UnknownMethod;
                 self.pos = 5;
                 self.method = .POST;
             },
-            HEAD => {
+            asUint("HEAD") => {
                 if (buf[4] != ' ') return error.UnknownMethod;
                 self.pos = 5;
                 self.method = .HEAD;
             },
-            PATC => {
+            asUint("PATC") => {
                 if (buf[4] != 'H' or buf[5] != ' ') return error.UnknownMethod;
                 self.pos = 6;
                 self.method = .PATCH;
             },
-            DELE => {
-                if (@as(u32, @bitCast(buf[3..7].*)) != ETE_) return error.UnknownMethod;
+            asUint("DELE") => {
+                if (@as(u32, @bitCast(buf[3..7].*)) != asUint("ETE ")) return error.UnknownMethod;
                 self.pos = 7;
                 self.method = .DELETE;
             },
-            OPTI => {
-                if (@as(u32, @bitCast(buf[4..8].*)) != ONS_) return error.UnknownMethod;
+            asUint("OPTI") => {
+                if (@as(u32, @bitCast(buf[4..8].*)) != asUint("ONS ")) return error.UnknownMethod;
                 self.pos = 8;
                 self.method = .OPTIONS;
             },
@@ -710,13 +699,13 @@ pub const State = struct {
         const buf_len = buf.len;
         if (buf_len < 10) return false;
 
-        if (@as(u32, @bitCast(buf[0..4].*)) != HTTP) {
+        if (@as(u32, @bitCast(buf[0..4].*)) != asUint("HTTP")) {
             return error.UnknownProtocol;
         }
 
         self.protocol = switch (@as(u32, @bitCast(buf[4..8].*))) {
-            V1P1 => http.Protocol.HTTP11,
-            V1P0 => http.Protocol.HTTP10,
+            asUint("/1.1") => http.Protocol.HTTP11,
+            asUint("/1.0") => http.Protocol.HTTP10,
             else => return error.UnsupportedProtocol,
         };
 
