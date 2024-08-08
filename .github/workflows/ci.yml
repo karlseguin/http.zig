@@ -18,4 +18,4 @@ jobs:
       - name: build x86_64-linux-gnu
         run: zig build -Dtarget=x86_64-linux-gnu
       - name: build x86_64-windows-gnu
-        run: zig build -Dtarget=build x86_64-windows-gnu
+        run: zig build -Dtarget=x86_64-windows-gnu
