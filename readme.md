@@ -360,9 +360,10 @@ The original casing of both the key and the name are preserved.
 To iterate over all query parameters, use:
 
 ```zig
-const qs = req.qs;
-for (qs.keys[0..qs.len], qs.values[0..qs.len]) |name, value| {
-    
+var it = req.query().iterator();
+while (it.next()) |kv| {
+  // kv.key
+  // kv.value
 }
 ```
 
@@ -412,9 +413,10 @@ The original casing of both the key and the name are preserved.
 To iterate over all fields, use:
 
 ```zig
-const fd = try req.formData();
-for (fd.keys[0..fd.len], fd.values[0..fd.len]) |name, field| {
-    //
+var it = req.formData.iterator();
+while (it.next()) |kv| {
+  // kv.key
+  // kv.value
 }
 ```
 
@@ -432,10 +434,11 @@ The original casing of both the key and the name are preserved.
 To iterate over all fields, use:
 
 ```zig
-const fd = try req.multiFormData();
-for (fd.keys[0..fd.len], fd.values[0..fd.len]) |name, field| {
-    // access the value via field.value
-    // and field.filename (an optional)
+var it = req.multiFormData.iterator();
+while (it.next()) |kv| {
+  // kv.key
+  // kv.value.value
+  // kv.value.filename (optional)
 }
 ```
 
