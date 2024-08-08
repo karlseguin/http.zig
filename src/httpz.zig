@@ -374,7 +374,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 // this is what we'll shutdown when stop() is called
                 // signalers[0].pipe[0] is invalid, but stop only cares about
                 // pipe[1]
-                self._signalers[0] = .{.lock = .{}, .pipe = [2]fd_t{0, socket}};
+                self._signalers[0] = .{.lock = .{}, .pipe = [2]fd_t{undefined, socket}};
                 self._mut.unlock();
                 thrd.join();
             } else {
@@ -443,6 +443,12 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 s.lock.lock();
                 defer s.lock.unlock();
 
+                if (blockingMode()) {
+                    // necessary to unblock accept on linux
+                    // (which might not be that necessary since, on Linux,
+                    // NonBlocking should be used)
+                    posix.shutdown(s.pipe[1], .recv) catch {};
+                }
                 // pipe[0] is not valid when blockingMode() == true, don't
                 // access it!
                 posix.close(s.pipe[1]);
