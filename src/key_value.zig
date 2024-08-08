@@ -56,18 +56,74 @@ fn MakeKeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) bool) type {
     };
 }
 
-fn strEql(lhs: []const u8, rhs: []const u8) bool {
-    // This is largely a reminder to myself that std.mem.eql isn't
-    // particularly fast. Here we at least avoid the 1 extra ptr
-    // equality check that std.mem.eql does, but we could do better
+// The current std implementation of std.mem.eql without the pointer comparison 
+// and faster implementation for `string.len <= 16`
+fn strEql(a: []const u8, b: []const u8) bool {
     // TODO: monitor https://github.com/ziglang/zig/issues/8689
-    if (lhs.len != rhs.len) {
-        return false;
+    if (a.len != b.len) return false;
+    if (a.len == 0) return true;
+
+    switch (a.len) {
+        0  => return true,
+        1  => return 0 == (a[0] ^ b[0]),
+        2  => return 0 == (@as(u16, @bitCast(a[0..2].*)) ^ @as(u16, @bitCast(b[0..2].*))),
+        3  => return 0 == (@as(u16, @bitCast(a[0..2].*)) ^ @as(u16, @bitCast(b[0..2].*))) and 0 == (a[2] ^ b[2]),
+        4  => return 0 == (@as(u32, @bitCast(a[0..4].*)) ^ @as(u32, @bitCast(b[0..4].*))),
+        5  => return 0 == (@as(u32, @bitCast(a[0..4].*)) ^ @as(u32, @bitCast(b[0..4].*))) and 0 == (a[4] ^ b[4]),
+        6  => return 0 == (@as(u32, @bitCast(a[0..4].*)) ^ @as(u32, @bitCast(b[0..4].*))) and 0 == (@as(u16, @bitCast(a[4..6].*)) ^ @as(u16, @bitCast(b[4..6].*))),
+        7  => return 0 == (@as(u32, @bitCast(a[0..4].*)) ^ @as(u32, @bitCast(b[0..4].*))) and 0 == (@as(u16, @bitCast(a[4..6].*)) ^ @as(u16, @bitCast(b[4..6].*))) and 0 == (a[6] ^ b[6]),
+        8  => return 0 == (@as(u64, @bitCast(a[0..8].*)) ^ @as(u64, @bitCast(b[0..8].*))),
+        9  => return 0 == (@as(u64, @bitCast(a[0..8].*)) ^ @as(u64, @bitCast(b[0..8].*))) and 0 == (a[8] ^ b[8]),
+        10 => return 0 == (@as(u64, @bitCast(a[0..8].*)) ^ @as(u64, @bitCast(b[0..8].*))) and 0 == (@as(u16, @bitCast(a[8..10].*)) ^ @as(u16, @bitCast(b[8..10].*))),
+        11 => return 0 == (@as(u64, @bitCast(a[0..8].*)) ^ @as(u64, @bitCast(b[0..8].*))) and 0 == (@as(u16, @bitCast(a[8..10].*)) ^ @as(u16, @bitCast(b[8..10].*))) and 0 == (a[10] ^ b[10]),
+        12 => return 0 == (@as(u64, @bitCast(a[0..8].*)) ^ @as(u64, @bitCast(b[0..8].*))) and 0 == (@as(u32, @bitCast(a[8..12].*)) ^ @as(u32, @bitCast(b[8..12].*))),
+        13 => return 0 == (@as(u64, @bitCast(a[0..8].*)) ^ @as(u64, @bitCast(b[0..8].*))) and 0 == (@as(u32, @bitCast(a[8..12].*)) ^ @as(u32, @bitCast(b[8..12].*))) and 0 == (a[12] ^ b[12]),
+        14 => return 0 == (@as(u64, @bitCast(a[0..8].*)) ^ @as(u64, @bitCast(b[0..8].*))) and 0 == (@as(u32, @bitCast(a[8..12].*)) ^ @as(u32, @bitCast(b[8..12].*))) and 0 == (@as(u16, @bitCast(a[12..14].*)) ^ @as(u16, @bitCast(b[12..14].*))),
+        15 => return 0 == (@as(u64, @bitCast(a[0..8].*)) ^ @as(u64, @bitCast(b[0..8].*))) and 0 == (@as(u32, @bitCast(a[8..12].*)) ^ @as(u32, @bitCast(b[8..12].*))) and 0 == (@as(u16, @bitCast(a[12..14].*)) ^ @as(u16, @bitCast(b[12..14].*))) and 0 == (a[14] ^ b[14]),
+        16 => return 0 == (@as(u64, @bitCast(a[0..8].*)) ^ @as(u64, @bitCast(b[0..8].*))) and 0 == (@as(u64, @bitCast(a[8..16].*)) ^ @as(u64, @bitCast(b[8..16].*))),
+        else => {},
     }
-    for (lhs, rhs) |l, r| {
-        if (l != r) return false;
+
+    // Figure out the fastest way to scan through the input in chunks.
+    // Uses vectors when supported and falls back to usize/words when not.
+    const Scan = if (std.simd.suggestVectorLength(u8)) |vec_size|
+        struct {
+            pub const size = vec_size;
+            pub const Chunk = @Vector(size, u8);
+            pub inline fn isNotEqual(chunk_a: Chunk, chunk_b: Chunk) bool {
+                return @reduce(.Or, chunk_a != chunk_b);
+            }
+        }
+    else
+        struct {
+            pub const size = @sizeOf(usize);
+            pub const Chunk = usize;
+            pub inline fn isNotEqual(chunk_a: Chunk, chunk_b: Chunk) bool {
+                return chunk_a != chunk_b;
+            }
+        };
+
+    inline for (1..6) |s| {
+        const n = 16 << s;
+        if (n <= Scan.size and a.len <= n) {
+            const V = @Vector(n / 2, u8);
+            var x = @as(V, a[0 .. n / 2].*) ^ @as(V, b[0 .. n / 2].*);
+            x |= @as(V, a[a.len - n / 2 ..][0 .. n / 2].*) ^ @as(V, b[a.len - n / 2 ..][0 .. n / 2].*);
+            const zero: V = @splat(0);
+            return !@reduce(.Or, x != zero);
+        }
     }
-    return true;
+    // Compare inputs in chunks at a time (excluding the last chunk).
+    for (0..(a.len - 1) / Scan.size) |i| {
+        const a_chunk: Scan.Chunk = @bitCast(a[i * Scan.size ..][0..Scan.size].*);
+        const b_chunk: Scan.Chunk = @bitCast(b[i * Scan.size ..][0..Scan.size].*);
+        if (Scan.isNotEqual(a_chunk, b_chunk)) return false;
+    }
+
+    // Compare the last chunk using an overlapping read (similar to the previous size strategies).
+    const last_a_chunk: Scan.Chunk = @bitCast(a[a.len - Scan.size ..][0..Scan.size].*);
+    const last_b_chunk: Scan.Chunk = @bitCast(b[a.len - Scan.size ..][0..Scan.size].*);
+    return !Scan.isNotEqual(last_a_chunk, last_b_chunk);
 }
 
 pub const KeyValue = MakeKeyValue([]const u8, []const u8, strEql);
@@ -142,4 +198,25 @@ test "MultiFormKeyValue: ignores beyond max" {
     try t.expectEqual("leto", kv.get("username").?.value);
     try t.expectEqual("ghanima", kv.get("password").?.value);
     try t.expectEqual(null, kv.get("other"));
+}
+
+test "strEql" {
+    comptime var string: []const u8 = &.{};
+
+    inline for (0..256) |i| {
+        string = string ++ [1]u8{@truncate(i)};
+
+        const a: []u8 = try t.allocator.alloc(u8, string.len);
+        defer t.allocator.free(a);
+        @memcpy(a, string);
+
+        const b: []u8 = try t.allocator.alloc(u8, string.len);
+        defer t.allocator.free(b);
+        @memcpy(b, string);
+
+        try t.expectEqual(strEql(a, b), true);
+        
+        a[a.len - 1] = if (a[a.len - 1] == 0) 1 else 0;
+        try t.expectEqual(strEql(a, b), false);
+    }
 }
