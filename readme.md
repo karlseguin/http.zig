@@ -206,8 +206,6 @@ const App = struct {
 };
 ```
 
-
-
 The behavior `httpz.Server(H)` is controlled by 
 The library supports both simple and complex use cases. A simple use case is shown below. It's initiated by the call to `httpz.Server()`:
 
@@ -336,9 +334,10 @@ Header names are lowercase. Values maintain their original casing.
 To iterate over all headers, use:
 
 ```zig
-const headers = req.headers;
-for (headers.keys[0..headers.len], headers.values[0..headers.len]) |name, value| {
-    
+var it = req.headers.iterator();
+while (it.next()) |kv| {
+  // kv.key
+  // kv.value
 }
 ```
 
