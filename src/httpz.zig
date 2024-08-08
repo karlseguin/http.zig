@@ -1153,14 +1153,14 @@ test "websocket: upgrade" {
     var pos: usize = 0;
     var buf: [100]u8 = undefined;
     var wait_count: usize = 0;
-    while (pos < 12) {
+    while (pos < 16) {
         const n = stream.read(buf[pos..]) catch |err| switch (err) {
             error.WouldBlock => {
                 if (wait_count == 100) {
                     break;
                 }
                 wait_count += 1;
-                std.time.sleep(std.time.ns_per_ms * 5);
+                std.time.sleep(std.time.ns_per_ms);
                 continue;
             },
             else => return err,
