@@ -1160,7 +1160,7 @@ test "websocket: upgrade" {
                     break;
                 }
                 wait_count += 1;
-                std.time.sleep(std.time.ns_per_ms);
+                std.time.sleep(std.time.ns_per_ms * 5);
                 continue;
             },
             else => return err,
@@ -1170,10 +1170,11 @@ test "websocket: upgrade" {
         }
         pos += n;
     }
-    try t.expectEqual(12, pos);
+    try t.expectEqual(16, pos);
     try t.expectEqual(129, buf[0]);
     try t.expectEqual(10, buf[1]);
     try t.expectString("over 9000!", buf[2..12]);
+    try t.expectString(&.{136, 2, 3, 232}, buf[12..16]);
 }
 
 test "ContentType: forX" {
@@ -1456,7 +1457,7 @@ const TestWebsocketHandler = struct {
 
         pub fn clientMessage(self: *WebsocketHandler, data: []const u8) !void {
             if (std.mem.eql(u8, data, "close")) {
-                self.conn.close();
+                self.conn.close(.{}) catch {};
                 return;
             }
             try self.conn.write(data);
