@@ -18,7 +18,7 @@ pub const Config = @import("config.zig").Config;
 const Thread = std.Thread;
 const net = std.net;
 const posix = std.posix;
-const fd_t = posix.fd_t;
+const socket_t = posix.socket_t;
 const Allocator = std.mem.Allocator;
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 
@@ -235,7 +235,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         const Self = @This();
 
         const Signalers = struct {
-            pipe: [2]fd_t,
+            pipe: [2]socket_t,
             lock: Thread.Mutex,
         };
 
@@ -374,7 +374,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 // this is what we'll shutdown when stop() is called
                 // signalers[0].pipe[0] is invalid, but stop only cares about
                 // pipe[1]
-                self._signalers[0] = .{.lock = .{}, .pipe = [2]fd_t{0, socket}};
+                self._signalers[0] = .{.lock = .{}, .pipe = [2]socket_t{undefined, socket}};
                 self._mut.unlock();
                 thrd.join();
             } else {
@@ -443,8 +443,9 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 s.lock.lock();
                 defer s.lock.unlock();
 
-                // pipe[0] is not valid when blockingMode() == true, don't
-                // access it!
+                if (comptime blockingMode()) {
+                    posix.shutdown(s.pipe[1], .recv) catch {};
+                }
                 posix.close(s.pipe[1]);
             }
         }

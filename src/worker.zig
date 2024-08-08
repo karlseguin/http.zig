@@ -985,7 +985,7 @@ pub fn Blocking(comptime S: type) type {
                 var address: std.net.Address = undefined;
                 var address_len: posix.socklen_t = @sizeOf(std.net.Address);
                 const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
-                    if (err == error.ConnectionAborted) {
+                    if (err == error.ConnectionAborted or err == error.SocketNotListening) {
                         return;
                     }
                     log.err("Failed to accept socket: {}", .{err});
