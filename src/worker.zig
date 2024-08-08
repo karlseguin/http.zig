@@ -494,14 +494,14 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     var ws_conn = &hc.conn;
                     const success = self.websocket.worker.dataAvailable(hc, thread_buf);
                     if (success == false) {
-                        ws_conn.close();
+                        ws_conn.close(.{.code = 4997, .reason = "wsz"}) catch {};
                         self.websocket.cleanupConn(hc);
                     } else if (ws_conn.isClosed()) {
                         self.websocket.cleanupConn(hc);
                     } else {
                         self.loop.monitorRead(hc.socket, @intFromPtr(conn), true) catch |err| {
                             log.debug("({}) failed to add read event monitor: {}", .{ws_conn.address, err});
-                            ws_conn.close();
+                            ws_conn.close(.{.code = 4998, .reason = "wsz"}) catch {};
                             self.websocket.cleanupConn(hc);
                         };
                     }
@@ -1199,7 +1199,7 @@ pub fn Conn(comptime WSH: type) type {
         fn close(self: *Self) void {
             switch(self.protocol) {
                 .http => |http_conn| posix.close(http_conn.stream.handle),
-                .websocket => |hc| hc.conn.close(),
+                .websocket => |hc| hc.conn.close(.{}) catch {},
             }
         }
     };
