@@ -57,17 +57,7 @@ fn MakeKeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) bool) type {
 }
 
 fn strEql(lhs: []const u8, rhs: []const u8) bool {
-    // This is largely a reminder to myself that std.mem.eql isn't
-    // particularly fast. Here we at least avoid the 1 extra ptr
-    // equality check that std.mem.eql does, but we could do better
-    // TODO: monitor https://github.com/ziglang/zig/issues/8689
-    if (lhs.len != rhs.len) {
-        return false;
-    }
-    for (lhs, rhs) |l, r| {
-        if (l != r) return false;
-    }
-    return true;
+    return std.mem.eql(u8, lha, rhs);
 }
 
 pub const KeyValue = MakeKeyValue([]const u8, []const u8, strEql);
