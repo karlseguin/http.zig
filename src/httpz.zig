@@ -547,7 +547,7 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: an
     try http_conn.stream.writeAll(&ws.Handshake.createReply(key));
     if (comptime std.meta.hasFn(H, "afterInit")) {
         const params = @typeInfo(@TypeOf(H.afterInit)).Fn.params;
-        try if (comptime params.len == 1) hc.handler.afterInit() else hc.handler.afterInit(ctx);
+        try if (comptime params.len == 1) hc.handler.?.afterInit() else hc.handler.?.afterInit(ctx);
     }
 
     res.written = true;
@@ -1430,6 +1430,10 @@ const TestWebsocketHandler = struct {
                 .ctx = ctx,
                 .conn = conn,
             };
+        }
+
+        pub fn afterInit(self: *WebsocketHandler, ctx: u32) !void {
+            try t.expectEqual(self.ctx, ctx);
         }
 
         pub fn clientMessage(self: *WebsocketHandler, data: []const u8) !void {
