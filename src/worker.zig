@@ -925,14 +925,14 @@ pub fn Blocking(comptime S: type) type {
         retain_allocated_bytes_keepalive: usize,
 
         const Timeout = struct {
-            sec: u32,
-            timeval: [@sizeOf(std.posix.timeval)]u8,
+            tv_sec: u32,
+            tv_timeval: [@sizeOf(std.posix.timeval)]u8,
 
             // if sec is null, it means we want to cancel the timeout.
             fn init(sec: ?u32) Timeout {
                 return .{
-                    .sec = if (sec) |s| s else MAX_TIMEOUT,
-                    .timeval = std.mem.toBytes(std.posix.timeval{ .sec = @intCast(sec orelse 0), .usec = 0 }),
+                    .tv_sec = if (sec) |s| s else MAX_TIMEOUT,
+                    .tv_timeval = std.mem.toBytes(std.posix.timeval{ .tv_sec = @intCast(sec orelse 0), .tv_usec = 0 }),
                 };
             }
         };
