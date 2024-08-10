@@ -57,7 +57,7 @@ fn MakeKeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) bool) type {
 }
 
 fn strEql(lhs: []const u8, rhs: []const u8) bool {
-    return std.mem.eql(u8, lha, rhs);
+    return std.mem.eql(u8, lhs, rhs);
 }
 
 pub const KeyValue = MakeKeyValue([]const u8, []const u8, strEql);
