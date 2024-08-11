@@ -8,8 +8,8 @@
       .hash = "1220232ab38d0c2cfb10680115c17ad2fa1a8531dbaf8bbfb359ec67e80c7d5f5758"
     },
     .websocket = .{
-      .url = "https://github.com/karlseguin/websocket.zig/archive/bb0585d9a703da2406034d6fba0270078c631961.tar.gz",
-      .hash = "122004e727caa49b4e0844053d049c51e58b574a8d23c79e7c0bdc917290f7c10d02"
+      .url = "https://github.com/karlseguin/websocket.zig/archive/c5ace3bdc1ab51980215d1c1200eef1b9ada2321.tar.gz",
+      .hash = "12202f8a41073928237eff97f048e3cf9682ac107d8d9ab7cf898870a385b5a2c706"
     },
   },
 }

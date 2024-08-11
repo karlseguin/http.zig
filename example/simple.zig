@@ -8,11 +8,9 @@ var index_file_contents: []u8 = undefined;
 // Started in main.zig which starts 3 servers, on 3 different ports, to showcase
 // small variations in using httpz.
 pub fn start(allocator: Allocator) !void {
-    var server = try httpz.Server().init(allocator, .{});
+    var server = try httpz.Server(void).init(allocator, .{}, {});
     defer server.deinit();
     var router = server.router();
-
-    server.notFound(notFound);
 
     var index_file = try std.fs.cwd().openFile("example/index.html", .{});
     defer index_file.close();

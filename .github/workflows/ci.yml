@@ -1,0 +1,21 @@
+name: CI
+on: [push]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+            sudo snap install zig --classic --edge
+            zig version
+      - name: non-blocking test
+        run: zig build test -Dforce_blocking=false
+      - name: blocking test
+        run: zig build test -Dforce_blocking=true
+      - name: build x86-linux-gnu
+        run: zig build -Dtarget=x86-linux-gnu
+      - name: build x86_64-linux-gnu
+        run: zig build -Dtarget=x86_64-linux-gnu
+      - name: build x86_64-windows-gnu
+        run: zig build -Dtarget=x86_64-windows-gnu

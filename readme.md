@@ -1,36 +1,215 @@
 # An HTTP/1.1 server for Zig.
 
-## Demo
-http.zig is used by [logdk](https://github.com/karlseguin/logdk), my log aggregator. You can see a [live demo here](https://logdk.goblgobl.com/).
-
-# Installation
-This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`. This library only imports [websocket.zig](https://github.com/karlseguin/websocket.zig) and [metrics.zig](https://github.com/karlseguin/metrics.zig) - two libraries that I've written which have no other dependencies.
-
-```
-zig fetch --save git+https://github.com/karlseguin/http.zig
-```
-
-In your `build.zig.zon`:
 ```zig
-pub fn build(b: *std.Build) void {
-    // your target/optimize setup
-    // your `exe` declaration
-    const httpz_module = b.dependency("httpz", .{.target = target, .optimize = optimize}).module("httpz");
-    exe.root_module.addImport("httpz", httpz_module);
+const std = @import("std");
+const httpz = @import("httpz");
+
+pub fn main() !void {
+  var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+  const allocator = gpa.allocator();
+
+  // More advance cases will use a custom "Handler" instead of "void".
+  // The last parameter is our handler instance, since we have a "void"
+  // handler, we passed a void ({}) value.
+  var server = try httpz.Server(void).init(allocator, .{.port = 5882}, {});
+  
+  var router = server.router();
+  router.get("/api/user/:id", getUser);
+
+  // blocks
+  try server.listen(); 
+}
+
+fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
+  res.status = 200;
+  try res.json(.{.id = req.param("id").?, .name = "Teg"}, .{});
 }
 ```
+
+# Migration
+If you're coming from a previous version, I've made some breaking changes recently (largely to accomodate much better integration with websocket.zig). See the [Migration Wiki](https://github.com/karlseguin/http.zig/wiki/Migration) for more details.
+
+# Installation
+1) Add into `dependencies` at `build.zig.zon`:
+```zig
+.dependencies = .{
+  .httpz = .{
+    .url = "git+https://github.com/karlseguin/httpz.zig#master",
+    .hash = {{ actual_hash string, remove this line before 'zig build' to get actual hash }},
+  },
+},
+```
+2) Add this in `build.zig`:
+```zig
+const httpz = b.dependency("httpz", .{
+  .target = target,
+  .optimize = optimize,
+});
+exe.root_module.addImport("httpz", httpz.module("httpz"));
+```
+
+The library tracks Zig master. If you're using a specific version of Zig, use the appropriate branch.
 
 # Alternatives
 If you're looking for a higher level web framework with more included functionality, consider [JetZig](https://www.jetzig.dev/) which is built on top of httpz.
 
 # Why not std.http.Server
-`std.http.Server` is slow. Exactly how slow depends on what you're doing and how you're testing. There are many Zig HTTP server implementations. Most wrap `std.http.Server` and tend to be slow; slower than Sinatra. A few wrap C libraries and are faster (though some of these are slow too!). 
+`std.http.Server` is very slow and assumes well-behaved clients.
+
+There are many Zig HTTP server implementations. Most wrap `std.http.Server` and tend to be slow. Benchmark it, you'll see. A few wrap C libraries and are faster (though some of these are slow too!). 
 
 http.zig is written in Zig, without using `std.http.Server`. On an M2, a basic request can hit 140K requests per seconds.
 
 # Usage
+When a non-void Handler is used, the value given to `Server(H).init` is passed to every action. This is how application-specific data can be passed into your actions.
 
-## Simple Use Case
+For example, using [pg.zig](https://github.com/karlseguin/pg.zig), we can make a database connection pool available to each action:
+
+```zig
+const pg = @import("pg");
+const std = @import("std");
+const httpz = @import("httpz");
+
+pub fn main() !void {
+  var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+  const allocator = gpa.allocator();
+
+  var db = try pg.Pool.init(allocator, .{
+    .connect = .{ .port = 5432, .host = "localhost"},
+    .auth = .{.username = "user", .database = "db", .password = "pass"}
+  });
+  defer db.deinit();
+
+  var app = App{
+    .db = db,
+  };
+
+
+  var server = try httpz.Server(*App).init(allocator, .{.port = 5882}, &app);
+  var router = server.router();
+  router.get("/api/user/:id", getUser);
+  try server.listen();
+}
+
+const App = struct {
+    db: *pg.Pool,
+};
+
+fn getUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
+  const user_id = req.param("id").?;
+
+  var row = try app.db.row("select name from users where id = $1", .{user_id}) orelse {
+    res.status = 404;
+    res.body = "Not found";
+    return;
+  };
+  defer row.deinit() catch {};
+
+  try res.json(.{
+    .id = user_id,
+    .name = row.get([]u8, 0),
+  }, .{});
+}
+```
+
+## Dispatch
+Beyond sharing state, your custom handler can be used to control how httpz behaves. By defining a public `dispatch` method you can control how (or even **if**) actions are executed. For example, to log timing, you could do:
+
+```zig
+const App = struct {
+  pub fn dispatch(self: *App, action: httpz.Action(*App), req: *httpz.Request, res: *httpz.Response) !void {
+    const start = std.time.microTimestamp();
+
+    // your `dispatch` doesn't _have_ to call the action
+    try action(self, req, res);
+
+    const elapsed = std.time.microTimestamp() - start;
+    std.log.info("{} {s} {d}", .{req.method, req.url.path, elapsed});
+  }
+};
+```
+
+### Per-Request Context
+The 2nd parameter, `action`, is of type `httpz.Action(*App)`. This is a function pointer to the function you specified when setting up the routes. As we've seen, this works well to share global data. But, in many cases, you'll want to have request-specific data.
+
+Consider the case where you want your `dispatch` method to conditionally load a user (maybe from the `Authorization` header of the request). How would you pass this `User` to the action? You can't use the `*App` directly, as this is shared concurrently across all requests.
+
+To achieve this, we'll add another structure called `RequestContext`. You can call this whatever you want, and it can contain any fields of methods you want.
+
+```zig
+const RequestContext = struct {
+  // You don't have to put a reference to your global data.
+  // But chances are you'll want.
+  app: *App,
+  user: ?User,
+};
+```
+
+We can now change the definition of our actions and `dispatch` method:
+
+```zig
+fn getUser(ctx: *RequestContext, req: *httpz.Request, res: *httpz.Response) !void {
+   // can check if ctx.user is != null
+}
+
+const App = struct {
+  pub fn dispatch(self: *App, action: httpz.Action(*RequestContext), req: *httpz.Request, res: *httpz.Response) !void {
+    var ctx = RequestContext{
+      .app = self,
+      .user = self.loadUser(req),
+    }
+    return action(&ctx, req, res);
+  }
+
+  fn loadUser(self: *App, req: *httpz.Request) ?User {
+    // todo, maybe using req.header("authorizaation")
+  }
+};
+
+```
+
+httpz infers the type of the action based on the 2nd parameter of your handler's `dispatch` method. If you use a `void` handler or your handler doesn't have a `dispatch` method, then you won't interact with `httpz.Action(H)` directly.
+
+## Not Found
+If your handler has a public `notFound` method, it will be called whenever a path doesn't match a found route:
+
+```zig
+const App = struct {
+  pub fn notFound(_: *App, req: *httpz.Request, res: *httpz.Response) !void {
+    std.log.info("404 {} {s}", .{req.method, req.url.path});
+    res.status = 404;
+    res.body = "Not Found";
+  }
+};
+```
+
+## Error Handler
+If your handler has a public `uncaughtError` method, it will be called whenever there's an unhandled error. This could be due to some internal httpz bug, or because your action return an error. 
+
+```zig
+const App = struct {
+  pub fn uncaughtError(self: *App, _: *Request, res: *Response, err: anyerror) void {
+    std.log.info("500 {} {s} {}", .{req.method, req.url.path, err});
+    res.status = 500;
+    res.body = "sorry";
+  }
+};
+```
+
+Notice that, unlike `notFound` and other normal actions, the `uncaughtError` method cannot return an error itself.
+
+## Takeover
+For the most control, you can define a `handle` method. This circumvents most of Httpz's dispatching, including routing. Frameworks like JetZig hook use `handle` in order to provide their own routing and dispatching. When you define a `handle` method, then any `dispatch`, `notFound` and `uncaughtError` methods are ignored by httpz.
+
+```zig
+const App = struct {
+  pub fn handle(app: *App, req: *Request, res: *Response) void {
+    // todo
+  }
+};
+```
+
+The behavior `httpz.Server(H)` is controlled by 
 The library supports both simple and complex use cases. A simple use case is shown below. It's initiated by the call to `httpz.Server()`:
 
 ```zig
@@ -86,258 +265,6 @@ fn errorHandler(req: *httpz.Request, res: *httpz.Response, err: anyerror) void {
 }
 ```
 
-## Shutdown
-To cleanly shutdown, call `server.stop()` followed by `server.deinit()`. On systems with sigaction, this likely requires that your server instance be a global:
-
-```zig
-var server: httpz.ServerCtx(void, void) = undefined;
-
-pub fn main() void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-
-    server = try httpz.Server().init(allocator, .{.port = 5882});
-    defer server.deinit();
-
-    // now that our server is up, we register our intent to handle SIGINT
-    try std.posix.sigaction(std.posix.SIG.INT, &.{
-        .handler = .{.handler = shutdown},
-        .mask = std.posix.empty_sigset,
-        .flags = 0,
-    }, null);
-
-    // TODO: setup your routes and things like normal
-
-    // this will block until server.stop() is called
-    // which will then run the server.deinit() we setup above with `defer`
-    try server.listen(); 
-}
-
-fn shutdown(_: c_int) callconv(.C) void {
-    // this will unblock the server.listen()
-    server.stop();
-}
-```
-
-## Complex Use Case 1 - Shared Global Data
-The call to `httpz.Server()` is a wrapper around a generic Server that can take a global context. Use `httpz.ServerApp(G)` and pass an instance of `G` to `init`:
-
-```zig
-const std = @import("std");
-const httpz = @import("httpz");
-
-const Global = struct {
-    hits: usize = 0,
-    l: std.Thread.Mutex = .{},
-};
-
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-
-    var global = Global{};
-    var server = try httpz.ServerApp(*Global).init(allocator, .{}, &global);
-    var router = server.router();
-    router.get("/increment", increment);
-    return server.listen();
-}
-
-fn increment(global: *Global, _: *httpz.Request, res: *httpz.Response) !void {
-    global.l.lock();
-    const hits = global.hits + 1;
-    global.hits = hits;
-    global.l.unlock();
-
-    // or, more verbosse: httpz.ContentType.TEXT
-    res.content_type = .TEXT;
-    res.body = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-}
-```
-
-There are a few important things to notice. First, the `init` function of `ServerApp(G)` takes a 3rd parameter: the global data of type `G`. Second, our actions take a new parameter of type `G`. Any custom notFound handler (set via `server.notFound(...)`) or error handler(set via `server.errorHandler(errorHandler)`) must also accept this new parameter. 
-
-Because the new parameter is first, and because of how struct methods are implemented in Zig, the above can also be written as:
-
-```zig
-const std = @import("std");
-const httpz = @import("httpz");
-
-const Global = struct {
-    hits: usize = 0,
-    l: std.Thread.Mutex = .{},
-
-    fn increment(global: *Global, _: *httpz.Request, res: *httpz.Response) !void {
-        global.l.lock();
-        const hits = global.hits + 1;
-        global.hits = hits;
-        global.l.unlock();
-
-        res.content_type = .TEXT;
-        res.body = try std.fmt.allocPrint(res.arena, "{d} hits", .{hits});
-    }
-};
-
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-
-    var global = &Global{};
-    var server = try httpz.ServerApp(*Global).init(allocator, .{}, global);
-    var router = server.router();
-    router.get("/increment", global.increment);
-    return server.listen();
-}
-```
-
-It's up to the application to make sure that access to the global data is synchronized.
-
-## Complex Use Case 2 - Custom Dispatcher
-While httpz doesn't support traditional middleware, it does allow applications to provide their own custom dispatcher. This gives an application full control over how a request is processed. 
-
-To understand what the dispatcher does and how to write a custom one, consider the default dispatcher which looks something like:
-
-```zig
-fn dispatcher(global: G, action: httpz.Action(R), req: *httpz.Request, res: *httpz.Response) !void {
-    // this is how httpz maintains a simple interface when httpz.Server()
-    // is used instead of httpz.ServerApp(T), or the even more advanced
-    // httpz.ServerCtx(G, R)
-    if (G == void) {
-        return action(req, res);
-    }
-    return action(global, req, res);
-}
-```
-
-The default dispatcher merely calls the supplied `action`. A custom dispatch could time and log each request, apply filters to the request and response and do any middleware-like behavior before, after or around the action. Of note, the dispatcher doesn't have to call `action`.
-
-The dispatcher can be set globally and/or per route
-
-```zig
-var server = try httpz.Server().init(allocator, .{});
-
-// set a global dispatch for any routes defined from this point on
-server.dispatcher(mainDispatcher); 
-
-// set a dispatcher for this route
-// note the use of "deleteC" the "C" is for Configuration and is used
-// since Zig doesn't have overloading or optional parameters.
-server.router().deleteC("/v1/session", logout, .{.dispatcher = loggedIn}) 
-...
-
-fn mainDispatcher(action: httpz.Action(void), req: *httpz.Request, res: *httpz.Response) !void {
-    res.header("cors", "isslow");
-    return action(req, res);
-}
-
-fn loggedIn(action: httpz.Action(void), req: *httpz.Request, res: *httpz.Response) !void {
-    if (req.header("authorization")) |_auth| {
-        // TODO: make sure "auth" is valid!
-        return mainDispatcher(action, req, res);
-    }
-    res.status = 401;
-    res.body = "Not authorized";
-}
-
-fn logout(req: *httpz.Request, res: *httpz.Response) !void {
-    ...
-}
-```
-
-See [router groups](#groups) for a more convenient approach to defining a dispatcher for a group of routes.
-
-## Complex Use Case 3 - Route-Based Global Data
-Much like the custom dispatcher explained above, global data can be specified per-route:
-
-```zig
-var server = try httpz.ServerApp(*Global).init(allocator, .{}, &default_global);
-
-var router = server.router();
-server.router().deleteC("/v1/session", logout, .{.ctx = &Global{...}});
-```
-
-See [router groups](#groups) for a more convenient approach to defining global dta for a group of routes.
-
-## Complex Use Case 4 - Per-Request Data
-Where `Server` is used when no state is required, and `ServerApp(G)` is used when there's a single global context, `ServerCtx(G, R)` allows a dispatcher to receive a global context and execute actions with a request-context. In this case, a dispatcher **must** be provided and failure to provide a dispatcher will result in 500 errors. This is because httpz doesn't know how to generate an `R` per request.
-
-```zig
-const std = @import("std");
-const httpz = @import("httpz");
-
-const Global = struct {
-    hits: usize = 0,
-    l: std.Thread.Mutex = .{},
-};
-
-const Context = struct {
-    global: *Global,
-    user_id: ?[]const u8,
-}
-
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-
-    var global = Global{};
-
-    var server = try httpz.ServerCtx(*Global, Context).init(allocator, .{}, &global);
-
-    // set a global dispatch for any routes defined from this point on
-    server.dispatcher(dispatcher); 
-
-    // again, it's possible to had per-route dispatchers
-    server.router().delete("/v1/session", logout) 
-...
-
-fn dispatcher(global: *Global, action: httpz.Action(Context), req: *httpz.Request, res: *httpz.Response) !void {
-    const context = Context{
-        .global = global,
-
-        // we shouldn't blindly trust this header!
-        .user_id = req.header("user"),
-    }
-    return action(context, req, res);
-}
-
-fn logout(context: Context, req: *httpz.Request, res: *httpz.Response) !void {
-    ...
-}
-```
-
-The per-request data, `Context` in the above example, is the first parameter and thus actions can optionally be called as methods on the structure.
-
-`server.undefinedDispatcher()` can be used to generate a dispatcher which passes `undefined` R. This is dangerous, but can be useful if you have a few routes, such as `/ping`, which you want to skip your main dispatcher.
-
-```zig
-router.getC("/metrics", metrics, .{.dispatcher = server.dispatchUndefined()});
-
-...
-pub fn metrics(_: Context, _: *httpz.Request, res: *httpz.Response) !void {
-    // The first parameter, our Context, is `undefined`
-    const writer = res.writer();
-    try httpz.writeMetrics(writer);
-}
-```
-
-Notice that when using `ServerApp(G)`, actions are of type `Action(G)`. And, because an instance of `G` is provided to `http.ServerApp(G).init` an implicit dispatcher is can directly call the action. However, with `ServerCtx(G, R)` actions are of type `Action(R)`. Again an instance of `G` is provided to ServerCtx(G, R).init`, and so a `dispatcher` **must** be provided (because httpz doesn't know how to create `R` which must be passed to the action).
-
-## Complex Use Case 5 - Dispatch Takeover
-As shown above, a custom dispatcher receives the action to execute as well as a request and response object. Obviously, in order to provide the action, httpz must have already matched the request with a route. Advanced cases might wish to circumvent httpz's router and take over the request and response object as early as possible. This can be achieved by providing a dispatcher with a public `handle` method:
-
-```zig
-
-const Dispatcher = struct {
-    fn handle(_: Dispatcher, req: *Request, res: *Response) void {
-        // todo
-    }
-};
-
-var server = try ServerApp(Dispatcher).init(allocator, config, Dispatcher{});
-...
-```
-
-When used this way, httpz's routing, action error handling (hence why `handle` can't return an errorset), not found fallback and CORS handling are all bypassed.
-
 # Memory and Arenas
 Any allocations made for the response, such as the body or a header, must remain valid until **after** the action returns. To achieve this, use `res.arena` or the `res.writer()`:
 
@@ -357,11 +284,13 @@ fn writerExample(req: *httpz.Request, res: *httpz.Response) !void {
 
 Alternatively, you can explicitly call `res.write()`. Once `res.write()` returns, the response is sent and your action can cleanup/release any resources.
 
+`res.arena` is actually a configurable-sized thread-local buffer that fallsback to an `std.heap.ArenaAllocator`. In other words, it's fast so it should be your first option for data that needs to live only until your action exits.
+
 ## httpz.Request
 The following fields are the most useful:
 
 * `method` - an httpz.Method enum
-* `arena` - an allocator that is valid until the end of the action handler. This arena can be much faster than using res.arena, but cannot be used for any part of the response.
+* `arena` - A fast thread-local buffer that fallsback to an ArenaAllocator, same as `res.arena`.
 * `url.path` - the path of the request (`[]const u8`)
 * `address` - the std.net.Address of the client
 
@@ -408,9 +337,10 @@ Header names are lowercase. Values maintain their original casing.
 To iterate over all headers, use:
 
 ```zig
-const headers = req.headers;
-for (headers.keys[0..headers.len], headers.values[0..headers.len]) |name, value| {
-    
+var it = req.headers.iterator();
+while (it.next()) |kv| {
+  // kv.key
+  // kv.value
 }
 ```
 
@@ -433,9 +363,10 @@ The original casing of both the key and the name are preserved.
 To iterate over all query parameters, use:
 
 ```zig
-const qs = req.qs;
-for (qs.keys[0..qs.len], qs.values[0..qs.len]) |name, value| {
-    
+var it = req.query().iterator();
+while (it.next()) |kv| {
+  // kv.key
+  // kv.value
 }
 ```
 
@@ -485,9 +416,10 @@ The original casing of both the key and the name are preserved.
 To iterate over all fields, use:
 
 ```zig
-const fd = try req.formData();
-for (fd.keys[0..fd.len], fd.values[0..fd.len]) |name, field| {
-    //
+var it = req.formData.iterator();
+while (it.next()) |kv| {
+  // kv.key
+  // kv.value
 }
 ```
 
@@ -505,29 +437,27 @@ The original casing of both the key and the name are preserved.
 To iterate over all fields, use:
 
 ```zig
-const fd = try req.multiFormData();
-for (fd.keys[0..fd.len], fd.values[0..fd.len]) |name, field| {
-    // access the value via field.value
-    // and field.filename (an optional)
+var it = req.multiFormData.iterator();
+while (it.next()) |kv| {
+  // kv.key
+  // kv.value.value
+  // kv.value.filename (optional)
 }
 ```
 
 Once this function is called, `req.formData()` will no longer work (because the body is assumed parsed).
 
-Advance warning: This is one of the few methods that can modify the request in-place. For most people this won't be an issue, but if you use `req.body()` and `req.multiFormData()`, say to log the raw body, the content-disposition field names are escaped in-place. It's still save to use `req.body()` but any  content-disposition name that was escaped will be a little off.
+Advance warning: This is one of the few methods that can modify the request in-place. For most people this won't be an issue, but if you use `req.body()` and `req.multiFormData()`, say to log the raw body, the content-disposition field names are escaped in-place. It's still safe to use `req.body()` but any  content-disposition name that was escaped will be a little off.
 
 ## httpz.Response
 The following fields are the most useful:
 
 * `status` - set the status code, by default, each response starts off with a 200 status code
 * `content_type` - an httpz.ContentType enum value. This is a convenience and optimization over using the `res.header` function.
-* `arena` - an arena allocator that will be reset at the end of the request
+* `arena` - A fast thread-local buffer that fallsback to an ArenaAllocator, same as `req.arena`.
 
 ### Body
-The simplest way to set a body is to set `res.body` to a `[]const u8`. **However** the provided value must remain valid until the body is written, which happens outside of your application code.
-
-Therefore, `res.body` can be safely used with constant strings. It can also be used with content created with `res.arena` (explained in the next section).
-
+The simplest way to set a body is to set `res.body` to a `[]const u8`. **However** the provided value must remain valid until the body is written, which happens after the function exists or when `res.write()` is explicitly called.
 
 ### Dynamic Content
 You can use the `res.arena` allocator to create dynamic content:
@@ -675,7 +605,7 @@ var srv = Server().init(allocator, .{.cors = .{
 Only the `origin` field is required. The values given to the configuration are passed as-is to the appropriate preflight header.
 
 ## Configuration
-The third option given to `listen` is an `httpz.Config` instance. When running in <a href=#blocking-mode>blocking mode</a> (e.g. on Windows) a few of these behave slightly, but not drastically, different.
+The second parameter given to `Server(H).init` is an `httpz.Config`. When running in <a href=#blocking-mode>blocking mode</a> (e.g. on Windows) a few of these behave slightly, but not drastically, different.
 
 There are many configuration options. 
 
@@ -692,7 +622,6 @@ In addition to a bit of overhead, at a minimum, httpz will use:
 (workers.count * workers.large_buffer_count * workers.large_buffer_size) +
 (workers.count * workers.min_conn * request.buffer_size)
 ```
-
 
 Possible values, along with their default, are:
 
@@ -820,13 +749,11 @@ try httpz.listen(allocator, &router, .{
     },
     .websocket = .{
         // refer to https://github.com/karlseguin/websocket.zig#config
-        max_size: usize = 65536,
-        buffer_size: usize = 4096,
-        handle_ping: bool = false,
-        handle_pong: bool = false,
-        handle_close: bool = false,
-        large_buffer_pool_count: u16 = 8,
-        large_buffer_size: usize = 32768,
+        max_message_size: ?usize = null,
+        small_buffer_size: ?usize = null,
+        small_buffer_pool: ?usize = null,
+        large_buffer_size: ?usize = null,
+        large_buffer_pool: ?u16 = null,
     },
 });
 ```
@@ -1023,59 +950,53 @@ const StreamContext = struct {
 ```
 
 # Websocket
-http.zig integrates with [https://github.com/karlseguin/websocket.zig](https://github.com/karlseguin/websocket.zig). When `httpz.upgradeWebsocket` is called and succeeds, the provided `Handler` is initialized and the socket is handed over to the websocket read loop within a separate thread.
-
-When using websocket.zig standalone, your Handler's `init` function gets a 3rd parameter: a websocket.Handshake. With the http.zig integration, `init` does not get a handshake; you should validate the `*httpz.Request` before calling `upgradeWebsocket`.
+http.zig integrates with [https://github.com/karlseguin/websocket.zig](https://github.com/karlseguin/websocket.zig) by calling `httpz.upgradeWebsocket()`. First, your handler must have a `WebsocketHandler` decleration which is the WebSocket handler type used by `websocket.Server(H)`.
 
 ```zig
-const std = @import("std");
-const httpz = @import("httpz");
-cont websocket = httpz.websocket;
+const App = struct {
+    pub const WebsocketHandler = WebSocketHandler;
+};
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+// App-specific data you want to pass when initializing
+// your WebSocketHandler
+const WebsocketContext = struct {
 
-    var server = try httpz.Server().init(allocator, .{.port = 5882});
-    var router = server.router();
-    // a normal route
-    router.get("/ws", ws);
-    try server.listen(); 
-}
+};
 
-fn ws(req: *httpz.Request, res: *httpz.Response) !void {
-    if (try httpz.upgradeWebsocket(Handler, req, res, Context{}) == false) {
-        // this was not a valid websocket handshake request
-        // you should probably return with an error
-        res.status = 400;
-        res.body = "invalid websocket handshake";
-        return;
+
+// See the websocket.zig documantion. But essentially this is your
+// Application's wrapper around 1 websocket connection
+const WebsocketHandler = struct {
+  conn: *websocket.Conn,
+
+  // ctx is arbitrary data you passs to httpz.upgradeWebsocket
+  pub fn init(conn: *websocket.Conn, _: WebsocketContext) {
+    return .{
+      .conn =  conn,
     }
-    // when upgradeWebsocket succeeds, you can no longer use `res` 
-}
+  }
 
-// arbitrary data you want to pass into your Handler's `init` function
-const Context = struct {
-
-}
-
-// this is your websocket handle
-// it MUST have these 3 public functions
-const Handler = struct {
-    ctx: Context
-    conn: *websocket.Conn,
-    pub fn init(conn: *websocket.Conn, ctx: Context) !Handler {
-        return .{
-            .ctx = ctx,
-            .conn = conn,
-        };
-    }
-
-    pub fn handle(self: *Handler, message: websocket.Message) !void {
-        const data = message.data;
-        try self.conn.write(data); // echo the message back
-    }
-
-    pub fn close(_: *Handler) void {}
+  // echo back
+  pub fn clientMessage(self: *WebsocketHandler, data: []const u8) !void {
+      try self.conn.write(data);
+  }
 }
 ```
+
+Which this in place, you can call httpz.upgradeWebsocket() within an action:
+
+```zig
+fn ws(req: *httpz.Request, res: *httpz.Response) !void {
+
+  if (try httpz.upgradeWebsocket(WebsocketHandler, req, res, WebsocketContext{}) == false) {
+  // this was not a valid websocket handshake request
+  // you should probably return with an error
+  res.status = 400;
+  res.body = "invalid websocket handshake";
+  return;
+  }
+  // Do not use `res` from this point on
+}
+```
+
+In websocket.zig, `init` is passed a `websocket.Handshake`. This is not the case with the httpz integration - you are expected to do any necessary validation of the request in the action.

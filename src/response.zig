@@ -4,7 +4,7 @@ const builtin = @import("builtin");
 const httpz = @import("httpz.zig");
 const buffer = @import("buffer.zig");
 
-const Conn = @import("worker.zig").Conn;
+const HTTPConn = @import("worker.zig").HTTPConn;
 const KeyValue = @import("key_value.zig").KeyValue;
 const Config = @import("config.zig").Config.Response;
 
@@ -17,7 +17,7 @@ const Self = @This();
 
 pub const Response = struct {
     // httpz's wrapper around a stream, the brave can access the underlying .stream
-    conn: *Conn,
+    conn: *HTTPConn,
 
     // Where in body we're writing to. Used for dynamically writes to body, e.g.
     // via the json() or writer() functions
@@ -45,11 +45,6 @@ pub const Response = struct {
     // whether or not we're in chunk transfer mode
     chunked: bool,
 
-    // Indicates that http.zig no longer owns this socket connection. App can
-    // us this if it wants to take over ownership of the socket. We use it
-    // when upgrading the connection to websocket.
-    disowned: bool,
-
     // when false, the Connection: Close header is sent. This should not be set
     // directly, rather set req.keepalive = false.
     keepalive: bool,
@@ -69,19 +64,15 @@ pub const Response = struct {
     };
 
     // Should not be called directly, but initialized through a pool
-    pub fn init(arena: Allocator, conn: *Conn) Response {
+    pub fn init(arena: Allocator, conn: *HTTPConn) Response {
         return .{
             .pos = 0,
             .body = "",
             .conn = conn,
             .status = 200,
             .arena = arena,
-            .buffer = Buffer{
-                .pos = 0,
-                .data = ""
-            },
+            .buffer = Buffer{ .pos = 0, .data = "" },
             .chunked = false,
-            .disowned = false,
             .written = false,
             .keepalive = true,
             .content_type = null,
@@ -91,7 +82,7 @@ pub const Response = struct {
 
     pub fn disown(self: *Response) void {
         self.written = true;
-        self.disowned = true;
+        self.conn.handover = .disown;
     }
 
     pub fn json(self: *Response, value: anytype, options: std.json.StringifyOptions) !void {
@@ -216,8 +207,7 @@ pub const Response = struct {
 
         var pos: usize = "HTTP/1.1 XXX \r\n".len;
         switch (self.status) {
-            inline 100...103, 200...208, 226, 300...308, 400...418, 421...426, 428, 429, 431, 451, 500...511
-                 => |status| @memcpy(buf[0..15], std.fmt.comptimePrint("HTTP/1.1 {d} \r\n", .{status})),
+            inline 100...103, 200...208, 226, 300...308, 400...418, 421...426, 428, 429, 431, 451, 500...511 => |status| @memcpy(buf[0..15], std.fmt.comptimePrint("HTTP/1.1 {d} \r\n", .{status})),
             else => |s| {
                 const HTTP1_1 = "HTTP/1.1 ";
                 const l = HTTP1_1.len;
@@ -270,7 +260,6 @@ pub const Response = struct {
             pos = end;
         }
 
-
         for (names, values) |name, value| {
             {
                 // write the name
@@ -315,9 +304,9 @@ pub const Response = struct {
             break :blk "Content-Length: 0\r\n\r\n";
         };
 
-      const end = pos + fin.len;
-      @memcpy(buf[pos..end], fin);
-      return buf[0..end];
+        const end = pos + fin.len;
+        @memcpy(buf[pos..end], fin);
+        return buf[0..end];
     }
 
     // std.io.Writer.
@@ -328,7 +317,7 @@ pub const Response = struct {
         pub const IOWriter = std.io.Writer(Writer, error{OutOfMemory}, Writer.write);
 
         fn init(res: *Response) Writer {
-            return .{.res = res};
+            return .{ .res = res };
         }
 
         pub fn truncate(self: Writer, n: usize) void {
@@ -418,7 +407,7 @@ pub const Response = struct {
     };
 };
 
-fn writeAllIOVec(conn: *Conn, vec: []std.posix.iovec_const) !void {
+fn writeAllIOVec(conn: *HTTPConn, vec: []std.posix.iovec_const) !void {
     const socket = conn.stream.handle;
 
     var i: usize = 0;

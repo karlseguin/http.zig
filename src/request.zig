@@ -8,7 +8,7 @@ const metrics = @import("metrics.zig");
 const Self = @This();
 
 const Url = @import("url.zig").Url;
-const Conn = @import("worker.zig").Conn;
+const HTTPConn = @import("worker.zig").HTTPConn;
 const Params = @import("params.zig").Params;
 const KeyValue = @import("key_value.zig").KeyValue;
 const MultiFormKeyValue = @import("key_value.zig").MultiFormKeyValue;
@@ -71,7 +71,7 @@ pub const Request = struct {
     pub const Config = Self.Config;
     pub const Reader = Self.Reader;
 
-    pub fn init(arena: Allocator, conn: *Conn) Request {
+    pub fn init(arena: Allocator, conn: *HTTPConn) Request {
         const state = &conn.req_state;
         return .{
             .arena = arena,
@@ -237,7 +237,9 @@ pub const Request = struct {
         return self.fd;
     }
 
-    fn parseMultiFormData(self: *Request,) !MultiFormKeyValue {
+    fn parseMultiFormData(
+        self: *Request,
+    ) !MultiFormKeyValue {
         const body_ = self.body() orelse "";
         if (body_.len == 0) {
             self.fd_read = true;
@@ -259,8 +261,8 @@ pub const Request = struct {
             const directive = content_type["multipart/form-data".len..];
             for (directive, 0..) |b, i| loop: {
                 if (b != ' ' and b != ';') {
-                   if (std.ascii.startsWithIgnoreCase(directive[i..], "boundary=")) {
-                        const raw_boundary = directive["boundary=".len + i..];
+                    if (std.ascii.startsWithIgnoreCase(directive[i..], "boundary=")) {
+                        const raw_boundary = directive["boundary=".len + i ..];
                         if (raw_boundary.len > 0 and raw_boundary.len <= 70) {
                             boundary_buf[0] = '-';
                             boundary_buf[1] = '-';
@@ -269,7 +271,7 @@ pub const Request = struct {
                                     // it's really -2, since we need to strip out the two quotes
                                     // but buf is already at + 2, so they cancel out.
                                     const end = raw_boundary.len;
-                                    @memcpy(boundary_buf[2..end], raw_boundary[1..raw_boundary.len - 1]);
+                                    @memcpy(boundary_buf[2..end], raw_boundary[1 .. raw_boundary.len - 1]);
                                     break :blk boundary_buf[0..end];
                                 }
                             } else {
@@ -278,10 +280,10 @@ pub const Request = struct {
                                 break :blk boundary_buf[0..end];
                             }
                         }
-                   }
-                   // not valid, break out of the loop so we can return
-                   // an error.InvalidMultiPartFormDataHeader
-                   break :loop;
+                    }
+                    // not valid, break out of the loop so we can return
+                    // an error.InvalidMultiPartFormDataHeader
+                    break :loop;
                 }
             }
             return error.InvalidMultiPartFormDataHeader;
@@ -344,7 +346,7 @@ pub const Request = struct {
                 continue;
             }
 
-            const value =  trimLeadingSpace(line["content-disposition:".len ..]);
+            const value = trimLeadingSpace(line["content-disposition:".len..]);
             if (std.ascii.startsWithIgnoreCase(value, "form-data;") == false) {
                 return error.InvalidMultiPartEncoding;
             }
@@ -365,7 +367,7 @@ pub const Request = struct {
         return .{
             .name = attr.name,
             .value = .{
-                .value = value[0..value.len - 2],
+                .value = value[0 .. value.len - 2],
                 .filename = attr.filename,
             },
         };
@@ -377,7 +379,7 @@ pub const Request = struct {
     };
 
     // I'm sorry
-    fn getContentDispotionAttributes(fields: []u8) !ContentDispositionAttributes{
+    fn getContentDispotionAttributes(fields: []u8) !ContentDispositionAttributes {
         var pos: usize = 0;
 
         var name: ?[]const u8 = null;
@@ -426,11 +428,10 @@ pub const Request = struct {
                                 },
                                 else => fields[write_pos] = '\\',
                             }
-
                         },
                         '"' => {
                             pos += 1;
-                            value = fields[value_start + 1..write_pos];
+                            value = fields[value_start + 1 .. write_pos];
                             break :blk;
                         },
                         else => |b| fields[write_pos] = b,
@@ -453,7 +454,6 @@ pub const Request = struct {
             .filename = filename,
         };
     }
-
 };
 
 // All the upfront memory allocation that we can do. Each worker keeps a pool
@@ -795,12 +795,12 @@ pub const State = struct {
                     },
                     else => return error.InvalidHeaderLine,
                 }
-             } else {
+            } else {
                 // didn't find a colon or blank line, we need more data
                 return false;
-             }
-         }
-         return false;
+            }
+        }
+        return false;
     }
 
     // we've finished reading the header
@@ -882,19 +882,19 @@ inline fn allowedHeaderValueByte(c: u8) bool {
     return ((shl(u64, 1, c) & mask1) | (shl(u64, 1, c -| 64) & mask2)) == 0;
 }
 
-inline fn trimLeadingSpaceCount(in: []const u8) struct{[]const u8, usize} {
+inline fn trimLeadingSpaceCount(in: []const u8) struct { []const u8, usize } {
     if (in.len > 1 and in[0] == ' ') {
         // very common case
         const n = in[1];
         if (n != ' ' and n != '\t') {
-            return .{in[1..], 1};
+            return .{ in[1..], 1 };
         }
     }
 
     for (in, 0..) |b, i| {
-        if (b != ' ' and b != '\t') return .{in[i..], i};
+        if (b != ' ' and b != '\t') return .{ in[i..], i };
     }
-    return .{"", in.len};
+    return .{ "", in.len };
 }
 
 inline fn trimLeadingSpace(in: []const u8) []const u8 {
@@ -937,7 +937,7 @@ test "allowedHeaderValueByte" {
     for ('a'..('z' + 1)) |b| all[b] = true;
     for ('A'..('Z' + 1)) |b| all[b] = true;
     for ('0'..('9' + 1)) |b| all[b] = true;
-    for ([_]u8{'_', ' ', ',', ':', ';', '.', ',', '\\', '/', '"', '\'', '?', '!', '(', ')', '{', '}', '[', ']', '@', '<', '>', '=', '-', '+', '*', '#', '$', '&', '`', '|', '~', '^', '%', '\t'}) |b| {
+    for ([_]u8{ '_', ' ', ',', ':', ';', '.', ',', '\\', '/', '"', '\'', '?', '!', '(', ')', '{', '}', '[', ']', '@', '<', '>', '=', '-', '+', '*', '#', '$', '&', '`', '|', '~', '^', '%', '\t' }) |b| {
         all[b] = true;
     }
     for (128..255) |b| all[b] = true;
@@ -1272,7 +1272,7 @@ test "body: formData" {
 
     {
         // parses formData
-        var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 9\r\n\r\nname=test", .{.max_form_count = 2});
+        var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 9\r\n\r\nname=test", .{ .max_form_count = 2 });
         const formData = try r.formData();
         try t.expectString("test", formData.get("name").?);
         try t.expectString("test", formData.get("name").?);
@@ -1280,7 +1280,7 @@ test "body: formData" {
 
     {
         // multiple inputs
-        var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 25\r\n\r\nname=test1&password=test2", .{.max_form_count = 2});
+        var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 25\r\n\r\nname=test1&password=test2", .{ .max_form_count = 2 });
 
         const formData = try r.formData();
         try t.expectString("test1", formData.get("name").?);
@@ -1292,7 +1292,7 @@ test "body: formData" {
 
     {
         // test decoding
-        var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 44\r\n\r\ntest=%21%40%23%24%25%5E%26*%29%28-%3D%2B%7C+", .{.max_form_count = 2});
+        var r = try testParse("POST / HTTP/1.0\r\nContent-Length: 44\r\n\r\ntest=%21%40%23%24%25%5E%26*%29%28-%3D%2B%7C+", .{ .max_form_count = 2 });
 
         const formData = try r.formData();
         try t.expectString("!@#$%^&*)(-=+| ", formData.get("test").?);
@@ -1305,10 +1305,7 @@ test "body: multiFormData valid" {
 
     {
         // no body
-        var r = try testParse(buildRequest(&.{
-            "POST / HTTP/1.0",
-            "Content-Type: multipart/form-data; boundary=BX1"
-        }, &.{}), .{.max_multiform_count = 5});
+        var r = try testParse(buildRequest(&.{ "POST / HTTP/1.0", "Content-Type: multipart/form-data; boundary=BX1" }, &.{}), .{ .max_multiform_count = 5 });
         const formData = try r.multiFormData();
         try t.expectEqual(0, formData.len);
         try t.expectString("multipart/form-data; boundary=BX1", r.header("content-type").?);
@@ -1316,15 +1313,7 @@ test "body: multiFormData valid" {
 
     {
         // parses single field
-        var r = try testParse(buildRequest(&.{
-            "POST / HTTP/1.0",
-            "Content-Type: multipart/form-data; boundary=-90x"
-        }, &.{
-            "---90x\r\n",
-            "Content-Disposition: form-data; name=\"description\"\r\n\r\n",
-            "the-desc\r\n",
-            "---90x--\r\n"
-        }), .{.max_multiform_count = 5});
+        var r = try testParse(buildRequest(&.{ "POST / HTTP/1.0", "Content-Type: multipart/form-data; boundary=-90x" }, &.{ "---90x\r\n", "Content-Disposition: form-data; name=\"description\"\r\n\r\n", "the-desc\r\n", "---90x--\r\n" }), .{ .max_multiform_count = 5 });
 
         const formData = try r.multiFormData();
         try t.expectString("the-desc", formData.get("description").?.value);
@@ -1333,15 +1322,7 @@ test "body: multiFormData valid" {
 
     {
         // parses single field with filename
-        var r = try testParse(buildRequest(&.{
-            "POST / HTTP/1.0",
-            "Content-Type: multipart/form-data; boundary=-90x"
-        }, &.{
-            "---90x\r\n",
-            "Content-Disposition: form-data; filename=\"file1.zig\"; name=file\r\n\r\n",
-            "some binary data\r\n",
-            "---90x--\r\n"
-        }), .{.max_multiform_count = 5});
+        var r = try testParse(buildRequest(&.{ "POST / HTTP/1.0", "Content-Type: multipart/form-data; boundary=-90x" }, &.{ "---90x\r\n", "Content-Disposition: form-data; filename=\"file1.zig\"; name=file\r\n\r\n", "some binary data\r\n", "---90x--\r\n" }), .{ .max_multiform_count = 5 });
 
         const formData = try r.multiFormData();
         const field = formData.get("file").?;
@@ -1351,16 +1332,7 @@ test "body: multiFormData valid" {
 
     {
         // quoted boundary
-        var r = try testParse(buildRequest(&.{
-            "POST / HTTP/1.0",
-            "Content-Type: multipart/form-data; boundary=\"-90x\""
-        }, &.{
-            "---90x\r\n",
-            "Content-Disposition: form-data; name=\"description\"\r\n\r\n",
-            "the-desc\r\n",
-            "---90x--\r\n"
-        }), .{.max_multiform_count = 5});
-
+        var r = try testParse(buildRequest(&.{ "POST / HTTP/1.0", "Content-Type: multipart/form-data; boundary=\"-90x\"" }, &.{ "---90x\r\n", "Content-Disposition: form-data; name=\"description\"\r\n\r\n", "the-desc\r\n", "---90x--\r\n" }), .{ .max_multiform_count = 5 });
 
         const formData = try r.multiFormData();
         const field = formData.get("description").?;
@@ -1370,19 +1342,7 @@ test "body: multiFormData valid" {
 
     {
         // multiple fields
-        var r = try testParse(buildRequest(&.{
-            "GET /something HTTP/1.1",
-            "Content-Type: multipart/form-data; boundary=----99900AB"
-        }, &.{
-            "------99900AB\r\n",
-            "content-type: text/plain; charset=utf-8\r\n",
-            "content-disposition: form-data; name=\"fie\\\" \\?l\\d\"\r\n\r\n",
-            "Value - 1\r\n",
-            "------99900AB\r\n",
-            "Content-Disposition: form-data; filename=another.zip; name=field2\r\n\r\n",
-            "Value - 2\r\n",
-            "------99900AB--\r\n"
-        }), .{.max_multiform_count = 5});
+        var r = try testParse(buildRequest(&.{ "GET /something HTTP/1.1", "Content-Type: multipart/form-data; boundary=----99900AB" }, &.{ "------99900AB\r\n", "content-type: text/plain; charset=utf-8\r\n", "content-disposition: form-data; name=\"fie\\\" \\?l\\d\"\r\n\r\n", "Value - 1\r\n", "------99900AB\r\n", "Content-Disposition: form-data; filename=another.zip; name=field2\r\n\r\n", "Value - 2\r\n", "------99900AB--\r\n" }), .{ .max_multiform_count = 5 });
 
         const formData = try r.multiFormData();
         try t.expectEqual(2, formData.len);
@@ -1398,19 +1358,7 @@ test "body: multiFormData valid" {
 
     {
         // enforce limit
-        var r = try testParse(buildRequest(&.{
-            "GET /something HTTP/1.1",
-            "Content-Type: multipart/form-data; boundary=----99900AB"
-        }, &.{
-            "------99900AB\r\n",
-            "Content-Type: text/plain; charset=utf-8\r\n",
-            "Content-Disposition: form-data; name=\"fie\\\" \\?l\\d\"\r\n\r\n",
-            "Value - 1\r\n",
-            "------99900AB\r\n",
-            "Content-Disposition: form-data; filename=another; name=field2\r\n\r\n",
-            "Value - 2\r\n",
-            "------99900AB--\r\n"
-        }), .{.max_multiform_count = 1});
+        var r = try testParse(buildRequest(&.{ "GET /something HTTP/1.1", "Content-Type: multipart/form-data; boundary=----99900AB" }, &.{ "------99900AB\r\n", "Content-Type: text/plain; charset=utf-8\r\n", "Content-Disposition: form-data; name=\"fie\\\" \\?l\\d\"\r\n\r\n", "Value - 1\r\n", "------99900AB\r\n", "Content-Disposition: form-data; filename=another; name=field2\r\n\r\n", "Value - 2\r\n", "------99900AB--\r\n" }), .{ .max_multiform_count = 1 });
 
         defer t.reset();
         const formData = try r.multiFormData();
@@ -1423,88 +1371,43 @@ test "body: multiFormData invalid" {
     defer t.reset();
     {
         // large boundary
-        var r = try testParse(buildRequest(&.{
-            "POST / HTTP/1.0",
-            "Content-Type: multipart/form-data; boundary=12345678901234567890123456789012345678901234567890123456789012345678901"
-        }, &.{"garbage"}), .{});
+        var r = try testParse(buildRequest(&.{ "POST / HTTP/1.0", "Content-Type: multipart/form-data; boundary=12345678901234567890123456789012345678901234567890123456789012345678901" }, &.{"garbage"}), .{});
         try t.expectError(error.InvalidMultiPartFormDataHeader, r.multiFormData());
     }
 
     {
         // no closing quote
-        var r = try testParse(buildRequest(&.{
-            "POST / HTTP/1.0",
-            "Content-Type: multipart/form-data; boundary=\"123"
-        }, &.{"garbage"}), .{});
+        var r = try testParse(buildRequest(&.{ "POST / HTTP/1.0", "Content-Type: multipart/form-data; boundary=\"123" }, &.{"garbage"}), .{});
         try t.expectError(error.InvalidMultiPartFormDataHeader, r.multiFormData());
     }
 
     {
-        // no content-disposition field header
-        var r = try testParse(buildRequest(&.{
-            "POST / HTTP/1.0",
-            "Content-Type: multipart/form-data; boundary=-90x"
-        }, &.{
-            "---90x\r\n",
-            "the-desc\r\n",
-            "---90x--\r\n"
-        }), .{.max_multiform_count = 5});
+        // no content-dispotion field header
+        var r = try testParse(buildRequest(&.{ "POST / HTTP/1.0", "Content-Type: multipart/form-data; boundary=-90x" }, &.{ "---90x\r\n", "the-desc\r\n", "---90x--\r\n" }), .{ .max_multiform_count = 5 });
         try t.expectError(error.InvalidMultiPartEncoding, r.multiFormData());
     }
 
     {
         // no content dispotion naem
-        var r = try testParse(buildRequest(&.{
-            "POST / HTTP/1.0",
-            "Content-Type: multipart/form-data; boundary=-90x"
-        }, &.{
-            "---90x\r\n",
-            "Content-Disposition: form-data; x=a",
-            "the-desc\r\n",
-            "---90x--\r\n"
-        }), .{.max_multiform_count = 5});
+        var r = try testParse(buildRequest(&.{ "POST / HTTP/1.0", "Content-Type: multipart/form-data; boundary=-90x" }, &.{ "---90x\r\n", "Content-Disposition: form-data; x=a", "the-desc\r\n", "---90x--\r\n" }), .{ .max_multiform_count = 5 });
         try t.expectError(error.InvalidMultiPartEncoding, r.multiFormData());
     }
 
     {
         // missing name end quote
-        var r = try testParse(buildRequest(&.{
-            "POST / HTTP/1.0",
-            "Content-Type: multipart/form-data; boundary=-90x"
-        }, &.{
-            "---90x\r\n",
-            "Content-Disposition: form-data; name=\"hello\r\n\r\n",
-            "the-desc\r\n",
-            "---90x--\r\n"
-        }), .{.max_multiform_count = 5});
+        var r = try testParse(buildRequest(&.{ "POST / HTTP/1.0", "Content-Type: multipart/form-data; boundary=-90x" }, &.{ "---90x\r\n", "Content-Disposition: form-data; name=\"hello\r\n\r\n", "the-desc\r\n", "---90x--\r\n" }), .{ .max_multiform_count = 5 });
         try t.expectError(error.InvalidMultiPartEncoding, r.multiFormData());
     }
 
     {
         // missing missing newline
-        var r = try testParse(buildRequest(&.{
-            "POST / HTTP/1.0",
-            "Content-Type: multipart/form-data; boundary=-90x"
-        }, &.{
-            "---90x\r\n",
-            "Content-Disposition: form-data; name=hello\r\n",
-            "the-desc\r\n",
-            "---90x--\r\n"
-        }), .{.max_multiform_count = 5});
+        var r = try testParse(buildRequest(&.{ "POST / HTTP/1.0", "Content-Type: multipart/form-data; boundary=-90x" }, &.{ "---90x\r\n", "Content-Disposition: form-data; name=hello\r\n", "the-desc\r\n", "---90x--\r\n" }), .{ .max_multiform_count = 5 });
         try t.expectError(error.InvalidMultiPartEncoding, r.multiFormData());
     }
 
     {
         // missing missing newline x2
-        var r = try testParse(buildRequest(&.{
-            "POST / HTTP/1.0",
-            "Content-Type: multipart/form-data; boundary=-90x"
-        }, &.{
-            "---90x\r\n",
-            "Content-Disposition: form-data; name=hello",
-            "the-desc\r\n",
-            "---90x--\r\n"
-        }), .{.max_multiform_count = 5});
+        var r = try testParse(buildRequest(&.{ "POST / HTTP/1.0", "Content-Type: multipart/form-data; boundary=-90x" }, &.{ "---90x\r\n", "Content-Disposition: form-data; name=hello", "the-desc\r\n", "---90x--\r\n" }), .{ .max_multiform_count = 5 });
         try t.expectError(error.InvalidMultiPartEncoding, r.multiFormData());
     }
 }

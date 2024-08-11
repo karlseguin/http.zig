@@ -53,6 +53,39 @@ fn MakeKeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) bool) type {
         pub fn reset(self: *Self) void {
             self.len = 0;
         }
+
+        pub fn iterator(self: *const Self) Iterator {
+            const len = self.len;
+            return .{
+                .pos = 0,
+                .keys = self.keys[0..len],
+                .values = self.values[0..len],
+            };
+        }
+
+        pub const Iterator = struct {
+            pos: usize,
+            keys: [][]const u8,
+            values: []V,
+
+            const KV = struct {
+                key: []const u8,
+                value: V,
+            };
+
+            pub fn next(self: *Iterator) ?KV {
+                const pos = self.pos;
+                if (pos == self.keys.len) {
+                    return null;
+                }
+
+                self.pos = pos + 1;
+                return .{
+                    .key = self.keys[pos],
+                    .value = self.values[pos],
+                };
+            }
+        };
     };
 }
 
@@ -99,6 +132,22 @@ test "KeyValue: ignores beyond max" {
     try t.expectEqual("cl", kv.get("content-length").?);
     try t.expectEqual("www", kv.get("host").?);
     try t.expectEqual(null, kv.get("authorization"));
+
+    {
+        var it = kv.iterator();
+        {
+            const field = it.next().?;
+            try t.expectString("content-length", field.key);
+            try t.expectString("cl", field.value);
+        }
+
+        {
+            const field = it.next().?;
+            try t.expectString("host", field.key);
+            try t.expectString("www", field.value);
+        }
+        try t.expectEqual(null, it.next());
+    }
 }
 
 test "MultiFormKeyValue: get" {
@@ -106,13 +155,13 @@ test "MultiFormKeyValue: get" {
     defer kv.deinit(t.allocator);
 
     var key = "username".*;
-    kv.add(&key, .{.value = "leto"});
+    kv.add(&key, .{ .value = "leto" });
 
     try t.expectEqual("leto", kv.get("username").?.value);
 
     kv.reset();
     try t.expectEqual(null, kv.get("username"));
-    kv.add(&key, .{.value = "leto2"});
+    kv.add(&key, .{ .value = "leto2" });
     try t.expectEqual("leto2", kv.get("username").?.value);
 }
 
@@ -121,15 +170,31 @@ test "MultiFormKeyValue: ignores beyond max" {
     defer kv.deinit(t.allocator);
 
     var n1 = "username".*;
-    kv.add(&n1, .{.value = "leto"});
+    kv.add(&n1, .{ .value = "leto" });
 
     var n2 = "password".*;
-    kv.add(&n2, .{.value = "ghanima"});
+    kv.add(&n2, .{ .value = "ghanima" });
 
     var n3 = "other".*;
-    kv.add(&n3, .{.value = "hack"});
+    kv.add(&n3, .{ .value = "hack" });
 
     try t.expectEqual("leto", kv.get("username").?.value);
     try t.expectEqual("ghanima", kv.get("password").?.value);
     try t.expectEqual(null, kv.get("other"));
+
+    {
+        var it = kv.iterator();
+        {
+            const field = it.next().?;
+            try t.expectString("username", field.key);
+            try t.expectString("leto", field.value.value);
+        }
+
+        {
+            const field = it.next().?;
+            try t.expectString("password", field.key);
+            try t.expectString("ghanima", field.value.value);
+        }
+        try t.expectEqual(null, it.next());
+    }
 }

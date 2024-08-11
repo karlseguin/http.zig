@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
-pub const websocket = @import("websocket");
 
+const ws = @import("websocket").server;
 pub const testing = @import("testing.zig");
 
 pub const routing = @import("router.zig");
@@ -18,18 +18,17 @@ pub const Config = @import("config.zig").Config;
 const Thread = std.Thread;
 const net = std.net;
 const posix = std.posix;
-const fd_t = posix.fd_t;
 const Allocator = std.mem.Allocator;
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 
 const log = std.log.scoped(.httpz);
 
 const worker = @import("worker.zig");
-const Conn = worker.Conn;
+const HTTPConn = worker.HTTPConn;
 const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
 const build = @import("build");
-const force_blocking: bool = if (@hasDecl(build, "force_blocking")) build.force_blocking else false;
+const force_blocking: bool = if (@hasDecl(build, "httpz_blocking")) build.httpz_blocking else false;
 
 const MAX_REQUEST_COUNT = 4_294_967_295;
 
@@ -146,89 +145,68 @@ pub const ContentType = enum {
     }
 };
 
-pub fn Action(comptime G: type) type {
-    if (G == void) {
+// When we initialize our Server(handler: type) with a non-void handler,
+// the ActionContext will either be defined by the handler or it'll be the
+// handler itself. So, for this type, "ActionContext" can be either
+// the Handler or ActionContext from the Server.
+pub fn Action(comptime ActionContext: type) type {
+    if (ActionContext == void) {
         return *const fn (*Request, *Response) anyerror!void;
     }
-    return *const fn (G, *Request, *Response) anyerror!void;
+    return *const fn (ActionContext, *Request, *Response) anyerror!void;
 }
 
-pub fn Dispatcher(comptime G: type, comptime R: type) type {
-    if (G == void and R == void) {
+pub fn Dispatcher(comptime Handler: type, comptime ActionArg: type) type {
+    if (Handler == void) {
         return *const fn (Action(void), *Request, *Response) anyerror!void;
-    } else if (G == void) {
-        return *const fn (Action(R), *Request, *Response) anyerror!void;
-    } else if (R == void) {
-        return *const fn (G, Action(G), *Request, *Response) anyerror!void;
     }
-    return *const fn (G, Action(R), *Request, *Response) anyerror!void;
+    return *const fn (Handler, ActionArg, *Request, *Response) anyerror!void;
 }
 
-pub fn DispatchableAction(comptime G: type, comptime R: type) type {
+pub fn DispatchableAction(comptime Handler: type, comptime ActionArg: type) type {
     return struct {
-        ctx: G,
-        action: Action(R),
-        dispatcher: Dispatcher(G, R),
+        handler: Handler,
+        action: ActionArg,
+        dispatcher: Dispatcher(Handler, ActionArg),
     };
 }
 
-fn ErrorHandlerAction(comptime G: type) type {
-    if (G == void) {
-        return *const fn (*Request, *Response, anyerror) void;
-    }
-    return *const fn (G, *Request, *Response, anyerror) void;
-}
+// When no WebsocketHandler is specified, we give it a dummy handler just to get
+// the code to compile.
+const DummyWebsocketHandler = struct {
+    pub fn clientMessage(_: DummyWebsocketHandler, _: []const u8) !void {}
+};
 
-// Done this way so that Server and ServerCtx have a similar API
-pub fn Server() type {
-    return struct {
-        pub fn init(allocator: Allocator, config: Config) !ServerCtx(void, void) {
-            return try ServerCtx(void, void).init(allocator, config, {});
-        }
+pub fn Server(comptime H: type) type {
+    const Handler = switch (@typeInfo(H)) {
+        .Struct => H,
+        .Pointer => |ptr| ptr.child,
+        .Void => void,
+        else => @compileError("Server handler must be a struct, got: " ++ @tagName(@typeInfo(H))),
     };
-}
 
-pub fn ServerApp(comptime A: type) type {
-    return ServerCtx(A, A);
-}
+    const ActionArg = if (comptime std.meta.hasFn(Handler, "dispatch")) @typeInfo(@TypeOf(Handler.dispatch)).Fn.params[1].type.? else Action(H);
 
-pub fn ServerCtx(comptime G: type, comptime R: type) type {
+    const WebsocketHandler = if (Handler != void and comptime @hasDecl(Handler, "WebsocketHandler")) Handler.WebsocketHandler else DummyWebsocketHandler;
+
     return struct {
-        const TP = if (blockingMode()) ThreadPool(worker.Blocking(*Self).handleConnection) else ThreadPool(Self.notifyingHandler);
+        const TP = if (blockingMode()) ThreadPool(worker.Blocking(*Self, WebsocketHandler).handleConnection) else ThreadPool(worker.NonBlocking(*Self, WebsocketHandler).processData);
 
-        ctx: G,
+        handler: H,
         config: Config,
         allocator: Allocator,
         _cors_origin: ?[]const u8,
-        _router: Router(G, R),
-        _errorHandler: ErrorHandlerAction(G),
-        _notFoundHandler: Action(G),
+        _router: Router(H, ActionArg),
         _mut: Thread.Mutex,
         _cond: Thread.Condition,
         _thread_pool: *TP,
-        _signalers: []Signalers,
+        _signals: []posix.fd_t,
         _max_request_per_connection: u64,
+        _websocket_state: ws.WorkerState,
 
         const Self = @This();
 
-        const Signalers = struct {
-            pipe: [2]fd_t,
-            lock: Thread.Mutex,
-        };
-
-        pub fn init(allocator: Allocator, config: Config, ctx: G) !Self {
-            const nfh = if (comptime G == void) defaultNotFound else defaultNotFoundWithContext;
-            const erh = if (comptime G == void) defaultErrorHandler else defaultErrorHandlerWithContext;
-            const dd = if (comptime G == void) defaultDispatcher else defaultDispatcherWithContext;
-
-            var var_config = config;
-            if (config.port == null) {
-                var_config.port = 5882;
-            }
-            if (config.address == null) {
-                var_config.address = "127.0.0.1";
-            }
-
+        pub fn init(allocator: Allocator, config: Config, handler: H) !Self {
             var thread_pool = try TP.init(allocator, .{
                 .count = config.threadPoolCount(),
                 .backlog = config.thread_pool.backlog orelse 500,
@@ -236,43 +214,55 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             });
             errdefer thread_pool.deinit();
 
-            const signalers = try allocator.alloc(Signalers, config.workerCount());
-            errdefer allocator.free(signalers);
+            const signals = try allocator.alloc(posix.fd_t, config.workerCount());
+            errdefer allocator.free(signals);
+
+            const default_dispatcher = if (comptime Handler == void) defaultDispatcher else defaultDispatcherWithHandler;
+
+            var websocket_state = try ws.WorkerState.init(allocator, .{
+                .max_message_size = config.websocket.max_message_size,
+                .buffers = .{
+                    .small_size = config.websocket.small_buffer_size,
+                    .small_pool = config.websocket.small_buffer_pool,
+                    .large_size = config.websocket.large_buffer_size,
+                    .large_pool = config.websocket.large_buffer_pool,
+                },
+                // disable handshake memory allocation since httpz is handling
+                // the handshake request directly
+                .handshake = .{
+                    .count = 0,
+                    .max_size = 0,
+                    .max_headers = 0,
+                },
+            });
+            errdefer websocket_state.deinit();
 
             return .{
-                .ctx = ctx,
-                .config = var_config,
+                .handler = handler,
+                .config = config,
                 .allocator = allocator,
                 ._mut = .{},
                 ._cond = .{},
-                ._signalers = signalers,
-                ._errorHandler = erh,
-                ._notFoundHandler = nfh,
+                ._signals = signals,
                 ._thread_pool = thread_pool,
-                ._router = try Router(G, R).init(allocator, dd, ctx),
+                ._websocket_state = websocket_state,
+                ._router = try Router(H, ActionArg).init(allocator, default_dispatcher, handler),
                 ._cors_origin = if (config.cors) |cors| cors.origin else null,
                 ._max_request_per_connection = config.timeout.request_count orelse MAX_REQUEST_COUNT,
             };
         }
 
         pub fn deinit(self: *Self) void {
-            self.allocator.free(self._signalers);
+            self.allocator.free(self._signals);
             self._router.deinit(self.allocator);
             self._thread_pool.deinit();
-        }
-
-        pub fn dispatchUndefined(_: *Self) Dispatcher(G, R) {
-            return struct {
-                fn dispatch(ctx: G, action: Action(R), req: *Request, res: *Response) !void {
-                    _ = ctx;
-                    return action(undefined, req, res);
-                }
-            }.dispatch;
+            self._websocket_state.deinit();
         }
 
         pub fn listen(self: *Self) !void {
+            // incase "stop" is waiting
+            defer self._cond.signal();
             self._mut.lock();
-            errdefer self._mut.unlock();
 
             const config = self.config;
 
@@ -286,8 +276,8 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                     std.fs.deleteFileAbsolute(unix_path) catch {};
                     break :blk try net.Address.initUnix(unix_path);
                 } else {
-                    const listen_port = config.port.?;
-                    const listen_address = config.address.?;
+                    const listen_port = config.port orelse 5882;
+                    const listen_address = config.address orelse "127.0.0.1";
                     break :blk try net.Address.parseIp(listen_address, listen_port);
                 }
             };
@@ -322,50 +312,35 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 try posix.bind(socket, &address.any, socklen);
                 try posix.listen(socket, 1024); // kernel backlog
             }
-            errdefer posix.close(socket);
 
             const allocator = self.allocator;
 
-            const ws_config = config.websocket orelse Config.Websocket{};
-            var ws = try websocket.Server.init(allocator, .{
-                .max_size = ws_config.max_size,
-                .buffer_size = ws_config.buffer_size,
-                .handle_ping = ws_config.handle_ping,
-                .handle_pong = ws_config.handle_pong,
-                .handle_close = ws_config.handle_close,
-                .large_buffer_pool_count = ws_config.large_buffer_pool_count,
-                .large_buffer_size = ws_config.large_buffer_size,
-            });
-            defer ws.deinit(allocator);
-
             if (comptime blockingMode()) {
                 errdefer posix.close(socket);
-                var w = try worker.Blocking(*Self).init(allocator, self, &ws, &config);
+                var w = try worker.Blocking(*Self, WebsocketHandler).init(allocator, self, &config);
                 defer w.deinit();
 
-                const thrd = try Thread.spawn(.{}, worker.Blocking(*Self).listen, .{ &w, socket });
+                const thrd = try Thread.spawn(.{}, worker.Blocking(*Self, WebsocketHandler).listen, .{ &w, socket });
 
                 // incase listenInNewThread was used and is waiting for us to start
                 self._cond.signal();
 
-                // this is what we'll shutdown when stop() is called
-                // signalers[0].pipe[0] is invalid, but stop only cares about
-                // pipe[1]
-                self._signalers[0] = .{.lock = .{}, .pipe = [2]fd_t{undefined, socket}};
+                // we shutdown our blocking worker by closing the listening socket
+                self._signals[0] = socket;
                 self._mut.unlock();
                 thrd.join();
             } else {
                 defer posix.close(socket);
-                const Worker = worker.NonBlocking(*Self);
-                var signalers = self._signalers;
-                const worker_count = config.workerCount();
+                const Worker = worker.NonBlocking(*Self, WebsocketHandler);
+                var signals = self._signals;
+                const worker_count = signals.len;
                 const workers = try allocator.alloc(Worker, worker_count);
                 const threads = try allocator.alloc(Thread, worker_count);
 
                 var started: usize = 0;
                 errdefer for (0..started) |i| {
                     // on success, these will be closed by a call to stop();
-                    posix.close(signalers[i].pipe[1]);
+                    posix.close(signals[i]);
                 };
 
                 defer {
@@ -377,16 +352,14 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 }
 
                 for (0..workers.len) |i| {
-                    signalers[i] = .{
-                        .lock = .{},
-                        .pipe = try posix.pipe2(.{ .NONBLOCK = true }),
-                    };
-                    errdefer posix.close(signalers[i].pipe[1]);
+                    const pipe = try posix.pipe2(.{ .NONBLOCK = true });
+                    signals[i] = pipe[1];
+                    errdefer posix.close(pipe[1]);
 
-                    workers[i] = try Worker.init(allocator, i, self, &ws, &config);
+                    workers[i] = try Worker.init(allocator, pipe, self, &config);
                     errdefer workers[i].deinit();
 
-                    threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], socket, signalers[i].pipe[0] });
+                    threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], socket });
                     started += 1;
                 }
 
@@ -394,7 +367,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 self._cond.signal();
                 self._mut.unlock();
 
-                for (threads) |thrd |{
+                for (threads) |thrd| {
                     thrd.join();
                 }
             }
@@ -414,86 +387,34 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         pub fn stop(self: *Self) void {
             self._mut.lock();
             defer self._mut.unlock();
-            for (self._signalers) |*s| {
-                // not clear that this locking is necessary/does anything, but
-                // also don't think there's any harm
-                s.lock.lock();
-                defer s.lock.unlock();
-
+            for (self._signals) |s| {
                 if (blockingMode()) {
                     // necessary to unblock accept on linux
                     // (which might not be that necessary since, on Linux,
                     // NonBlocking should be used)
-                    posix.shutdown(s.pipe[1], .recv) catch {};
+                    posix.shutdown(s, .recv) catch {};
                 }
-                // pipe[0] is not valid when blockingMode() == true, don't
-                // access it!
-                posix.close(s.pipe[1]);
+                posix.close(s);
             }
         }
 
-        pub fn notFound(self: *Self, nfa: Action(G)) void {
-            self._notFoundHandler = nfa;
-        }
-
-        pub fn errorHandler(self: *Self, eha: ErrorHandlerAction(G)) void {
-            self._errorHandler = eha;
-        }
-
-        pub fn dispatcher(self: *Self, d: Dispatcher(G, R)) void {
+        pub fn dispatcher(self: *Self, d: Dispatcher(H, ActionArg)) void {
             (&self._router).dispatcher(d);
         }
 
-        pub fn router(self: *Self) *Router(G, R) {
+        pub fn router(self: *Self) *Router(H, ActionArg) {
             return &self._router;
         }
 
-        fn defaultNotFoundWithContext(_: G, req: *Request, res: *Response) !void {
-            try defaultNotFound(req, res);
+        fn defaultDispatcher(action: ActionArg, req: *Request, res: *Response) !void {
+            return action(req, res);
         }
 
-        fn defaultNotFound(_: *Request, res: *Response) !void {
-            res.status = 404;
-            res.body = "Not Found";
-        }
-
-        fn defaultErrorHandlerWithContext(_: G, req: *Request, res: *Response, err: anyerror) void {
-            defaultErrorHandler(req, res, err);
-        }
-
-        fn defaultErrorHandler(req: *Request, res: *Response, err: anyerror) void {
-            res.status = 500;
-            res.body = "Internal Server Error";
-            std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{ req.url.raw, err });
-        }
-
-        fn defaultDispatcher(action: Action(R), req: *Request, res: *Response) !void {
-            try action(req, res);
-        }
-
-        fn defaultDispatcherWithContext(ctx: G, action: Action(R), req: *Request, res: *Response) !void {
-            if (R == G) {
-                return action(ctx, req, res);
+        fn defaultDispatcherWithHandler(handler: H, action: ActionArg, req: *Request, res: *Response) !void {
+            if (comptime std.meta.hasFn(Handler, "dispatch")) {
+                return handler.dispatch(action, req, res);
             }
-            // app needs to provide a dispatcher in this case
-            return error.CannotDispatch;
-        }
-
-        pub fn notifyingHandler(self: *Self, w: *worker.NonBlocking(*Self), conn: *Conn, thread_buf: []u8) void {
-            self.handler(conn, thread_buf);
-
-            var signaler = self._signalers[w.id];
-            const pipe = signaler.pipe[1];
-            const buf = std.mem.asBytes(&@intFromPtr(conn));
-
-            var to_write: usize = @sizeOf(usize);
-
-            signaler.lock.lock();
-            defer signaler.lock.unlock();
-
-            while (to_write > 0) {
-                to_write -= posix.write(pipe, buf) catch @panic("TODO");
-            }
+            return action(handler, req, res);
         }
 
         // This is always called from within a threadpool thread. For nonblocking,
@@ -510,7 +431,7 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
         // arena for our request ONLY. We cannot use thread_buf for the response
         // because the response data must outlive the execution of this function
         // (and thus, in nonblocking, outlives this threadpool's execution unit).
-        pub fn handler(self: *Self, conn: *Conn, thread_buf: []u8) void {
+        pub fn handleRequest(self: *Self, conn: *HTTPConn, thread_buf: []u8) void {
             const aa = conn.arena.allocator();
 
             var fba = FixedBufferAllocator.init(thread_buf);
@@ -524,47 +445,37 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
             var req = Request.init(allocator, conn);
             var res = Response.init(allocator, conn);
 
-            if (comptime hasHandle(G)) {
-                @call(.auto, G.handle, .{ self.ctx, &req, &res });
+            conn.handover = if (conn.request_count < self._max_request_per_connection and req.canKeepAlive()) .keepalive else .close;
+
+            if (comptime std.meta.hasFn(Handler, "handle")) {
+                self.handler.handle(&req, &res);
             } else {
                 const dispatchable_action = self._router.route(req.method, req.url.path, &req.params);
                 self.dispatch(dispatchable_action, &req, &res) catch |err| {
-                    if (comptime G == void) {
-                        self._errorHandler(&req, &res, err);
+                    if (comptime std.meta.hasFn(Handler, "uncaughtError")) {
+                        self.handler.uncaughtError(&req, &res, err);
                     } else {
-                        const ctx = if (dispatchable_action) |da| da.ctx else self.ctx;
-                        self._errorHandler(ctx, &req, &res, err);
+                        res.status = 500;
+                        res.body = "Internal Server Error";
+                        std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{ req.url.raw, err });
                     }
                 };
             }
 
-            if (res.disowned) {
-                // we want to disown the socket, which is to say we no longer
-                // want to be responsible for it. There's nothing here for us
-                // to do, but we do need to let the worker know about this, since
-                // its the own that actually owns the socket so it has to disown
-                // it (one example of where we disown is when the request is
-                // upgraded to a websocket connection.)
-                conn.handover = .disown;
-                return;
-            }
-
             res.write() catch {
                 conn.handover = .close;
-                return;
             };
-            conn.handover = if (conn.request_count < self._max_request_per_connection and req.canKeepAlive()) .keepalive else .close;
         }
 
-        inline fn dispatch(self: *const Self, dispatchable_action: ?DispatchableAction(G, R), req: *Request, res: *Response) !void {
+        fn dispatch(self: *const Self, dispatchable_action: ?DispatchableAction(H, ActionArg), req: *Request, res: *Response) !void {
             if (self._cors_origin) |origin| {
                 res.header("Access-Control-Allow-Origin", origin);
             }
             if (dispatchable_action) |da| {
-                if (G == void) {
+                if (Handler == void) {
                     return da.dispatcher(da.action, req, res);
                 }
-                return da.dispatcher(da.ctx, da.action, req, res);
+                return da.dispatcher(da.handler, da.action, req, res);
             }
 
             if (req.method == .OPTIONS) {
@@ -587,20 +498,13 @@ pub fn ServerCtx(comptime G: type, comptime R: type) type {
                 }
             }
 
-            if (G == void) {
-                return self._notFoundHandler(req, res);
+            if (comptime std.meta.hasFn(Handler, "notFound")) {
+                return self.handler.notFound(req, res);
             }
-            return self._notFoundHandler(self.ctx, req, res);
+            res.status = 404;
+            res.body = "Not Found";
         }
     };
-}
-
-fn hasHandle(comptime T: type) bool {
-    switch (@typeInfo(T)) {
-        .Struct => return @hasDecl(T, "handle"),
-        .Pointer => |ptr| return hasHandle(ptr.child),
-        else => return false,
-    }
 }
 
 pub fn blockingMode() bool {
@@ -613,40 +517,50 @@ pub fn blockingMode() bool {
     };
 }
 
-pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, context: anytype) !bool {
-    const key = ensureWebsocketRequest(req) orelse return false;
+pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: anytype) !bool {
+    const upgrade = req.header("upgrade") orelse return false;
+    if (std.ascii.eqlIgnoreCase(upgrade, "websocket") == false) {
+        return false;
+    }
 
-    const conn = res.conn;
-    const stream = conn.stream;
-    res.disown();
+    const version = req.header("sec-websocket-version") orelse return false;
+    if (std.ascii.eqlIgnoreCase(version, "13") == false) {
+        return false;
+    }
 
-    try websocket.Handshake.reply(key, stream);
+    // firefox will send multiple values for this header
+    const connection = req.header("connection") orelse return false;
+    if (std.ascii.indexOfIgnoreCase(connection, "upgrade") == null) {
+        return false;
+    }
 
-    const thread = try std.Thread.spawn(.{}, websocketHandler, .{ H, conn.websocket, stream, context });
-    thread.detach();
+    const key = req.header("sec-websocket-key") orelse return false;
+
+    const http_conn = res.conn;
+
+    const ws_worker: *ws.Worker(H) = @ptrCast(@alignCast(http_conn.ws_worker));
+
+    var hc = try ws_worker.createConn(http_conn.stream.handle, http_conn.address, worker.timestamp());
+    errdefer ws_worker.cleanupConn(hc);
+
+    hc.handler = try H.init(&hc.conn, ctx);
+    try http_conn.stream.writeAll(&ws.Handshake.createReply(key));
+    if (comptime std.meta.hasFn(H, "afterInit")) {
+        const params = @typeInfo(@TypeOf(H.afterInit)).Fn.params;
+        try if (comptime params.len == 1) hc.handler.?.afterInit() else hc.handler.?.afterInit(ctx);
+    }
+
+    res.written = true;
+    http_conn.handover = .{ .websocket = hc };
     return true;
 }
 
-fn ensureWebsocketRequest(req: *Request) ?[]const u8 {
-    const upgrade = req.header("upgrade") orelse return null;
-    if (std.ascii.eqlIgnoreCase(upgrade, "websocket") == false) return null;
-
-    const version = req.header("sec-websocket-version") orelse return null;
-    if (std.ascii.eqlIgnoreCase(version, "13") == false) return null;
-
-    // firefox will send multiple values for this header
-    const connection = req.header("connection") orelse return null;
-    if (std.ascii.indexOfIgnoreCase(connection, "upgrade") == null) return null;
-
-    return req.header("sec-websocket-key");
-}
-
-fn websocketHandler(comptime H: type, server: *websocket.Server, stream: net.Stream, context: anytype) void {
-    errdefer stream.close();
-    var conn = server.newConn(stream);
-    var handler = H.init(&conn, context) catch return;
-    server.handle(H, &handler, &conn);
-}
+// fn websocketHandler(comptime H: type, server: *websocket.Server, stream: std.net.Stream, context: anytype) void {
+//     errdefer stream.close();
+//     var conn = server.newConn(stream);
+//     var handler = H.init(&conn, context) catch return;
+//     server.handle(H, &handler, &conn);
+// }
 
 // std.heap.StackFallbackAllocator is very specific. It's really _stack_ as it
 // requires a comptime size. Also, it uses non-public calls from the FixedBufferAllocator.
@@ -696,73 +610,97 @@ const FallbackAllocator = struct {
 const t = @import("t.zig");
 var global_test_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
-var default_server: ServerCtx(void, void) = undefined;
-var context_server: ServerCtx(u32, u32) = undefined;
-var cors_server: ServerCtx(u32, u32) = undefined;
-var reuse_server: ServerCtx(void, void) = undefined;
-var handle_server: ServerCtx(CustomHandler, CustomHandler) = undefined;
-var test_server_threads: [5]Thread = undefined;
+var test_handler_dispatch = TestHandlerDispatch{ .state = 10 };
+var test_handler_disaptch_context = TestHandlerDispatchContext{ .state = 20 };
+var test_handler_default_dispatch1 = TestHandlerDefaultDispatch{ .state = 3 };
+var test_handler_default_dispatch2 = TestHandlerDefaultDispatch{ .state = 99 };
+var test_handler_default_dispatch3 = TestHandlerDefaultDispatch{ .state = 20 };
+
+var default_server: Server(void) = undefined;
+var dispatch_default_server: Server(*TestHandlerDefaultDispatch) = undefined;
+var dispatch_server: Server(*TestHandlerDispatch) = undefined;
+var dispatch_action_context_server: Server(*TestHandlerDispatchContext) = undefined;
+var reuse_server: Server(void) = undefined;
+var handle_server: Server(TestHandlerHandle) = undefined;
+var websocket_server: Server(TestWebsocketHandler) = undefined;
+
+var test_server_threads: [7]Thread = undefined;
+
 test "tests:beforeAll" {
     // this will leak since the server will run until the process exits. If we use
     // our testing allocator, it'll report the leak.
     const ga = global_test_allocator.allocator();
     {
-        default_server = try Server().init(ga, .{ .port = 5992 });
+        default_server = try Server(void).init(ga, .{
+            .port = 5992,
+            .cors = .{ .origin = "httpz.local", .headers = "content-type", .methods = "GET,POST", .max_age = "300" },
+        }, {});
         var router = default_server.router();
-        router.get("/test/ws", testWS);
-        router.get("/test/json", testJsonRes);
-        router.get("/test/query", testReqQuery);
-        router.get("/test/stream", testEventStream);
-        router.get("/test/chunked", testChunked);
-        router.allC("/test/dispatcher", testDispatcherAction, .{ .dispatcher = testDispatcher1 });
+        // router.get("/test/ws", testWS);
+        router.get("/fail", TestDummyHandler.fail);
+        router.get("/test/json", TestDummyHandler.jsonRes);
+        router.get("/test/query", TestDummyHandler.reqQuery);
+        router.get("/test/stream", TestDummyHandler.eventStream);
+        router.get("/test/chunked", TestDummyHandler.chunked);
+        router.allC("/test/dispatcher", TestDummyHandler.dispatchedAction, .{ .dispatcher = TestDummyHandler.routeSpecificDispacthcer });
         test_server_threads[0] = try default_server.listenInNewThread();
     }
 
     {
-        context_server = try ServerApp(u32).init(ga, .{ .port = 5993 }, 3);
-        context_server.notFound(testNotFound);
-        var router = context_server.router();
-        router.get("/", ctxEchoAction);
-        router.get("/write/*", ctxEchoActionWrite);
-        router.get("/fail", testFail);
-        router.post("/login", ctxEchoAction);
-        router.get("/test/body/cl", testCLBody);
-        router.get("/test/headers", testHeaders);
-        router.all("/api/:version/users/:UserId", testParams);
+        dispatch_default_server = try Server(*TestHandlerDefaultDispatch).init(ga, .{ .port = 5993 }, &test_handler_default_dispatch1);
+        var router = dispatch_default_server.router();
+        router.get("/", TestHandlerDefaultDispatch.echo);
+        router.get("/write/*", TestHandlerDefaultDispatch.echoWrite);
+        router.get("/fail", TestHandlerDefaultDispatch.fail);
+        router.post("/login", TestHandlerDefaultDispatch.echo);
+        router.get("/test/body/cl", TestHandlerDefaultDispatch.clBody);
+        router.get("/test/headers", TestHandlerDefaultDispatch.headers);
+        router.all("/api/:version/users/:UserId", TestHandlerDefaultDispatch.params);
 
-        var admin_routes = router.group("/admin/", .{ .dispatcher = ctxTestDispatcher2, .ctx = 99 });
-        admin_routes.get("/users", ctxEchoAction);
-        admin_routes.put("/users/:id", ctxEchoAction);
+        var admin_routes = router.group("/admin/", .{ .dispatcher = TestHandlerDefaultDispatch.dispatch2, .handler = &test_handler_default_dispatch2 });
+        admin_routes.get("/users", TestHandlerDefaultDispatch.echo);
+        admin_routes.put("/users/:id", TestHandlerDefaultDispatch.echo);
 
-        var debug_routes = router.group("/debug", .{ .dispatcher = ctxTestDispatcher3, .ctx = 20 });
-        debug_routes.head("/ping", ctxEchoAction);
-        debug_routes.options("/stats", ctxEchoAction);
+        var debug_routes = router.group("/debug", .{ .dispatcher = TestHandlerDefaultDispatch.dispatch3, .handler = &test_handler_default_dispatch3 });
+        debug_routes.head("/ping", TestHandlerDefaultDispatch.echo);
+        debug_routes.options("/stats", TestHandlerDefaultDispatch.echo);
 
-        test_server_threads[1] = try context_server.listenInNewThread();
+        test_server_threads[1] = try dispatch_default_server.listenInNewThread();
     }
 
     {
-        cors_server = try ServerCtx(u32, u32).init(ga, .{
-            .port = 5994,
-            .cors = .{ .origin = "httpz.local", .headers = "content-type", .methods = "GET,POST", .max_age = "300" },
-        }, 100);
-        var router = cors_server.router();
-        router.all("/echo", ctxEchoAction);
-        test_server_threads[2] = try cors_server.listenInNewThread();
+        dispatch_server = try Server(*TestHandlerDispatch).init(ga, .{ .port = 5994 }, &test_handler_dispatch);
+        var router = dispatch_server.router();
+        router.get("/", TestHandlerDispatch.root);
+        test_server_threads[2] = try dispatch_server.listenInNewThread();
+    }
+
+    {
+        dispatch_action_context_server = try Server(*TestHandlerDispatchContext).init(ga, .{ .port = 5995 }, &test_handler_disaptch_context);
+        var router = dispatch_action_context_server.router();
+        router.get("/", TestHandlerDispatchContext.root);
+        test_server_threads[3] = try dispatch_action_context_server.listenInNewThread();
     }
 
     {
         // with only 1 worker, and a min/max conn of 1, each request should
         // hit our reset path.
-        reuse_server = try Server().init(ga, .{ .port = 5995, .workers = .{ .count = 1, .min_conn = 1, .max_conn = 1 } });
+        reuse_server = try Server(void).init(ga, .{ .port = 5996, .workers = .{ .count = 1, .min_conn = 1, .max_conn = 1 } }, {});
         var router = reuse_server.router();
-        router.get("/test/writer", testWriter);
-        test_server_threads[3] = try reuse_server.listenInNewThread();
+        router.get("/test/writer", TestDummyHandler.reuseWriter);
+        test_server_threads[4] = try reuse_server.listenInNewThread();
     }
 
     {
-        handle_server = try ServerCtx(CustomHandler, CustomHandler).init(ga, .{ .port = 5996 }, CustomHandler{});
-        test_server_threads[4] = try handle_server.listenInNewThread();
+        handle_server = try Server(TestHandlerHandle).init(ga, .{ .port = 5997 }, TestHandlerHandle{});
+        test_server_threads[5] = try handle_server.listenInNewThread();
+    }
+
+    {
+        websocket_server = try Server(TestWebsocketHandler).init(ga, .{ .port = 5998 }, TestWebsocketHandler{});
+        var router = websocket_server.router();
+        router.get("/ws", TestWebsocketHandler.upgrade);
+        test_server_threads[6] = try websocket_server.listenInNewThread();
     }
 
     std.testing.refAllDecls(@This());
@@ -770,30 +708,34 @@ test "tests:beforeAll" {
 
 test "tests:afterAll" {
     default_server.stop();
-    context_server.stop();
-    cors_server.stop();
+    dispatch_default_server.stop();
+    dispatch_server.stop();
+    dispatch_action_context_server.stop();
     reuse_server.stop();
     handle_server.stop();
+    websocket_server.stop();
 
     for (test_server_threads) |thread| {
         thread.join();
     }
 
     default_server.deinit();
-    context_server.deinit();
-    cors_server.deinit();
+    dispatch_default_server.deinit();
+    dispatch_server.deinit();
+    dispatch_action_context_server.deinit();
     reuse_server.deinit();
     handle_server.deinit();
+    websocket_server.deinit();
 
     try t.expectEqual(false, global_test_allocator.detectLeaks());
 }
 
 test "httpz: quick shutdown" {
-    var server = try Server().init(t.allocator, .{ .port = 6992 });
+    var server = try Server(void).init(t.allocator, .{ .port = 6992 }, {});
     const thrd = try server.listenInNewThread();
     server.stop();
-    server.deinit();
     thrd.join();
+    server.deinit();
 }
 
 test "httpz: invalid request" {
@@ -856,7 +798,7 @@ test "httpz: no route" {
     try stream.writeAll("GET / HTTP/1.1\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 404 \r\nContent-Length: 9\r\n\r\nNot Found", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 404 \r\nAccess-Control-Allow-Origin: httpz.local\r\nContent-Length: 9\r\n\r\nNot Found", testReadAll(stream, &buf));
 }
 
 test "httpz: no route with custom notFound handler" {
@@ -865,26 +807,22 @@ test "httpz: no route with custom notFound handler" {
     try stream.writeAll("GET /not_found HTTP/1.1\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 404 \r\nCtx: 3\r\nContent-Length: 10\r\n\r\nwhere lah?", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 404 \r\nstate: 3\r\nContent-Length: 10\r\n\r\nwhere lah?", testReadAll(stream, &buf));
 }
 
 test "httpz: unhandled exception" {
     std.testing.log_level = .err;
     defer std.testing.log_level = .warn;
 
-    const stream = testStream(5993);
+    const stream = testStream(5992);
     defer stream.close();
     try stream.writeAll("GET /fail HTTP/1.1\r\n\r\n");
 
-    var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 500 \r\nContent-Length: 21\r\n\r\nInternal Server Error", testReadAll(stream, &buf));
+    var buf: [150]u8 = undefined;
+    try t.expectString("HTTP/1.1 500 \r\nAccess-Control-Allow-Origin: httpz.local\r\nContent-Length: 21\r\n\r\nInternal Server Error", testReadAll(stream, &buf));
 }
 
 test "httpz: unhandled exception with custom error handler" {
-    // should not be done like this, server isn't thread safe and shouldn't
-    // be changed once listening, but greatly simplifies our testing.
-    context_server.errorHandler(testErrorHandler);
-
     std.testing.log_level = .err;
     defer std.testing.log_level = .warn;
 
@@ -892,8 +830,8 @@ test "httpz: unhandled exception with custom error handler" {
     defer stream.close();
     try stream.writeAll("GET /fail HTTP/1.1\r\n\r\n");
 
-    var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 500 \r\nCtx: 3\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", testReadAll(stream, &buf));
+    var buf: [150]u8 = undefined;
+    try t.expectString("HTTP/1.1 500 \r\nstate: 3\r\nerr: TestUnhandledError\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", testReadAll(stream, &buf));
 }
 
 test "httpz: route params" {
@@ -911,7 +849,7 @@ test "httpz: request and response headers" {
     try stream.writeAll("GET /test/headers HTTP/1.1\r\nHeader-Name: Header-Value\r\n\r\n");
 
     var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 200 \r\nCtx: 3\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 200 \r\nstate: 3\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", testReadAll(stream, &buf));
 }
 
 test "httpz: content-length body" {
@@ -928,8 +866,8 @@ test "httpz: json response" {
     defer stream.close();
     try stream.writeAll("GET /test/json HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
-    var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 201 \r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", testReadAll(stream, &buf));
+    var buf: [200]u8 = undefined;
+    try t.expectString("HTTP/1.1 201 \r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: httpz.local\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", testReadAll(stream, &buf));
 }
 
 test "httpz: query" {
@@ -937,8 +875,8 @@ test "httpz: query" {
     defer stream.close();
     try stream.writeAll("GET /test/query?fav=keemun%20te%61%21 HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
-    var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 11\r\n\r\nkeemun tea!", testReadAll(stream, &buf));
+    var buf: [200]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nAccess-Control-Allow-Origin: httpz.local\r\nContent-Length: 11\r\n\r\nkeemun tea!", testReadAll(stream, &buf));
 }
 
 test "httpz: chunked" {
@@ -947,79 +885,20 @@ test "httpz: chunked" {
     try stream.writeAll("GET /test/chunked HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
     var buf: [1000]u8 = undefined;
-    try t.expectString("HTTP/1.1 200 \r\nOver: 9000!\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nChunk 1\r\n11\r\nand another chunk\r\n0\r\n\r\n", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 200 \r\nAccess-Control-Allow-Origin: httpz.local\r\nOver: 9000!\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nChunk 1\r\n11\r\nand another chunk\r\n0\r\n\r\n", testReadAll(stream, &buf));
 }
 
-test "httpz: custom dispatcher" {
+test "httpz: route-specific dispatcher" {
     const stream = testStream(5992);
     defer stream.close();
     try stream.writeAll("HEAD /test/dispatcher HTTP/1.1\r\n\r\n");
 
-    var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 200 \r\ndispatcher: test-dispatcher-1\r\nContent-Length: 6\r\n\r\naction", testReadAll(stream, &buf));
-}
-
-test "httpz: router groups" {
-    const stream = testStream(5993);
-    defer stream.close();
-
-    {
-        try stream.writeAll("GET / HTTP/1.1\r\n\r\n");
-        var res = testReadParsed(stream);
-        defer res.deinit();
-
-        try res.expectJson(.{ .ctx = 3, .method = "GET", .path = "/" });
-        try t.expectEqual(true, res.headers.get("dispatcher") == null);
-    }
-
-    {
-        try stream.writeAll("GET /admin/users HTTP/1.1\r\n\r\n");
-        var res = testReadParsed(stream);
-        defer res.deinit();
-
-        try res.expectJson(.{ .ctx = 99, .method = "GET", .path = "/admin/users" });
-        try t.expectString("test-dispatcher-2", res.headers.get("dispatcher").?);
-    }
-
-    {
-        try stream.writeAll("PUT /admin/users/:id HTTP/1.1\r\n\r\n");
-        var res = testReadParsed(stream);
-        defer res.deinit();
-
-        try res.expectJson(.{ .ctx = 99, .method = "PUT", .path = "/admin/users/:id" });
-        try t.expectString("test-dispatcher-2", res.headers.get("dispatcher").?);
-    }
-
-    {
-        try stream.writeAll("HEAD /debug/ping HTTP/1.1\r\n\r\n");
-        var res = testReadParsed(stream);
-        defer res.deinit();
-
-        try res.expectJson(.{ .ctx = 20, .method = "HEAD", .path = "/debug/ping" });
-        try t.expectString("test-dispatcher-3", res.headers.get("dispatcher").?);
-    }
-
-    {
-        try stream.writeAll("OPTIONS /debug/stats HTTP/1.1\r\n\r\n");
-        var res = testReadParsed(stream);
-        defer res.deinit();
-
-        try res.expectJson(.{ .ctx = 20, .method = "OPTIONS", .path = "/debug/stats" });
-        try t.expectString("test-dispatcher-3", res.headers.get("dispatcher").?);
-    }
-
-    {
-        try stream.writeAll("POST /login HTTP/1.1\r\n\r\n");
-        var res = testReadParsed(stream);
-        defer res.deinit();
-
-        try res.expectJson(.{ .ctx = 3, .method = "POST", .path = "/login" });
-        try t.expectEqual(true, res.headers.get("dispatcher") == null);
-    }
+    var buf: [200]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nAccess-Control-Allow-Origin: httpz.local\r\ndispatcher: test-dispatcher-1\r\nContent-Length: 6\r\n\r\naction", testReadAll(stream, &buf));
 }
 
 test "httpz: CORS" {
-    const stream = testStream(5994);
+    const stream = testStream(5992);
     defer stream.close();
 
     {
@@ -1057,10 +936,120 @@ test "httpz: CORS" {
     }
 }
 
+test "httpz: router groups" {
+    const stream = testStream(5993);
+    defer stream.close();
+
+    {
+        try stream.writeAll("GET / HTTP/1.1\r\n\r\n");
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try res.expectJson(.{ .state = 3, .method = "GET", .path = "/" });
+        try t.expectEqual(true, res.headers.get("dispatcher") == null);
+    }
+
+    {
+        try stream.writeAll("GET /admin/users HTTP/1.1\r\n\r\n");
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try res.expectJson(.{ .state = 99, .method = "GET", .path = "/admin/users" });
+        try t.expectString("test-dispatcher-2", res.headers.get("dispatcher").?);
+    }
+
+    {
+        try stream.writeAll("PUT /admin/users/:id HTTP/1.1\r\n\r\n");
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try res.expectJson(.{ .state = 99, .method = "PUT", .path = "/admin/users/:id" });
+        try t.expectString("test-dispatcher-2", res.headers.get("dispatcher").?);
+    }
+
+    {
+        try stream.writeAll("HEAD /debug/ping HTTP/1.1\r\n\r\n");
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try res.expectJson(.{ .state = 20, .method = "HEAD", .path = "/debug/ping" });
+        try t.expectString("test-dispatcher-3", res.headers.get("dispatcher").?);
+    }
+
+    {
+        try stream.writeAll("OPTIONS /debug/stats HTTP/1.1\r\n\r\n");
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try res.expectJson(.{ .state = 20, .method = "OPTIONS", .path = "/debug/stats" });
+        try t.expectString("test-dispatcher-3", res.headers.get("dispatcher").?);
+    }
+
+    {
+        try stream.writeAll("POST /login HTTP/1.1\r\n\r\n");
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try res.expectJson(.{ .state = 3, .method = "POST", .path = "/login" });
+        try t.expectEqual(true, res.headers.get("dispatcher") == null);
+    }
+}
+
+test "httpz: event stream" {
+    const stream = testStream(5992);
+    defer stream.close();
+    try stream.writeAll("GET /test/stream HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+    var res = testReadParsed(stream);
+    defer res.deinit();
+
+    try t.expectEqual(818, res.status);
+    try t.expectEqual(true, res.headers.get("Content-Length") == null);
+    try t.expectString("text/event-stream", res.headers.get("Content-Type").?);
+    try t.expectString("no-cache", res.headers.get("Cache-Control").?);
+    try t.expectString("keep-alive", res.headers.get("Connection").?);
+    try t.expectString("helloa message", res.body);
+}
+
+test "httpz: keepalive" {
+    const stream = testStream(5993);
+    defer stream.close();
+    try stream.writeAll("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
+
+    var buf: [100]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", testReadAll(stream, &buf));
+
+    try stream.writeAll("GET /api/v2/users/123 HTTP/1.1\r\n\r\n");
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 19\r\n\r\nversion=v2,user=123", testReadAll(stream, &buf));
+}
+
+test "httpz: keepalive with explicit write" {
+    const stream = testStream(5993);
+    defer stream.close();
+    try stream.writeAll("GET /write/9001 HTTP/1.1\r\n\r\n");
+
+    var buf: [1000]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 47\r\n\r\n{\"state\":3,\"method\":\"GET\",\"path\":\"/write/9001\"}", testReadAll(stream, &buf));
+
+    try stream.writeAll("GET /write/123 HTTP/1.1\r\n\r\n");
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 46\r\n\r\n{\"state\":3,\"method\":\"GET\",\"path\":\"/write/123\"}", testReadAll(stream, &buf));
+}
+
+test "httpz: request in chunks" {
+    const stream = testStream(5993);
+    defer stream.close();
+    try stream.writeAll("GET /api/v2/use");
+    std.time.sleep(std.time.ns_per_ms * 10);
+    try stream.writeAll("rs/11 HTTP/1.1\r\n\r\n");
+
+    var buf: [100]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 18\r\n\r\nversion=v2,user=11", testReadAll(stream, &buf));
+}
+
 test "httpz: writer re-use" {
     defer t.reset();
 
-    const stream = testStream(5995);
+    const stream = testStream(5996);
     defer stream.close();
 
     var expected: [10]TestUser = undefined;
@@ -1078,6 +1067,91 @@ test "httpz: writer re-use" {
 
         try res.expectJson(.{ .data = expected[0 .. i + 1] });
     }
+}
+
+test "httpz: custom dispatch without action context" {
+    const stream = testStream(5994);
+    defer stream.close();
+    try stream.writeAll("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+    var buf: [200]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nContent-Type: application/json\r\ndstate: 10\r\ndispatch: TestHandlerDispatch\r\nContent-Length: 12\r\n\r\n{\"state\":10}", testReadAll(stream, &buf));
+}
+
+test "httpz: custom dispatch with action context" {
+    const stream = testStream(5995);
+    defer stream.close();
+    try stream.writeAll("GET /?name=teg HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+    var buf: [200]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nContent-Type: application/json\r\ndstate: 20\r\ndispatch: TestHandlerDispatchContext\r\nContent-Length: 12\r\n\r\n{\"other\":30}", testReadAll(stream, &buf));
+}
+
+test "httpz: custom handle" {
+    const stream = testStream(5997);
+    defer stream.close();
+    try stream.writeAll("GET /whatever?name=teg HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+    var buf: [100]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 9\r\n\r\nhello teg", testReadAll(stream, &buf));
+}
+
+test "websocket: invalid request" {
+    const stream = testStream(5998);
+    defer stream.close();
+    try stream.writeAll("GET /ws HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+    var res = testReadParsed(stream);
+    defer res.deinit();
+    try t.expectString("invalid websocket", res.body);
+}
+
+test "websocket: upgrade" {
+    const websocket = @import("websocket");
+
+    const stream = testStream(5998);
+    defer stream.close();
+    try stream.writeAll("GET /ws HTTP/1.1\r\nContent-Length: 0\r\n");
+    try stream.writeAll("upgrade: WEBsocket\r\n");
+    try stream.writeAll("Sec-Websocket-verSIon: 13\r\n");
+    try stream.writeAll("ConnectioN: abc,upgrade,123\r\n");
+    try stream.writeAll("SEC-WEBSOCKET-KeY: a-secret-key\r\n\r\n");
+
+    var res = testReadHeader(stream);
+    defer res.deinit();
+    try t.expectEqual(101, res.status);
+    try t.expectString("websocket", res.headers.get("Upgrade").?);
+    try t.expectString("upgrade", res.headers.get("Connection").?);
+    try t.expectString("55eM2SNGu+68v5XXrr982mhPFkU=", res.headers.get("Sec-Websocket-Accept").?);
+
+    try stream.writeAll(&websocket.frameText("over 9000!"));
+    try stream.writeAll(&websocket.frameText("close"));
+
+    var pos: usize = 0;
+    var buf: [100]u8 = undefined;
+    var wait_count: usize = 0;
+    while (pos < 16) {
+        const n = stream.read(buf[pos..]) catch |err| switch (err) {
+            error.WouldBlock => {
+                if (wait_count == 100) {
+                    break;
+                }
+                wait_count += 1;
+                std.time.sleep(std.time.ns_per_ms);
+                continue;
+            },
+            else => return err,
+        };
+        if (n == 0) {
+            break;
+        }
+        pos += n;
+    }
+    try t.expectEqual(16, pos);
+    try t.expectEqual(129, buf[0]);
+    try t.expectEqual(10, buf[1]);
+    try t.expectString("over 9000!", buf[2..12]);
+    try t.expectString(&.{ 136, 2, 3, 232 }, buf[12..16]);
 }
 
 test "ContentType: forX" {
@@ -1101,259 +1175,20 @@ test "ContentType: forX" {
     try t.expectEqual(ContentType.UNKNOWN, ContentType.forFile("must.spice"));
 }
 
-test "httpz: event stream" {
-    const stream = testStream(5992);
-    defer stream.close();
-    try stream.writeAll("GET /test/stream HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
-
-    var res = testReadParsed(stream);
-    defer res.deinit();
-
-    try t.expectEqual(818, res.status);
-    try t.expectEqual(true, res.headers.get("Content-Length") == null);
-    try t.expectString("text/event-stream", res.headers.get("Content-Type").?);
-    try t.expectString("no-cache", res.headers.get("Cache-Control").?);
-    try t.expectString("keep-alive", res.headers.get("Connection").?);
-    try t.expectString("helloa message", res.body);
-}
-
-test "websocket: invalid request" {
-    const stream = testStream(5992);
-    defer stream.close();
-    try stream.writeAll("GET /test/ws HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
-
-    var res = testReadParsed(stream);
-    defer res.deinit();
-    try t.expectString("invalid websocket", res.body);
-}
-
-test "websocket: upgrade" {
-    const stream = testStream(5992);
-    defer stream.close();
-    try stream.writeAll("GET /test/ws HTTP/1.1\r\nContent-Length: 0\r\n");
-    try stream.writeAll("upgrade: WEBsocket\r\n");
-    try stream.writeAll("Sec-Websocket-verSIon: 13\r\n");
-    try stream.writeAll("ConnectioN: abc,upgrade,123\r\n");
-    try stream.writeAll("SEC-WEBSOCKET-KeY: a-secret-key\r\n\r\n");
-
-    var res = testReadHeader(stream);
-    defer res.deinit();
-    try t.expectEqual(101, res.status);
-    try t.expectString("websocket", res.headers.get("Upgrade").?);
-    try t.expectString("upgrade", res.headers.get("Connection").?);
-    try t.expectString("55eM2SNGu+68v5XXrr982mhPFkU=", res.headers.get("Sec-Websocket-Accept").?);
-
-    try stream.writeAll(&websocket.frameText("over 9000!"));
-    try stream.writeAll(&websocket.frameBin("close"));
-
-    var pos: usize = 0;
-    var buf: [20]u8 = undefined;
-    while (pos < 12) {
-        const n = stream.read(buf[pos..]) catch |err| switch (err) {
-            error.WouldBlock => {
-                std.time.sleep(std.time.ns_per_ms);
-                continue;
-            },
-            else => return err,
-        };
-        if (n == 0) {
-            break;
-        }
-        pos += n;
-    }
-
-    try t.expectEqual(12, pos);
-    try t.expectEqual(129, buf[0]);
-    try t.expectEqual(10, buf[1]);
-    try t.expectString("over 9000!", buf[2..12]);
-}
-
-test "httpz: keepalive" {
-    const stream = testStream(5993);
-    defer stream.close();
-    try stream.writeAll("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
-
-    var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", testReadAll(stream, &buf));
-
-    try stream.writeAll("GET /api/v2/users/123 HTTP/1.1\r\n\r\n");
-    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 19\r\n\r\nversion=v2,user=123", testReadAll(stream, &buf));
-}
-
-test "httpz: keepalive with explicit write" {
-    const stream = testStream(5993);
-    defer stream.close();
-    try stream.writeAll("GET /write/9001 HTTP/1.1\r\n\r\n");
-
-    var buf: [1000]u8 = undefined;
-    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 45\r\n\r\n{\"ctx\":3,\"method\":\"GET\",\"path\":\"/write/9001\"}", testReadAll(stream, &buf));
-
-    try stream.writeAll("GET /write/123 HTTP/1.1\r\n\r\n");
-    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 44\r\n\r\n{\"ctx\":3,\"method\":\"GET\",\"path\":\"/write/123\"}", testReadAll(stream, &buf));
-}
-
-test "httpz: request in chunks" {
-    const stream = testStream(5993);
-    defer stream.close();
-    try stream.writeAll("GET /api/v2/use");
-    std.time.sleep(std.time.ns_per_ms * 10);
-    try stream.writeAll("rs/11 HTTP/1.1\r\n\r\n");
-
-    var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 18\r\n\r\nversion=v2,user=11", testReadAll(stream, &buf));
-}
-
-test "httpz: dispatcher handle" {
-    const stream = testStream(5996);
-    defer stream.close();
-    try stream.writeAll("GET /whatever?name=teg HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
-
-    var buf: [100]u8 = undefined;
-    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 9\r\n\r\nhello teg", testReadAll(stream, &buf));
-}
-
-fn testFail(_: u32, _: *Request, _: *Response) !void {
-    return error.TestUnhandledError;
-}
-
-fn testParams(_: u32, req: *Request, res: *Response) !void {
-    const args = .{ req.param("version").?, req.param("UserId").? };
-    res.body = try std.fmt.allocPrint(req.arena, "version={s},user={s}", args);
-}
-
-fn testHeaders(ctx: u32, req: *Request, res: *Response) !void {
-    addContextHeader(res, ctx);
-    res.header("Echo", req.header("header-name").?);
-    res.header("other", "test-value");
-}
-
-fn testCLBody(_: u32, req: *Request, res: *Response) !void {
-    res.header("Echo-Body", req.body().?);
-}
-
-fn testWS(req: *Request, res: *Response) !void {
-    if (try upgradeWebsocket(TestWSHandler, req, res, TestWSHandler.Context{ .id = 339 }) == false) {
-        res.body = "invalid websocket";
-    }
-}
-
-fn testJsonRes(_: *Request, res: *Response) !void {
-    res.status = 201;
-    try res.json(.{ .over = 9000, .teg = "soup" }, .{});
-}
-
-fn testEventStream(_: *Request, res: *Response) !void {
-    res.status = 818;
-    try res.startEventStream(StreamContext{ .data = "hello" }, StreamContext.handle);
-}
-
-const StreamContext = struct {
-    data: []const u8,
-
-    fn handle(self: StreamContext, stream: net.Stream) void {
-        stream.writeAll(self.data) catch unreachable;
-        stream.writeAll("a message") catch unreachable;
-    }
-};
-
-fn testReqQuery(req: *Request, res: *Response) !void {
-    res.status = 200;
-    const query = try req.query();
-    res.body = query.get("fav").?;
-}
-
-fn testChunked(_: *Request, res: *Response) !void {
-    res.header("Over", "9000!");
-    res.status = 200;
-    try res.chunk("Chunk 1");
-    try res.chunk("and another chunk");
-}
-
-fn testNotFound(ctx: u32, _: *Request, res: *Response) !void {
-    res.status = 404;
-    addContextHeader(res, ctx);
-    res.body = "where lah?";
-}
-
-fn testErrorHandler(ctx: u32, _: *Request, res: *Response, _: anyerror) void {
-    res.status = 500;
-    addContextHeader(res, ctx);
-    res.body = "#/why/arent/tags/hierarchical";
-}
-
-fn addContextHeader(res: *Response, ctx: u32) void {
-    const value = std.fmt.allocPrint(res.arena, "{d}", .{ctx}) catch unreachable;
-    res.header("Ctx", value);
-}
-
-fn testDispatcherAction(_: *Request, res: *Response) !void {
-    return res.directWriter().writeAll("action");
-}
-
-fn testDispatcher1(action: Action(void), req: *Request, res: *Response) !void {
-    res.header("dispatcher", "test-dispatcher-1");
-    return action(req, res);
-}
-
-fn ctxTestDispatcher2(ctx: u32, action: Action(u32), req: *Request, res: *Response) !void {
-    res.header("dispatcher", "test-dispatcher-2");
-    return action(ctx, req, res);
-}
-
-fn ctxTestDispatcher3(ctx: u32, action: Action(u32), req: *Request, res: *Response) !void {
-    res.header("dispatcher", "test-dispatcher-3");
-    return action(ctx, req, res);
-}
-
-fn ctxEchoAction(ctx: u32, req: *Request, res: *Response) !void {
-    return res.json(.{
-        .ctx = ctx,
-        .method = @tagName(req.method),
-        .path = req.url.path,
-    }, .{});
-}
-
-fn ctxEchoActionWrite(ctx: u32, req: *Request, res: *Response) !void {
-    var arr = std.ArrayList(u8).init(res.arena);
-    try std.json.stringify(.{
-        .ctx = ctx,
-        .method = @tagName(req.method),
-        .path = req.url.path,
-    }, .{}, arr.writer());
-
-    res.body = arr.items;
-    return res.write();
-}
-
-fn testWriter(req: *Request, res: *Response) !void {
-    res.status = 200;
-    const query = try req.query();
-    const count = try std.fmt.parseInt(u16, query.get("count").?, 10);
-
-    var data = try res.arena.alloc(TestUser, count);
-    for (0..count) |i| {
-        data[i] = .{
-            .id = try std.fmt.allocPrint(res.arena, "id-{d}", .{i}),
-            .power = i,
-        };
-    }
-    return res.json(.{ .data = data }, .{});
-}
-
-fn testStream(port: u16) net.Stream {
+fn testStream(port: u16) std.net.Stream {
     const timeout = std.mem.toBytes(posix.timeval{
         .sec = 0,
         .usec = 20_000,
     });
 
-    const address = net.Address.parseIp("127.0.0.1", port) catch unreachable;
-    const stream = net.tcpConnectToAddress(address) catch unreachable;
+    const address = std.net.Address.parseIp("127.0.0.1", port) catch unreachable;
+    const stream = std.net.tcpConnectToAddress(address) catch unreachable;
     posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeout) catch unreachable;
     posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &timeout) catch unreachable;
     return stream;
 }
 
-fn testReadAll(stream: net.Stream, buf: []u8) []u8 {
+fn testReadAll(stream: std.net.Stream, buf: []u8) []u8 {
     var pos: usize = 0;
     var blocked = false;
     while (true) {
@@ -1376,13 +1211,13 @@ fn testReadAll(stream: net.Stream, buf: []u8) []u8 {
     unreachable;
 }
 
-fn testReadParsed(stream: net.Stream) testing.Testing.Response {
+fn testReadParsed(stream: std.net.Stream) testing.Testing.Response {
     var buf: [4096]u8 = undefined;
     const data = testReadAll(stream, &buf);
     return testing.parse(data) catch unreachable;
 }
 
-fn testReadHeader(stream: net.Stream) testing.Testing.Response {
+fn testReadHeader(stream: std.net.Stream) testing.Testing.Response {
     var pos: usize = 0;
     var blocked = false;
     var buf: [1024]u8 = undefined;
@@ -1409,40 +1244,211 @@ fn testReadHeader(stream: net.Stream) testing.Testing.Response {
     unreachable;
 }
 
-const TestWSHandler = struct {
-    ctx: TestWSHandler.Context,
-    conn: *websocket.Conn,
-
-    const Context = struct {
-        id: i32,
-    };
-
-    pub fn init(conn: *websocket.Conn, ctx: TestWSHandler.Context) !TestWSHandler {
-        return .{
-            .ctx = ctx,
-            .conn = conn,
-        };
-    }
-
-    pub fn handle(self: *TestWSHandler, msg: websocket.Message) !void {
-        if (msg.type == .binary) {
-            self.conn.close();
-        } else {
-            try self.conn.write(msg.data);
-        }
-    }
-
-    pub fn close(_: *TestWSHandler) void {}
-};
-
 const TestUser = struct {
     id: []const u8,
     power: usize,
 };
 
-const CustomHandler = struct {
-    fn handle(_: CustomHandler, req: *Request, res: *Response) void {
+// simulates having a void handler, but keeps the test actions organized within
+// this namespace.
+const TestDummyHandler = struct {
+    fn fail(_: *Request, _: *Response) !void {
+        return error.Failure;
+    }
+
+    fn reqQuery(req: *Request, res: *Response) !void {
+        res.status = 200;
+        const query = try req.query();
+        res.body = query.get("fav").?;
+    }
+
+    fn chunked(_: *Request, res: *Response) !void {
+        res.header("Over", "9000!");
+        res.status = 200;
+        try res.chunk("Chunk 1");
+        try res.chunk("and another chunk");
+    }
+    fn jsonRes(_: *Request, res: *Response) !void {
+        res.status = 201;
+        try res.json(.{ .over = 9000, .teg = "soup" }, .{});
+    }
+
+    fn eventStream(_: *Request, res: *Response) !void {
+        res.status = 818;
+        try res.startEventStream(StreamContext{ .data = "hello" }, StreamContext.handle);
+    }
+
+    const StreamContext = struct {
+        data: []const u8,
+
+        fn handle(self: StreamContext, stream: std.net.Stream) void {
+            stream.writeAll(self.data) catch unreachable;
+            stream.writeAll("a message") catch unreachable;
+        }
+    };
+
+    fn routeSpecificDispacthcer(action: Action(void), req: *Request, res: *Response) !void {
+        res.header("dispatcher", "test-dispatcher-1");
+        return action(req, res);
+    }
+
+    fn dispatchedAction(_: *Request, res: *Response) !void {
+        return res.directWriter().writeAll("action");
+    }
+
+    // called by the re-use server, but put here because, like the default server
+    // this is a handler-less server
+    fn reuseWriter(req: *Request, res: *Response) !void {
+        res.status = 200;
+        const query = try req.query();
+        const count = try std.fmt.parseInt(u16, query.get("count").?, 10);
+
+        var data = try res.arena.alloc(TestUser, count);
+        for (0..count) |i| {
+            data[i] = .{
+                .id = try std.fmt.allocPrint(res.arena, "id-{d}", .{i}),
+                .power = i,
+            };
+        }
+        return res.json(.{ .data = data }, .{});
+    }
+};
+
+const TestHandlerDefaultDispatch = struct {
+    state: usize,
+
+    fn dispatch2(h: *TestHandlerDefaultDispatch, action: Action(*TestHandlerDefaultDispatch), req: *Request, res: *Response) !void {
+        res.header("dispatcher", "test-dispatcher-2");
+        return action(h, req, res);
+    }
+
+    fn dispatch3(h: *TestHandlerDefaultDispatch, action: Action(*TestHandlerDefaultDispatch), req: *Request, res: *Response) !void {
+        res.header("dispatcher", "test-dispatcher-3");
+        return action(h, req, res);
+    }
+
+    fn echo(h: *TestHandlerDefaultDispatch, req: *Request, res: *Response) !void {
+        return res.json(.{
+            .state = h.state,
+            .method = @tagName(req.method),
+            .path = req.url.path,
+        }, .{});
+    }
+
+    fn echoWrite(h: *TestHandlerDefaultDispatch, req: *Request, res: *Response) !void {
+        var arr = std.ArrayList(u8).init(res.arena);
+        try std.json.stringify(.{
+            .state = h.state,
+            .method = @tagName(req.method),
+            .path = req.url.path,
+        }, .{}, arr.writer());
+
+        res.body = arr.items;
+        return res.write();
+    }
+
+    fn params(_: *TestHandlerDefaultDispatch, req: *Request, res: *Response) !void {
+        const args = .{ req.param("version").?, req.param("UserId").? };
+        res.body = try std.fmt.allocPrint(req.arena, "version={s},user={s}", args);
+    }
+
+    fn headers(h: *TestHandlerDefaultDispatch, req: *Request, res: *Response) !void {
+        res.header("state", try std.fmt.allocPrint(res.arena, "{d}", .{h.state}));
+        res.header("Echo", req.header("header-name").?);
+        res.header("other", "test-value");
+    }
+
+    fn clBody(_: *TestHandlerDefaultDispatch, req: *Request, res: *Response) !void {
+        res.header("Echo-Body", req.body().?);
+    }
+
+    fn fail(_: *TestHandlerDefaultDispatch, _: *Request, _: *Response) !void {
+        return error.TestUnhandledError;
+    }
+
+    pub fn notFound(h: *TestHandlerDefaultDispatch, _: *Request, res: *Response) !void {
+        res.status = 404;
+        res.header("state", try std.fmt.allocPrint(res.arena, "{d}", .{h.state}));
+        res.body = "where lah?";
+    }
+
+    pub fn uncaughtError(h: *TestHandlerDefaultDispatch, _: *Request, res: *Response, err: anyerror) void {
+        res.status = 500;
+        res.header("state", std.fmt.allocPrint(res.arena, "{d}", .{h.state}) catch unreachable);
+        res.header("err", @errorName(err));
+        res.body = "#/why/arent/tags/hierarchical";
+    }
+};
+
+const TestHandlerDispatch = struct {
+    state: usize,
+
+    pub fn dispatch(self: *TestHandlerDispatch, action: Action(*TestHandlerDispatch), req: *Request, res: *Response) !void {
+        res.header("dstate", try std.fmt.allocPrint(res.arena, "{d}", .{self.state}));
+        res.header("dispatch", "TestHandlerDispatch");
+        return action(self, req, res);
+    }
+
+    fn root(h: *TestHandlerDispatch, _: *Request, res: *Response) !void {
+        return res.json(.{ .state = h.state }, .{});
+    }
+};
+
+const TestHandlerDispatchContext = struct {
+    state: usize,
+
+    const ActionContext = struct {
+        other: usize,
+    };
+
+    pub fn dispatch(self: *TestHandlerDispatchContext, action: Action(*ActionContext), req: *Request, res: *Response) !void {
+        res.header("dstate", try std.fmt.allocPrint(res.arena, "{d}", .{self.state}));
+        res.header("dispatch", "TestHandlerDispatchContext");
+        var action_context = ActionContext{ .other = self.state + 10 };
+        return action(&action_context, req, res);
+    }
+
+    pub fn root(a: *const ActionContext, _: *Request, res: *Response) !void {
+        return res.json(.{ .other = a.other }, .{});
+    }
+};
+
+const TestHandlerHandle = struct {
+    pub fn handle(_: TestHandlerHandle, req: *Request, res: *Response) void {
         const query = req.query() catch unreachable;
         std.fmt.format(res.writer(), "hello {s}", .{query.get("name") orelse "world"}) catch unreachable;
+    }
+};
+
+const TestWebsocketHandler = struct {
+    pub const WebsocketHandler = struct {
+        ctx: u32,
+        conn: *ws.Conn,
+
+        pub fn init(conn: *ws.Conn, ctx: u32) !WebsocketHandler {
+            return .{
+                .ctx = ctx,
+                .conn = conn,
+            };
+        }
+
+        pub fn afterInit(self: *WebsocketHandler, ctx: u32) !void {
+            try t.expectEqual(self.ctx, ctx);
+        }
+
+        pub fn clientMessage(self: *WebsocketHandler, data: []const u8) !void {
+            if (std.mem.eql(u8, data, "close")) {
+                self.conn.close(.{}) catch {};
+                return;
+            }
+            try self.conn.write(data);
+        }
+    };
+
+    pub fn upgrade(_: TestWebsocketHandler, req: *Request, res: *Response) !void {
+        if (try upgradeWebsocket(WebsocketHandler, req, res, 9001) == false) {
+            res.status = 500;
+            res.body = "invalid websocket";
+        }
     }
 };

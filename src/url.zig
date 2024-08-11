@@ -157,12 +157,12 @@ pub fn asUint(comptime string: anytype) @Type(std.builtin.Type{
     .Int = .{
         .bits = @bitSizeOf(@TypeOf(string.*)) - 8, // (- 8) to exclude sentinel 0
         .signedness = .unsigned,
-    }
+    },
 }) {
-    const byteLength = @bitSizeOf(@TypeOf(string.*))/8 - 1;
-    const expectedType = *const [byteLength: 0]u8;
+    const byteLength = @bitSizeOf(@TypeOf(string.*)) / 8 - 1;
+    const expectedType = *const [byteLength:0]u8;
     if (@TypeOf(string) != expectedType) {
-        @compileError("expected : "++@typeName(expectedType)++", got: "++@typeName(@TypeOf(string)));
+        @compileError("expected : " ++ @typeName(expectedType) ++ ", got: " ++ @typeName(@TypeOf(string)));
     }
 
     return @bitCast(@as(*const [byteLength]u8, string).*);
@@ -279,7 +279,7 @@ test "url: isValid" {
 }
 
 test "toUint" {
-    const ASCII_x = @as(u8, @bitCast([1]u8{ 'x' }));
+    const ASCII_x = @as(u8, @bitCast([1]u8{'x'}));
     const ASCII_ab = @as(u16, @bitCast([2]u8{ 'a', 'b' }));
     const ASCII_xyz = @as(u24, @bitCast([3]u8{ 'x', 'y', 'z' }));
     const ASCII_abcd = @as(u32, @bitCast([4]u8{ 'a', 'b', 'c', 'd' }));
