@@ -269,7 +269,7 @@ pub fn Server(comptime H: type) type {
             var no_delay = true;
             const address = blk: {
                 if (config.unix_path) |unix_path| {
-                    if (comptime builtin.os.tag == .windows) {
+                    if (comptime std.net.has_unix_sockets == false) {
                         return error.UnixPathNotSupported;
                     }
                     no_delay = false;
