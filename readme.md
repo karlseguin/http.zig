@@ -26,6 +26,9 @@ fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
 }
 ```
 
+# Migration
+If you're coming from a previous version, I've made some breaking changes recently (largely to accomodate much better integration with websocket.zig). See the [Migration Wiki](https://github.com/karlseguin/http.zig/wiki/Migration) for more details.
+
 # Installation
 1) Add into `dependencies` at `build.zig.zon`:
 ```zig
