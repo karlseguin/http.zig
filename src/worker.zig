@@ -1331,7 +1331,7 @@ pub fn timestamp() u32 {
     }
     var ts: posix.timespec = undefined;
     posix.clock_gettime(posix.CLOCK.REALTIME, &ts) catch unreachable;
-    return @intCast(ts.sec);
+    return @intCast(ts.tv_sec);
 }
 
 fn initializeBufferPool(allocator: Allocator, config: *const Config) !*BufferPool {
@@ -1385,7 +1385,7 @@ fn writeError(conn: *HTTPConn, comptime status: u16, comptime msg: []const u8) !
 
     var i: usize = 0;
 
-    const timeout = std.mem.toBytes(std.posix.timeval{ .sec = 5, .usec = 0 });
+    const timeout = std.mem.toBytes(std.posix.timeval{ .tv_sec = 5, .tv_usec = 0 });
     try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &timeout);
     while (i < response.len) {
         const n = posix.write(socket, response[i..]) catch |err| switch (err) {
