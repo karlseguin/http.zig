@@ -2,6 +2,7 @@ const std = @import("std");
 const httpz = @import("httpz");
 const websocket = httpz.websocket;
 const Allocator = std.mem.Allocator;
+const Logger = @import("middleware/Logger.zig");
 
 var index_file_contents: []u8 = undefined;
 
@@ -17,9 +18,11 @@ pub fn start(allocator: Allocator) !void {
     index_file_contents = try index_file.readToEndAlloc(allocator, 100000);
     defer allocator.free(index_file_contents);
 
+    const logger = try server.middleware(Logger, .{.query = true});
+
     router.get("/", index);
     router.get("/hello", hello);
-    router.get("/json/hello/:name", json);
+    router.getC("/json/hello/:name", json, .{.middlewares = &.{logger}});
     router.get("/writer/hello/:name", writer);
     router.get("/static_file", staticFile);
     router.get("/cached_static_file", cachedStaticFile);
