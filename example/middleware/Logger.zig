@@ -14,15 +14,17 @@ const Logger = @This();
 
 query: bool,
 
-// Must define an `init` method, which will accept your Congi
+// Must define an `init` method, which will accept your Congif
 pub fn init(config: Config) Logger {
     return .{
         .query = config.query,
     };
 }
 
+// Must define an `execute` method. `self` doesn't have to be `const`, but
+// you're responsible for making your middleware thread-safe.
 pub fn execute(self: *const Logger, req: *httpz.Request, res: *httpz.Response, executor: anytype) !void {
-    // generally better to use an std.time.Timer to measure elapsed time
+    // Better to use an std.time.Timer to measure elapsed time
     // but we need the "start" time for our log anyways, so while this might occasionally
     // report wrong/strange "elapsed" time, it's simpler to do.
     const start = std.time.microTimestamp();
