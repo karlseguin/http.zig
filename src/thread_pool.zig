@@ -40,9 +40,9 @@ pub fn ThreadPool(comptime F: anytype) type {
     });
 
     return struct {
-        stop: bool,
         push: usize,
         pull: usize,
+        stopped: bool,
         pending: usize,
         queue: []Args,
         threads: []Thread,
@@ -50,37 +50,31 @@ pub fn ThreadPool(comptime F: anytype) type {
         pull_cond: Thread.Condition,
         push_cond: Thread.Condition,
         queue_end: usize,
-        allocator: Allocator,
 
         const Self = @This();
 
+        // we expect allocator to be an Arena
         pub fn init(allocator: Allocator, opts: Opts) !*Self {
             const queue = try allocator.alloc(Args, opts.backlog);
-            errdefer allocator.free(queue);
-
             const threads = try allocator.alloc(Thread, opts.count);
-            errdefer allocator.free(threads);
-
             const thread_pool = try allocator.create(Self);
-            errdefer allocator.destroy(thread_pool);
 
             thread_pool.* = .{
                 .pull = 0,
                 .push = 0,
                 .pending = 0,
                 .mutex = .{},
-                .stop = false,
+                .stopped = false,
                 .queue = queue,
                 .pull_cond = .{},
                 .push_cond = .{},
                 .threads = threads,
-                .allocator = allocator,
                 .queue_end = queue.len - 1,
             };
 
             var started: usize = 0;
             errdefer {
-                thread_pool.stop = true;
+                thread_pool.stopped = true;
                 thread_pool.pull_cond.broadcast();
                 for (0..started) |i| {
                     threads[i].join();
@@ -90,8 +84,6 @@ pub fn ThreadPool(comptime F: anytype) type {
             for (0..threads.len) |i| {
                 // This becomes owned by the thread, it'll free it as it ends
                 const buffer = try allocator.alloc(u8, opts.buffer_size);
-                errdefer allocator.free(buffer);
-
                 threads[i] = try Thread.spawn(.{}, Self.worker, .{ thread_pool, buffer });
                 started += 1;
             }
@@ -99,20 +91,15 @@ pub fn ThreadPool(comptime F: anytype) type {
             return thread_pool;
         }
 
-        pub fn deinit(self: *Self) void {
-            const allocator = self.allocator;
+        pub fn stop(self: *Self) void {
             self.mutex.lock();
-            self.stop = true;
+            self.stopped = true;
             self.mutex.unlock();
 
             self.pull_cond.broadcast();
             for (self.threads) |thrd| {
                 thrd.join();
             }
-            allocator.free(self.threads);
-            allocator.free(self.queue);
-
-            allocator.destroy(self);
         }
 
         pub fn empty(self: *Self) bool {
@@ -147,12 +134,11 @@ pub fn ThreadPool(comptime F: anytype) type {
             // we need to worry about here. As far as this worker thread is
             // concerned, it has a chunk of memory (buffer) which it'll pass
             // to the callback function to do with as it wants.
-            defer self.allocator.free(buffer);
 
             while (true) {
                 self.mutex.lock();
                 while (self.pending == 0) {
-                    if (self.stop) {
+                    if (self.stopped) {
                         self.mutex.unlock();
                         return;
                     }
@@ -179,8 +165,10 @@ pub fn ThreadPool(comptime F: anytype) type {
 
 const t = @import("t.zig");
 test "ThreadPool: small fuzz" {
+    defer t.reset();
+
     testSum = 0; // global defined near the end of this file
-    var tp = try ThreadPool(testIncr).init(t.allocator, .{ .count = 3, .backlog = 3, .buffer_size = 512 });
+    var tp = try ThreadPool(testIncr).init(t.arena.allocator(), .{ .count = 3, .backlog = 3, .buffer_size = 512 });
 
     for (0..50_000) |_| {
         tp.spawn(.{1});
@@ -188,13 +176,15 @@ test "ThreadPool: small fuzz" {
     while (tp.empty() == false) {
         std.time.sleep(std.time.ns_per_ms);
     }
-    tp.deinit();
+    tp.stop();
     try t.expectEqual(50_000, testSum);
 }
 
 test "ThreadPool: large fuzz" {
+    defer t.reset();
+
     testSum = 0; // global defined near the end of this file
-    var tp = try ThreadPool(testIncr).init(t.allocator, .{ .count = 50, .backlog = 1000, .buffer_size = 512 });
+    var tp = try ThreadPool(testIncr).init(t.arena.allocator(), .{ .count = 50, .backlog = 1000, .buffer_size = 512 });
 
     for (0..50_000) |_| {
         tp.spawn(.{1});
@@ -202,7 +192,7 @@ test "ThreadPool: large fuzz" {
     while (tp.empty() == false) {
         std.time.sleep(std.time.ns_per_ms);
     }
-    tp.deinit();
+    tp.stop();
     try t.expectEqual(50_000, testSum);
 }
 

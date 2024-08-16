@@ -13,7 +13,6 @@ pub const Config = struct {
     request: Request = .{},
     response: Response = .{},
     timeout: Timeout = .{},
-    cors: ?CORS = null,
     thread_pool: ThreadPool = .{},
     websocket: Websocket = .{},
 
@@ -50,13 +49,6 @@ pub const Config = struct {
         request: ?u32 = null,
         keepalive: ?u32 = null,
         request_count: ?u32 = null,
-    };
-
-    pub const CORS = struct {
-        origin: []const u8,
-        headers: ?[]const u8 = null,
-        methods: ?[]const u8 = null,
-        max_age: ?[]const u8 = null,
     };
 
     pub const Websocket = struct {

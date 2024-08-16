@@ -13,6 +13,7 @@ pub fn Config(comptime Handler: type, comptime Action: type) type {
     return struct {
         handler: ?Handler = null,
         dispatcher: ?Dispatcher = null,
+        middlewares: []const httpz.Middleware(Handler) = &.{},
     };
 }
 
@@ -24,7 +25,6 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
     const C = Config(Handler, Action);
 
     return struct {
-        _allocator: Allocator,
         _get: P,
         _put: P,
         _post: P,
@@ -33,35 +33,27 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
         _trace: P,
         _delete: P,
         _options: P,
+        _allocator: Allocator,
         _default_handler: Handler,
         _default_dispatcher: Dispatcher,
 
         const Self = @This();
 
+        // We expect allocator to be an Arena
         pub fn init(allocator: Allocator, default_dispatcher: Dispatcher, default_handler: Handler) !Self {
-            const arena = try allocator.create(std.heap.ArenaAllocator);
-            arena.* = std.heap.ArenaAllocator.init(allocator);
-            const aa = arena.allocator();
-
             return Self{
-                ._allocator = aa,
+                ._allocator = allocator,
                 ._default_handler = default_handler,
                 ._default_dispatcher = default_dispatcher,
-                ._get = try P.init(aa),
-                ._head = try P.init(aa),
-                ._post = try P.init(aa),
-                ._put = try P.init(aa),
-                ._patch = try P.init(aa),
-                ._trace = try P.init(aa),
-                ._delete = try P.init(aa),
-                ._options = try P.init(aa),
+                ._get = try P.init(allocator),
+                ._head = try P.init(allocator),
+                ._post = try P.init(allocator),
+                ._put = try P.init(allocator),
+                ._patch = try P.init(allocator),
+                ._trace = try P.init(allocator),
+                ._delete = try P.init(allocator),
+                ._options = try P.init(allocator),
             };
-        }
-
-        pub fn deinit(self: *Self) void {
-            const arena: *std.heap.ArenaAllocator = @ptrCast(@alignCast(self._allocator.ptr));
-            arena.deinit();
-            arena.child_allocator.destroy(arena);
         }
 
         pub fn group(self: *Self, prefix: []const u8, config: C) Group(Handler, Action) {
@@ -215,6 +207,7 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
         fn addRoute(self: *Self, root: *P, path: []const u8, action: Action, config: C) !void {
             const da = DispatchableAction{
                 .action = action,
+                .middlewares = config.middlewares,
                 .handler = config.handler orelse self._default_handler,
                 .dispatcher = config.dispatcher orelse self._default_dispatcher,
             };
@@ -554,11 +547,11 @@ fn getRoute(comptime A: type, root: *const Part(A), url: []const u8, params: *Pa
 
 const t = @import("t.zig");
 test "route: root" {
-    var params = try Params.init(t.allocator, 5);
-    defer params.deinit(t.allocator);
+    defer t.reset();
 
-    var router = Router(void, httpz.Action(void)).init(t.allocator, testDispatcher1, {}) catch unreachable;
-    defer router.deinit();
+    var params = try Params.init(t.arena.allocator(), 5);
+    var router = Router(void, httpz.Action(void)).init(t.arena.allocator(), testDispatcher1, {}) catch unreachable;
+
     router.get("/", testRoute1);
     router.put("/", testRoute2);
     router.post("", testRoute3);
@@ -584,11 +577,11 @@ test "route: root" {
 }
 
 test "route: static" {
-    var params = try Params.init(t.allocator, 5);
-    defer params.deinit(t.allocator);
+    defer t.reset();
 
-    var router = Router(void, httpz.Action(void)).init(t.allocator, testDispatcher1, {}) catch unreachable;
-    defer router.deinit();
+    var params = try Params.init(t.arena.allocator(), 5);
+    var router = Router(void, httpz.Action(void)).init(t.arena.allocator(), testDispatcher1, {}) catch unreachable;
+
     router.get("hello/world", testRoute1);
     router.get("/over/9000/", testRoute2);
 
@@ -621,11 +614,11 @@ test "route: static" {
 }
 
 test "route: params" {
-    var params = try Params.init(t.allocator, 5);
-    defer params.deinit(t.allocator);
+    defer t.reset();
 
-    var router = Router(void, httpz.Action(void)).init(t.allocator, testDispatcher1, {}) catch unreachable;
-    defer router.deinit();
+    var params = try Params.init(t.arena.allocator(), 5);
+    var router = Router(void, httpz.Action(void)).init(t.arena.allocator(), testDispatcher1, {}) catch unreachable;
+
     router.get("/:p1", testRoute1);
     router.get("/users/:p2", testRoute2);
     router.get("/users/:p2/fav", testRoute3);
@@ -688,11 +681,11 @@ test "route: params" {
 }
 
 test "route: glob" {
-    var params = try Params.init(t.allocator, 5);
-    defer params.deinit(t.allocator);
+    defer t.reset();
 
-    var router = Router(void, httpz.Action(void)).init(t.allocator, testDispatcher1, {}) catch unreachable;
-    defer router.deinit();
+    var params = try Params.init(t.arena.allocator(), 5);
+    var router = Router(void, httpz.Action(void)).init(t.arena.allocator(), testDispatcher1, {}) catch unreachable;
+
     router.get("/*", testRoute1);
     router.get("/users/*", testRoute2);
     router.get("/users/*/test", testRoute3);
