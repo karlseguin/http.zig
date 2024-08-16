@@ -254,7 +254,7 @@ pub fn Server(comptime H: type) type {
 
         pub fn deinit(self: *Self) void {
             self.allocator.free(self._signals);
-            self._router.deinit(self.allocator);
+            self._router.deinit();
             self._thread_pool.deinit();
             self._websocket_state.deinit();
         }
