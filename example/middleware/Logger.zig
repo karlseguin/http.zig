@@ -14,12 +14,19 @@ const Logger = @This();
 
 query: bool,
 
-// Must define an `init` method, which will accept your Congif
+// Must define an `init` method, which will accept your Config
+// Alternatively, you can define a init(config: Config, mc: httpz.MiddlewareConfig)
+// here mc will give you access to the server's allocator and arena
 pub fn init(config: Config) Logger {
     return .{
         .query = config.query,
     };
 }
+
+// optionally you can define an "deinit" method
+// pub fn deinit(self: *Logger) void {
+
+// }
 
 // Must define an `execute` method. `self` doesn't have to be `const`, but
 // you're responsible for making your middleware thread-safe.

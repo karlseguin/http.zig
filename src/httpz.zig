@@ -176,6 +176,7 @@ pub fn DispatchableAction(comptime Handler: type, comptime ActionArg: type) type
 pub fn Middleware(comptime H: type) type {
     return struct {
         ptr: *anyopaque,
+        deinitFn: *const fn (ptr: *anyopaque) void,
         executeFn: *const fn (ptr: *anyopaque, req: *Request, res: *Response, executor: *Server(H).Executor) anyerror!void,
 
         const Self = @This();
@@ -185,6 +186,13 @@ pub fn Middleware(comptime H: type) type {
             const ptr_info = @typeInfo(T);
 
             const gen = struct {
+                pub fn deinit(pointer: *anyopaque) void {
+                    const self: T = @ptrCast(@alignCast(pointer));
+                    if (std.meta.hasMethod(T, "deinit")) {
+                        return ptr_info.Pointer.child.deinit(self);
+                    }
+                }
+
                 pub fn execute(pointer: *anyopaque, req: *Request, res: *Response, executor: *Server(H).Executor) anyerror!void {
                     const self: T = @ptrCast(@alignCast(pointer));
                     return ptr_info.Pointer.child.execute(self, req, res, executor);
@@ -193,11 +201,15 @@ pub fn Middleware(comptime H: type) type {
 
             return .{
                 .ptr = ptr,
+                .deinitFn = gen.deinit,
                 .executeFn = gen.execute,
             };
         }
 
-        // This is the same as before
+        pub fn deinit(self: Self) void {
+            self.deinitFn(self.ptr);
+        }
+
         pub fn execute(self: Self, req: *Request, res: *Response, executor: *Server(H).Executor) !void {
             return self.executeFn(self.ptr, req, res, executor);
         }
@@ -208,6 +220,11 @@ pub fn Middleware(comptime H: type) type {
 // the code to compile.
 const DummyWebsocketHandler = struct {
     pub fn clientMessage(_: DummyWebsocketHandler, _: []const u8) !void {}
+};
+
+pub const MiddlewareConfig = struct {
+    arena: Allocator,
+    allocator: Allocator,
 };
 
 pub fn Server(comptime H: type) type {
@@ -236,6 +253,7 @@ pub fn Server(comptime H: type) type {
         _signals: []posix.fd_t,
         _max_request_per_connection: u64,
         _websocket_state: ws.WorkerState,
+        _middlewares: std.SinglyLinkedList(Middleware(H)),
 
         const Self = @This();
 
@@ -286,6 +304,7 @@ pub fn Server(comptime H: type) type {
                 .arena = arena.allocator(),
                 ._mut = .{},
                 ._cond = .{},
+                ._middlewares = .{},
                 ._signals = signals,
                 ._thread_pool = thread_pool,
                 ._websocket_state = websocket_state,
@@ -295,8 +314,15 @@ pub fn Server(comptime H: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+
             self._thread_pool.stop();
             self._websocket_state.deinit();
+
+            var node = self._middlewares.first;
+            while (node) |n| {
+                n.data.deinit();
+                node = n.next;
+            }
 
             const arena: *std.heap.ArenaAllocator = @ptrCast(@alignCast(self.arena.ptr));
             arena.deinit();
@@ -530,10 +556,27 @@ pub fn Server(comptime H: type) type {
         }
 
         pub fn middleware(self: *Self, comptime M: type, config: M.Config) !Middleware(H) {
-            const m = try self.arena.create(M);
-            errdefer self.arena.destroy(m);
-            m.* = M.init(config);
-            return Middleware(H).init(m);
+            const arena = self.arena;
+
+            const node = try arena.create(std.SinglyLinkedList(Middleware(H)).Node);
+            errdefer arena.destroy(node);
+
+            const m = try arena.create(M);
+            errdefer arena.destroy(m);
+            switch (comptime @typeInfo(@TypeOf(M.init)).Fn.params.len) {
+                1 => m.* = M.init(config),
+                2 => M.* = M.init(config, MiddlewareConfig{
+                    .arena = arena,
+                    .allocator = self.allocator,
+                }),
+                else => @compileError(@typeName(M) ++ ".init should accept 1 or 2 parameters"),
+            }
+
+            const iface = Middleware(H).init(m);
+            node.data = iface;
+            self._middlewares.prepend(node);
+
+            return iface;
         }
 
         pub const Executor = struct {
