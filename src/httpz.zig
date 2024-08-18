@@ -564,8 +564,8 @@ pub fn Server(comptime H: type) type {
             const m = try arena.create(M);
             errdefer arena.destroy(m);
             switch (comptime @typeInfo(@TypeOf(M.init)).Fn.params.len) {
-                1 => m.* = M.init(config),
-                2 => M.* = M.init(config, MiddlewareConfig{
+                1 => m.* = try M.init(config),
+                2 => m.* = try M.init(config, MiddlewareConfig{
                     .arena = arena,
                     .allocator = self.allocator,
                 }),
@@ -733,36 +733,44 @@ test "tests:beforeAll" {
     {
         default_server = try Server(void).init(ga, .{.port = 5992}, {});
 
-        var middlewares = try default_server.arena.alloc(Middleware(void), 1);
-        middlewares[0] = try default_server.middleware(middleware.Cors, .{
+        // only need to do this because we're using listenInNewThread instead
+        // of blocking here. So the array to hold the middleware needs to outlive
+        // this function.
+        var cors = try default_server.arena.alloc(Middleware(void), 1);
+        cors[0] = try default_server.middleware(middleware.Cors, .{
             .max_age = "300",
             .methods = "GET,POST",
             .origin = "httpz.local",
             .headers = "content-type",
         });
 
+        var middlewares = try default_server.arena.alloc(Middleware(void), 2);
+        middlewares[0] = try default_server.middleware(TestMiddleware, .{.id = 100});
+        middlewares[1] = cors[0];
+
         var router = default_server.router();
         // router.get("/test/ws", testWS);
-        router.get("/fail", TestDummyHandler.fail);
-        router.get("/test/json", TestDummyHandler.jsonRes);
-        router.get("/test/query", TestDummyHandler.reqQuery);
-        router.get("/test/stream", TestDummyHandler.eventStream);
-        router.get("/test/chunked", TestDummyHandler.chunked);
-        router.allC("/test/cors", TestDummyHandler.jsonRes, .{.middlewares = middlewares});
-        router.allC("/test/dispatcher", TestDummyHandler.dispatchedAction, .{ .dispatcher = TestDummyHandler.routeSpecificDispacthcer });
+        router.get("/fail", TestDummyHandler.fail, .{});
+        router.get("/test/json", TestDummyHandler.jsonRes, .{});
+        router.get("/test/query", TestDummyHandler.reqQuery, .{});
+        router.get("/test/stream", TestDummyHandler.eventStream, .{});
+        router.get("/test/chunked", TestDummyHandler.chunked, .{});
+        router.all("/test/cors", TestDummyHandler.jsonRes, .{.middlewares = cors});
+        router.all("/test/middlewares", TestDummyHandler.middlewares, .{.middlewares = middlewares});
+        router.all("/test/dispatcher", TestDummyHandler.dispatchedAction, .{ .dispatcher = TestDummyHandler.routeSpecificDispacthcer });
         test_server_threads[0] = try default_server.listenInNewThread();
     }
 
     {
         dispatch_default_server = try Server(*TestHandlerDefaultDispatch).init(ga, .{ .port = 5993 }, &test_handler_default_dispatch1);
         var router = dispatch_default_server.router();
-        router.get("/", TestHandlerDefaultDispatch.echo);
-        router.get("/write/*", TestHandlerDefaultDispatch.echoWrite);
-        router.get("/fail", TestHandlerDefaultDispatch.fail);
-        router.post("/login", TestHandlerDefaultDispatch.echo);
-        router.get("/test/body/cl", TestHandlerDefaultDispatch.clBody);
-        router.get("/test/headers", TestHandlerDefaultDispatch.headers);
-        router.all("/api/:version/users/:UserId", TestHandlerDefaultDispatch.params);
+        router.get("/", TestHandlerDefaultDispatch.echo, .{});
+        router.get("/write/*", TestHandlerDefaultDispatch.echoWrite, .{});
+        router.get("/fail", TestHandlerDefaultDispatch.fail, .{});
+        router.post("/login", TestHandlerDefaultDispatch.echo, .{});
+        router.get("/test/body/cl", TestHandlerDefaultDispatch.clBody, .{});
+        router.get("/test/headers", TestHandlerDefaultDispatch.headers, .{});
+        router.all("/api/:version/users/:UserId", TestHandlerDefaultDispatch.params, .{});
 
         var admin_routes = router.group("/admin/", .{ .dispatcher = TestHandlerDefaultDispatch.dispatch2, .handler = &test_handler_default_dispatch2 });
         admin_routes.get("/users", TestHandlerDefaultDispatch.echo);
@@ -778,14 +786,14 @@ test "tests:beforeAll" {
     {
         dispatch_server = try Server(*TestHandlerDispatch).init(ga, .{ .port = 5994 }, &test_handler_dispatch);
         var router = dispatch_server.router();
-        router.get("/", TestHandlerDispatch.root);
+        router.get("/", TestHandlerDispatch.root, .{});
         test_server_threads[2] = try dispatch_server.listenInNewThread();
     }
 
     {
         dispatch_action_context_server = try Server(*TestHandlerDispatchContext).init(ga, .{ .port = 5995 }, &test_handler_disaptch_context);
         var router = dispatch_action_context_server.router();
-        router.get("/", TestHandlerDispatchContext.root);
+        router.get("/", TestHandlerDispatchContext.root, .{});
         test_server_threads[3] = try dispatch_action_context_server.listenInNewThread();
     }
 
@@ -794,7 +802,7 @@ test "tests:beforeAll" {
         // hit our reset path.
         reuse_server = try Server(void).init(ga, .{ .port = 5996, .workers = .{ .count = 1, .min_conn = 1, .max_conn = 1 } }, {});
         var router = reuse_server.router();
-        router.get("/test/writer", TestDummyHandler.reuseWriter);
+        router.get("/test/writer", TestDummyHandler.reuseWriter, .{});
         test_server_threads[4] = try reuse_server.listenInNewThread();
     }
 
@@ -806,7 +814,7 @@ test "tests:beforeAll" {
     {
         websocket_server = try Server(TestWebsocketHandler).init(ga, .{ .port = 5998 }, TestWebsocketHandler{});
         var router = websocket_server.router();
-        router.get("/ws", TestWebsocketHandler.upgrade);
+        router.get("/ws", TestWebsocketHandler.upgrade, .{});
         test_server_threads[6] = try websocket_server.listenInNewThread();
     }
 
@@ -1002,6 +1010,20 @@ test "httpz: route-specific dispatcher" {
 
     var buf: [200]u8 = undefined;
     try t.expectString("HTTP/1.1 200 \r\ndispatcher: test-dispatcher-1\r\nContent-Length: 6\r\n\r\naction", testReadAll(stream, &buf));
+}
+
+test "httpz: middlewares" {
+    const stream = testStream(5992);
+    defer stream.close();
+
+    {
+        try stream.writeAll("GET /test/middlewares HTTP/1.1\r\n\r\n");
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try res.expectJson(.{ .v1 = "tm1-100", .v2 = "tm2-100" });
+        try t.expectString("httpz.local", res.headers.get("Access-Control-Allow-Origin").?);
+    }
 }
 
 test "httpz: CORS" {
@@ -1416,6 +1438,14 @@ const TestDummyHandler = struct {
         return res.directWriter().writeAll("action");
     }
 
+
+    fn middlewares(req: *Request, res: *Response) !void {
+        return res.json(.{
+            .v1 = TestMiddleware.value1(req),
+            .v2 = TestMiddleware.value2(req),
+        }, .{});
+    }
+
     // called by the re-use server, but put here because, like the default server
     // this is a handler-less server
     fn reuseWriter(req: *Request, res: *Response) !void {
@@ -1570,5 +1600,44 @@ const TestWebsocketHandler = struct {
             res.status = 500;
             res.body = "invalid websocket";
         }
+    }
+};
+
+
+const TestMiddleware = struct {
+    const Config = struct {
+        id: i32,
+    };
+
+    allocator: Allocator,
+    v1: []const u8,
+    v2: []const u8,
+
+    fn init(config: TestMiddleware.Config, mc: MiddlewareConfig) !TestMiddleware {
+        return .{
+            .allocator = mc.allocator,
+            .v1 = try std.fmt.allocPrint(mc.arena, "tm1-{d}", .{config.id}),
+            .v2 = try std.fmt.allocPrint(mc.allocator, "tm2-{d}", .{config.id}),
+        };
+    }
+
+    pub fn deinit(self: *const TestMiddleware)void {
+        self.allocator.free(self.v2);
+    }
+
+    fn value1(req: *const Request) []const u8 {
+        const v: [*]u8 = @ptrCast(req.middlewares.get("text_middleware_1").?);
+        return v[0..7];
+    }
+
+    fn value2(req: *const Request) []const u8 {
+        const v: [*]u8 = @ptrCast(req.middlewares.get("text_middleware_2").?);
+        return v[0..7];
+    }
+
+    fn execute(self: *const TestMiddleware, req: *Request, _: *Response, executor: anytype) !void {
+        try req.middlewares.put("text_middleware_1", (try req.arena.dupe(u8, self.v1)).ptr);
+        try req.middlewares.put("text_middleware_2", (try req.arena.dupe(u8, self.v2)).ptr);
+        return executor.next();
     }
 };

@@ -15,7 +15,7 @@ max_age: ?[]const u8 = null,
 
 const Cors = @This();
 
-pub fn init(config: Config) Cors {
+pub fn init(config: Config) !Cors {
     return .{
         .origin = config.origin,
         .headers = config.headers,

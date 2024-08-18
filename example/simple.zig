@@ -20,13 +20,13 @@ pub fn start(allocator: Allocator) !void {
 
     const logger = try server.middleware(Logger, .{.query = true});
 
-    router.get("/", index);
-    router.get("/hello", hello);
-    router.getC("/json/hello/:name", json, .{.middlewares = &.{logger}});
-    router.get("/writer/hello/:name", writer);
-    router.get("/static_file", staticFile);
-    router.get("/cached_static_file", cachedStaticFile);
-    router.get("/metrics", metrics);
+    router.get("/", index, .{});
+    router.get("/hello", hello, .{});
+    router.get("/json/hello/:name", json, .{.middlewares = &.{logger}});
+    router.get("/writer/hello/:name", writer, .{});
+    router.get("/static_file", staticFile, .{});
+    router.get("/cached_static_file", cachedStaticFile, .{});
+    router.get("/metrics", metrics, .{});
     try server.listen();
 }
 

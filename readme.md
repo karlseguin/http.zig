@@ -14,7 +14,7 @@ pub fn main() !void {
   var server = try httpz.Server(void).init(allocator, .{.port = 5882}, {});
   
   var router = server.router();
-  router.get("/api/user/:id", getUser);
+  router.get("/api/user/:id", getUser, .{});
 
   // blocks
   try server.listen(); 
@@ -87,7 +87,7 @@ pub fn main() !void {
 
   var server = try httpz.Server(*App).init(allocator, .{.port = 5882}, &app);
   var router = server.router();
-  router.get("/api/user/:id", getUser);
+  router.get("/api/user/:id", getUser, .{});
   try server.listen();
 }
 
@@ -232,7 +232,7 @@ pub fn main() !void {
 
     // use get/post/put/head/patch/options/delete
     // you can also use "all" to attach to all methods
-    router.get("/api/user/:id", getUser);
+    router.get("/api/user/:id", getUser, .{});
 
     // start the server in the current thread, blocking.
     try server.listen(); 
@@ -525,27 +525,41 @@ These functions can all `@panic` as they allocate memory. Each function has an e
 
 ```zig
 // this can panic if it fails to create the route
-router.get("/", index);
+router.get("/", index, .{});
 
 // this returns a !void (which you can try/catch)
-router.tryGet("/", index);
+router.tryGet("/", index, .{});
 ```
 
-There is also a `getC` and `tryGetC` (and `putC` and `tryPutC`, and ...) that takes a 3rd parameter: the route configuration. Most of the time, this isn't needed. So, to streamline usage and given Zig's lack of overloading or default parameters, these awkward `xyzC` functions were created. Currently, the only route configuration value is to set a custom dispatcher for the specific route.
- See [Custom Dispatcher](#complex-use-case-2---custom-dispatcher) for more information.
+The 3rd parameter is a route configuration. It allows you to speficy a different `handler` and/or `dispatch` method and/or `middleware`.
+
+```zig
+// this can panic if it fails to create the route
+router.get("/", index, .{
+  .dispatcher = Handler.dispathAuth,
+  .handler = &auth_handler,
+  .middlewares = &.{cors_middleware},
+});
+```
+
+While configuration options can be set on a per-route basis as shown above, route groups should be used when applying the same configuration to a group of routes.
 
 ### Groups
 Defining a custom dispatcher or custom global data on each route can be tedious. Instead, consider using a router group:
 
 ```zig
-var admin_routes = router.group("/admin", .{.dispatcher = custom_admin_dispatcher, .ctx = custom_admin_data});
+var admin_routes = router.group("/admin", .{
+  .handler = &auth_handler,
+  .dispatcher = Handler.dispathAuth,
+  .middlewares = &.{cors_middleware},
+});
 admin_routes.get("/users", listUsers);
 admin_routs.delete("/users/:id", deleteUsers);
 ```
 
 The first parameter to `group` is a prefix to prepend to each route in the group. An empty prefix is acceptable.
 
-The second parameter is the same configuration object given to the `getC`, `putC`, etc. routing variants. All configuration values are optional and, if omitted, the default configured value will be used.
+All configuration values are optional and, if omitted, the default configured value will be used.
 
 ### Casing
 You **must** use a lowercase route. You can use any casing with parameter names, as long as you use that same casing when getting the parameter.
@@ -557,7 +571,7 @@ Routing supports parameters, via `:CAPTURE_NAME`. The captured values are availa
 You can glob an individual path segment, or the entire path suffix. For a suffix glob, it is important that no trailing slash is present.
 
 ```zig
-// prefer using `server.notFound(not_found)` than a global glob.
+// prefer using a custom `notFound` handler than a global glob.
 router.all("/*", not_found, .{});
 router.get("/api/*/debug", .{})
 ```
@@ -686,14 +700,6 @@ try httpz.listen(allocator, &router, .{
         .buffer_size = 8192,
     },
 
-    // defaults to null
-    .cors = {
-        .origin: []const u8,  // required if cors is passed
-        .headers: ?[]const u8,
-        .methods: ?[]const u8,
-        .max_age: ?[]const u8,
-    },
-
     // options for tweaking request processing
     .request = .{
         // Maximum body size that we'll process. We can allocate up 
@@ -805,14 +811,6 @@ kqueue (BSD, MacOS) or epoll (Linux) are used on supported platforms. On all oth
 
 The comptime-safe, `httpz.blockingMode() bool` function can be called to determine which mode httpz is running in (when it returns `true`, then you're running the simpler blocking mode).
 
-It is possible to force blocking mode by adding the <code>force_blocking = true</code> build option in your build.zig (it is **not** possible to force non blocking mode)
-
-```zig
-var httpz_module =  b.dependency("httpz", dep_opts);
-const options = b.addOptions();
-options.addOption(bool, "force_blocking", true);
-httpz_module.addOptions("build", options);
-```
 
 While you should always run httpz behind a reverse proxy, it's particularly important to do so in blocking mode due to the ease with which external connections can DOS the server.
 
@@ -820,7 +818,7 @@ In blocking mode, `config.workers.count` is hard-coded to 1. (This worker does c
 
 In non-blocking mode, if `config.workers.count = 2` and `config.thread_pool.count = 4`, then you'll have 6 threads: 2 threads that read+parse requests and send replies, and 4 threads to execute application code.
 
-In blocking more, the same config will also use 6 threads, but there will only be: 1 thread that accepts connections, and 5 threads to read+parse requests, send replies and execute application code.
+In blocking mode, the same config will also use 6 threads, but there will only be: 1 thread that accepts connections, and 5 threads to read+parse requests, send replies and execute application code.
 
 The goal is for the same configuration to result in the same # of threads regardless of the mode, and to have more thread_pool threads in blocking mode since they do more work.
 

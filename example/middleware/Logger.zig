@@ -17,7 +17,7 @@ query: bool,
 // Must define an `init` method, which will accept your Config
 // Alternatively, you can define a init(config: Config, mc: httpz.MiddlewareConfig)
 // here mc will give you access to the server's allocator and arena
-pub fn init(config: Config) Logger {
+pub fn init(config: Config) !Logger {
     return .{
         .query = config.query,
     };
