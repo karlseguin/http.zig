@@ -16,3 +16,7 @@ tb:
 .PHONY: s
 s:
 	zig build run -freference-trace
+
+.phony: d
+d:
+	cd docs && npx @11ty/eleventy --serve --port 5300
