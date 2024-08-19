@@ -34,7 +34,7 @@ If you're coming from a previous version, I've made some breaking changes recent
 ```zig
 .dependencies = .{
   .httpz = .{
-    .url = "git+https://github.com/karlseguin/httpz.zig#master",
+    .url = "git+https://github.com/karlseguin/http.zig#master",
     .hash = {{ actual_hash string, remove this line before 'zig build' to get actual hash }},
   },
 },
