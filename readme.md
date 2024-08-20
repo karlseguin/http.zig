@@ -652,7 +652,7 @@ This seems like an unnecessarily expensive thing to do, on each request, when, i
 # Middlewares
 In general, use a [custom dispatch](#custom-dispatch) function to apply custom logic, such as logging, authentication and authorization. If you have complex route-specific logic, middleware can also be leveraged.
 
-A middleware is a struct which exposes a nested `Config` type, a public `init` function and a public `execute` method. It can optionally define a `deinit` method. See the built-in [CORS middleware](https://github.com/karlseguin/http.zig/blob/master/src/middleware/Cors.zig) or the sample [logger middleware](https://github.com/karlseguin/http.zig/blob/middlewares/example/middleware/Logger.zig) for examples.
+A middleware is a struct which exposes a nested `Config` type, a public `init` function and a public `execute` method. It can optionally define a `deinit` method. See the built-in [CORS middleware](https://github.com/karlseguin/http.zig/blob/master/src/middleware/Cors.zig) or the sample [logger middleware](https://github.com/karlseguin/http.zig/blob/master/example/middleware/Logger.zig) for examples.
 
 A middleware instance is created using `server.middleware()` and can then be used with the router:
 
