@@ -14,7 +14,7 @@ pub fn main() !void {
   var server = try httpz.Server(void).init(allocator, .{.port = 5882}, {});
   
   var router = server.router();
-  router.get("/api/user/:id", getUser);
+  router.get("/api/user/:id", getUser, .{});
 
   // blocks
   try server.listen(); 
@@ -25,6 +25,27 @@ fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
   try res.json(.{.id = req.param("id").?, .name = "Teg"}, .{});
 }
 ```
+
+# Table of Contents
+* [Installation](#installation)
+* [Alternatives](#alternatives)
+* [Handler](#handler)
+  - [Custom Dispatch](#custom-dispatch)
+  - [Per-Request Context](#per-request-context)
+  - [Custom Not Found](#not-found)
+  - [Custom Error Handler](#error-handler)
+  - [Dispatch Takeover](#takover)
+* [Memory And Arenas](#memory-and-arenas)
+* [httpz.Request](httpzrequest)
+* [httpz.Response](httpzresponse)
+* [Router](#router)
+* [Middlewares](#middlewares)
+* [Configuration](#configuration)
+* [Metrics](#metrics)
+* [Testing](#testing)
+* [HTTP Compliance](#http-compliance)
+* [Server Side Events](#server-side-events)
+* [Websocket](#websocket)
 
 # Migration
 If you're coming from a previous version, I've made some breaking changes recently (largely to accomodate much better integration with websocket.zig). See the [Migration Wiki](https://github.com/karlseguin/http.zig/wiki/Migration) for more details.
@@ -53,14 +74,14 @@ The library tracks Zig master. If you're using a specific version of Zig, use th
 # Alternatives
 If you're looking for a higher level web framework with more included functionality, consider [JetZig](https://www.jetzig.dev/) which is built on top of httpz.
 
-# Why not std.http.Server
+## Why not std.http.Server
 `std.http.Server` is very slow and assumes well-behaved clients.
 
 There are many Zig HTTP server implementations. Most wrap `std.http.Server` and tend to be slow. Benchmark it, you'll see. A few wrap C libraries and are faster (though some of these are slow too!). 
 
 http.zig is written in Zig, without using `std.http.Server`. On an M2, a basic request can hit 140K requests per seconds.
 
-# Usage
+# Handler
 When a non-void Handler is used, the value given to `Server(H).init` is passed to every action. This is how application-specific data can be passed into your actions.
 
 For example, using [pg.zig](https://github.com/karlseguin/pg.zig), we can make a database connection pool available to each action:
@@ -84,10 +105,9 @@ pub fn main() !void {
     .db = db,
   };
 
-
   var server = try httpz.Server(*App).init(allocator, .{.port = 5882}, &app);
   var router = server.router();
-  router.get("/api/user/:id", getUser);
+  router.get("/api/user/:id", getUser, .{});
   try server.listen();
 }
 
@@ -112,18 +132,18 @@ fn getUser(app: *App, req: *httpz.Request, res: *httpz.Response) !void {
 }
 ```
 
-## Dispatch
+## Custom Dispatch
 Beyond sharing state, your custom handler can be used to control how httpz behaves. By defining a public `dispatch` method you can control how (or even **if**) actions are executed. For example, to log timing, you could do:
 
 ```zig
 const App = struct {
   pub fn dispatch(self: *App, action: httpz.Action(*App), req: *httpz.Request, res: *httpz.Response) !void {
-    const start = std.time.microTimestamp();
+    var timer = try std.time.Timer.start();
 
     // your `dispatch` doesn't _have_ to call the action
     try action(self, req, res);
 
-    const elapsed = std.time.microTimestamp() - start;
+    const elapsed = timer.lap() / 1000; // ns -> us
     std.log.info("{} {s} {d}", .{req.method, req.url.path, elapsed});
   }
 };
@@ -232,7 +252,7 @@ pub fn main() !void {
 
     // use get/post/put/head/patch/options/delete
     // you can also use "all" to attach to all methods
-    router.get("/api/user/:id", getUser);
+    router.get("/api/user/:id", getUser, .{});
 
     // start the server in the current thread, blocking.
     try server.listen(); 
@@ -286,7 +306,7 @@ Alternatively, you can explicitly call `res.write()`. Once `res.write()` returns
 
 `res.arena` is actually a configurable-sized thread-local buffer that fallsback to an `std.heap.ArenaAllocator`. In other words, it's fast so it should be your first option for data that needs to live only until your action exits.
 
-## httpz.Request
+# httpz.Request
 The following fields are the most useful:
 
 * `method` - an httpz.Method enum
@@ -294,7 +314,7 @@ The following fields are the most useful:
 * `url.path` - the path of the request (`[]const u8`)
 * `address` - the std.net.Address of the client
 
-### Path Parameters
+## Path Parameters
 The `param` method of `*Request` returns an `?[]const u8`. For example, given the following path:
 
 ```zig
@@ -321,7 +341,7 @@ router.put("/api/use/favorite/:id", user.updateFavorite, .{});
 
 In which case the optional return value of `param` might be useful.
 
-### Header Values
+## Header Values
 Similar to `param`, header values can be fetched via the `header` function, which also returns a `?[]const u8`:
 
 ```zig
@@ -344,7 +364,7 @@ while (it.next()) |kv| {
 }
 ```
 
-### QueryString
+## QueryString
 The framework does not automatically parse the query string. Therefore, its API is slightly different.
 
 ```zig
@@ -370,10 +390,10 @@ while (it.next()) |kv| {
 }
 ```
 
-### Body
+## Body
 The body of the request, if any, can be accessed using `req.body()`. This returns a `?[]const u8`.
 
-#### Json Body
+### Json Body
 The `req.json(TYPE)` function is a wrapper around the `body()` function which will call `std.json.parse` on the body. This function does not consider the content-type of the request and will try to parse any body.
 
 ```zig
@@ -382,7 +402,7 @@ if (try req.json(User)) |user| {
 }
 ```
 
-#### JsonValueTree Body
+### JsonValueTree Body
 The `req.jsonValueTree()` function is a wrapper around the `body()` function which will call `std.json.Parse` on the body, returning a `!?std.jsonValueTree`. This function does not consider the content-type of the request and will try to parse any body.
 
 ```zig
@@ -393,7 +413,7 @@ if (try req.jsonValueTree()) |t| {
 }
 ```
 
-#### JsonObject Body
+### JsonObject Body
 The even more specific `jsonObject()` function will return an `std.json.ObjectMap` provided the body is a map
 
 ```zig
@@ -404,7 +424,7 @@ if (try req.jsonObject()) |t| {
 }
 ```
 
-### Form Data
+## Form Data
 The body of the request, if any, can be parsed as a "x-www-form-urlencoded "value  using `req.formData()`. The `request.max_form_count` configuration value must be set to the maximum number of form fields to support. This defaults to 0.
 
 This behaves similarly to `query()`.
@@ -425,7 +445,7 @@ while (it.next()) |kv| {
 
 Once this function is called, `req.multiFormData()` will no longer work (because the body is assumed parsed).
 
-### Multi Part Form Data
+## Multi Part Form Data
 Similar to the above, `req.multiFormData()` can be called to parse requests with a "multipart/form-data" content type. The `request.max_multiform_count` configuration value must be set to the maximum number of form fields to support. This defaults to 0.
 
 This is a different API than `formData` because the return type is different. Rather than a simple string=>value type, the multi part form data value consists of a `value: []const u8` and a `filename: ?[]const u8`.
@@ -449,17 +469,17 @@ Once this function is called, `req.formData()` will no longer work (because the 
 
 Advance warning: This is one of the few methods that can modify the request in-place. For most people this won't be an issue, but if you use `req.body()` and `req.multiFormData()`, say to log the raw body, the content-disposition field names are escaped in-place. It's still safe to use `req.body()` but any  content-disposition name that was escaped will be a little off.
 
-## httpz.Response
+# httpz.Response
 The following fields are the most useful:
 
 * `status` - set the status code, by default, each response starts off with a 200 status code
 * `content_type` - an httpz.ContentType enum value. This is a convenience and optimization over using the `res.header` function.
 * `arena` - A fast thread-local buffer that fallsback to an ArenaAllocator, same as `req.arena`.
 
-### Body
+## Body
 The simplest way to set a body is to set `res.body` to a `[]const u8`. **However** the provided value must remain valid until the body is written, which happens after the function exists or when `res.write()` is explicitly called.
 
-### Dynamic Content
+## Dynamic Content
 You can use the `res.arena` allocator to create dynamic content:
 
 ```zig
@@ -470,7 +490,7 @@ res.body = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
 
 Memory allocated with `res.arena` will exist until the response is sent.
 
-### io.Writer
+## io.Writer
 `res.writer()` returns an `std.io.Writer`. Various types support writing to an io.Writer. For example, the built-in JSON stream writer can use this writer:
 
 ```zig
@@ -481,12 +501,12 @@ try ws.emitString(req.param("name").?);
 try ws.endObject();
 ```
 
-### JSON
+## JSON
 The `res.json` function will set the content_type to `httpz.ContentType.JSON` and serialize the provided value using `std.json.stringify`. The 2nd argument to the json function is the `std.json.StringifyOptions` to pass to the `stringify` function.
 
 This function uses `res.writer()` explained above.
 
-### Header Value
+## Header Value
 Set header values using the `res.header(NAME, VALUE)` function:
 
 ```zig
@@ -503,7 +523,7 @@ try res.headerOpts("Location", location, .{.dupe_value = true});
 
 `HeaderOpts` currently supports `dupe_name: bool` and `dupe_value: bool`, both default to `false`.
 
-### Writing
+## Writing
 By default, httpz will automatically flush your response. In more advance cases, you can use `res.write()` to explicitly flush it. This is useful in cases where you have resources that need to be freed/released only after the response is written. For example, my [LRU cache](https://github.com/karlseguin/cache.zig) uses atomic referencing counting to safely allow concurrent access to cached data. This requires callers to "release" the cached entry:
 
 ```zig
@@ -518,46 +538,87 @@ pub fn info(app: *MyApp, _: *httpz.Request, res: *httpz.Response) !void {
 }
 ```
 
-## Router
+# Router
 You can use the `get`, `put`, `post`, `head`, `patch`, `trace`, `delete` or `options` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
 
 These functions can all `@panic` as they allocate memory. Each function has an equivalent `tryXYZ` variant which will return an error rather than panicking:
 
 ```zig
 // this can panic if it fails to create the route
-router.get("/", index);
+router.get("/", index, .{});
 
 // this returns a !void (which you can try/catch)
-router.tryGet("/", index);
+router.tryGet("/", index, .{});
 ```
 
-There is also a `getC` and `tryGetC` (and `putC` and `tryPutC`, and ...) that takes a 3rd parameter: the route configuration. Most of the time, this isn't needed. So, to streamline usage and given Zig's lack of overloading or default parameters, these awkward `xyzC` functions were created. Currently, the only route configuration value is to set a custom dispatcher for the specific route.
- See [Custom Dispatcher](#complex-use-case-2---custom-dispatcher) for more information.
+The 3rd parameter is a route configuration. It allows you to speficy a different `handler` and/or `dispatch` method and/or `middleware`.
 
-### Groups
+```zig
+// this can panic if it fails to create the route
+router.get("/", index, .{
+  .dispatcher = Handler.dispathAuth,
+  .handler = &auth_handler,
+  .middlewares = &.{cors_middleware},
+});
+```
+
+## Configuration
+The last parameter to the various `router` methods is a route configuration. In many cases, you'll probably use an empty configuration (`.{}`). The route configuration has three fields:
+
+* `dispatcher` - The dispatch method to use. This overrides the default dispatcher, which is either httpz built-in dispatcher or [your handler's `dispatch` method](#custom-dispatch).
+* `handler` - The handler instance to use. The default handler is the 3rd parameter passed to `Server(H).init` but you can override this on a route-per-route basis.
+* `middlewares` - A list of [middlewares](#middlewares) to run. By default, no middlewares are run.
+
+You can specify a separate configuration for each route. To change the configuration for a group of routes, you have two options. The first, is to directly change the router's `handler`, `dispatcher` and `middlewares` field. Any subsequent routes will use these values:
+
+```zig
+var server = try httpz.Server(Handler).init(allocator, .{.port = 5882}, &handler);
+  
+var router = server.router();
+
+// Will use Handler.dispatch on the &handler instance passed to init
+// No middleware
+router.get("/route1", route1, .{});
+
+router.dispatcher = Handler.dispathAuth;
+// uses the new dispatcher
+router.get("/route2", route2, .{}); 
+
+router.handler = &Handler{.public = true};
+// uses the new dispatcher + new handler
+router.get("/route3", route3, .{.handler = Handler.dispathAuth});
+```
+
+This approach is error prone though. New routes need to be carefully added in the correct order so that the desired handler, dispatcher and middlewares are used.
+
+A more scalable option is to use route groups.
+
+## Groups
 Defining a custom dispatcher or custom global data on each route can be tedious. Instead, consider using a router group:
 
 ```zig
-var admin_routes = router.group("/admin", .{.dispatcher = custom_admin_dispatcher, .ctx = custom_admin_data});
+var admin_routes = router.group("/admin", .{
+  .handler = &auth_handler,
+  .dispatcher = Handler.dispathAuth,
+  .middlewares = &.{cors_middleware},
+});
 admin_routes.get("/users", listUsers);
 admin_routs.delete("/users/:id", deleteUsers);
 ```
 
-The first parameter to `group` is a prefix to prepend to each route in the group. An empty prefix is acceptable.
+The first parameter to `group` is a prefix to prepend to each route in the group. An empty prefix is acceptable. Thus, route groups can be used to configure either a common prefix and/or a common configuration across multiple routes.
 
-The second parameter is the same configuration object given to the `getC`, `putC`, etc. routing variants. All configuration values are optional and, if omitted, the default configured value will be used.
-
-### Casing
+## Casing
 You **must** use a lowercase route. You can use any casing with parameter names, as long as you use that same casing when getting the parameter.
 
-### Parameters
+## Parameters
 Routing supports parameters, via `:CAPTURE_NAME`. The captured values are available via `req.params.get(name: []const u8) ?[]const u8`.  
 
-### Glob
+## Glob
 You can glob an individual path segment, or the entire path suffix. For a suffix glob, it is important that no trailing slash is present.
 
 ```zig
-// prefer using `server.notFound(not_found)` than a global glob.
+// prefer using a custom `notFound` handler than a global glob.
 router.all("/*", not_found, .{});
 router.get("/api/*/debug", .{})
 ```
@@ -571,7 +632,7 @@ router.get("/info/*", any_info, .{})
 
 A request for "/info/debug/all" will be routed to `any_info`, whereas a request for "/over/9000" will be routed to `not_found`.
 
-### Limitations
+## Limitations
 The router has several limitations which might not get fixed. These specifically resolve around the interaction of globs, parameters and static path segments.
 
 Given the following routes:
@@ -588,23 +649,40 @@ Globs interact similarly poorly with parameters and static path segments.
 Resolving this issue requires keeping a stack (or visiting the routes recursively), in order to back-out of a dead-end and trying a different path.
 This seems like an unnecessarily expensive thing to do, on each request, when, in my opinion, such route hierarchies are uncommon. 
 
-## CORS
-CORS requests can be satisfied through normal use of routing and response headers. However, for common cases, httpz can satisfy CORS requests directly by passing a `cors` object in the configuration. By default, the `cors` field is null and httpz will handle CORS request like any other.
+# Middlewares
+In general, use a [custom dispatch](#custom-dispatch) function to apply custom logic, such as logging, authentication and authorization. If you have complex route-specific logic, middleware can also be leveraged.
 
-When the `cors` object is set, the `origin` field must also be set. httpz will include an `Access-Control-Allow-Origin` header in every response. The configuration `headers`, `methods` and `max_age` can also be set in order to set the corresponding headers on a preflight request.
+A middleware is a struct which exposes a nested `Config` type, a public `init` function and a public `execute` method. It can optionally define a `deinit` method. See the built-in [CORS middleware](https://github.com/karlseguin/http.zig/blob/master/src/middleware/Cors.zig) or the sample [logger middleware](https://github.com/karlseguin/http.zig/blob/middlewares/example/middleware/Logger.zig) for examples.
+
+A middleware instance is created using `server.middleware()` and can then be used with the router:
 
 ```zig
-var srv = Server().init(allocator, .{.cors = .{
-    .origin = "httpz.local",
-    .headers = "content-type",
-    .methods = "GET,POST",
-    .max_age = "300"
-}}) catch unreachable;
+var server = try httpz.Server(void).init(allocator, .{.port = 5882}, {});
+
+// the middleware method takes the struct name and its configuration
+const cors = server.middleware(middlewares.Cors, .{
+  .origin = "https://www.openmymind.net/",
+});
+
+// applies these middlewares to any following route definitions
+router.middlewares = &.{cors};
+
+// and/or on a specific route (also available on a route group)
+router.get("/v1/users", .{.middlewares = &.{cors}});
 ```
 
-Only the `origin` field is required. The values given to the configuration are passed as-is to the appropriate preflight header.
+## Cors
+httpz comes with a built-in CORS middleware: `httpz.middlewares.Cors`. Its configuration is:
 
-## Configuration
+* `origin: []const u8`
+* `headers: ?[]const u8 = null`
+* `methods: ?[]const u8 = null`
+* `max_age: ?[]const u8 = null`
+
+The CORS middleware will include a `Access-Control-Allow-Origin: $origin` to every request. For an OPTIONS request where the `sec-fetch-mode` is set to `cors, the `Access-Control-Allow-Headers`, `Access-Control-Allow-Methods` and `Access-Control-Max-Age` response headers will optionally be set based on the configuration.
+
+
+# Configuration
 The second parameter given to `Server(H).init` is an `httpz.Config`. When running in <a href=#blocking-mode>blocking mode</a> (e.g. on Windows) a few of these behave slightly, but not drastically, different.
 
 There are many configuration options. 
@@ -686,14 +764,6 @@ try httpz.listen(allocator, &router, .{
         .buffer_size = 8192,
     },
 
-    // defaults to null
-    .cors = {
-        .origin: []const u8,  // required if cors is passed
-        .headers: ?[]const u8,
-        .methods: ?[]const u8,
-        .max_age: ?[]const u8,
-    },
-
     // options for tweaking request processing
     .request = .{
         // Maximum body size that we'll process. We can allocate up 
@@ -758,7 +828,28 @@ try httpz.listen(allocator, &router, .{
 });
 ```
 
-### Timeouts
+## Blocking Mode
+kqueue (BSD, MacOS) or epoll (Linux) are used on supported platforms. On all other platforms (most notably Windows), a more naive thread-per-connection with blocking sockets is used.
+
+The comptime-safe, `httpz.blockingMode() bool` function can be called to determine which mode httpz is running in (when it returns `true`, then you're running the simpler blocking mode).
+
+While you should always run httpz behind a reverse proxy, it's particularly important to do so in blocking mode due to the ease with which external connections can DOS the server.
+
+In blocking mode, `config.workers.count` is hard-coded to 1. (This worker does considerably less work than the non-blocking workers). If `config.workers.count` is > 1, than those extra workers will go towards `config.thread_pool.count`. In other words:
+
+In non-blocking mode, if `config.workers.count = 2` and `config.thread_pool.count = 4`, then you'll have 6 threads: 2 threads that read+parse requests and send replies, and 4 threads to execute application code.
+
+In blocking mode, the same config will also use 6 threads, but there will only be: 1 thread that accepts connections, and 5 threads to read+parse requests, send replies and execute application code.
+
+The goal is for the same configuration to result in the same # of threads regardless of the mode, and to have more thread_pool threads in blocking mode since they do more work.
+
+In blocking mode, `config.workers.large_buffer_count` defaults to the size of the thread pool.
+
+In blocking mode, `config.workers.max_conn` and `config.workers.min_conn` are ignored. The maximum number of connections is simply the size of the thread_pool.
+
+If you aren't using a reverse proxy, you should always set the `config.timeout.request`, `config.timeout.keepalive` and `config.timeout.request_count` settings. In blocking mode, consider using conservative values: say 5/5/5 (5 second request timeout, 5 second keepalive timeout, and 5 keepalive count). You can monitor the `httpz_timeout_active` metric to see if the request timeout is too low.
+
+## Timeouts
 The configuration settings under the `timeouts` section are designed to help protect the system against basic DOS attacks (say, by connecting and not sending data). However it is recommended that you leave these null (disabled) and use the appropriate timeout in your reverse proxy (e.g. NGINX). 
 
 The `timeout.request` is the time, in seconds, that a connection has to send a complete request. The `timeout.keepalive` is the time, in second, that a connection can stay connected without sending a request (after the initial request has been sent).
@@ -771,7 +862,7 @@ When the three are combined, it should be difficult for a problematic client to 
 
 If you're running httpz on Windows (or, more generally, where <code>httpz.blockingMode()</code> returns true), please <a href="#blocking-mode">read the section</a> as this mode of operation is more susceptible to DOS.
 
-## Metrics
+# Metrics
 A few basic metrics are collected using [metrics.zig](https://github.com/karlseguin/metrics.zig), a prometheus-compatible library. These can be written to an `std.io.Writer` using `try httpz.writeMetrics(writer)`. As an example:
 
 ```zig
@@ -799,36 +890,6 @@ The metrics are:
 * `httpz_invalid_request` - counts number of requests which httpz could not parse (where the request is invalid).
 * `httpz_header_too_big` - counts the number of requests which httpz rejects due to a header being too big (does not fit in `request.buffer_size` config).
 * `httpz_body_too_big` - counts the number of requests which httpz rejects due to a body being too big (is larger than `request.max_body_size` config).
-
-# Blocking Mode
-kqueue (BSD, MacOS) or epoll (Linux) are used on supported platforms. On all other platforms (most notably Windows), a more naive thread-per-connection with blocking sockets is used.
-
-The comptime-safe, `httpz.blockingMode() bool` function can be called to determine which mode httpz is running in (when it returns `true`, then you're running the simpler blocking mode).
-
-It is possible to force blocking mode by adding the <code>force_blocking = true</code> build option in your build.zig (it is **not** possible to force non blocking mode)
-
-```zig
-var httpz_module =  b.dependency("httpz", dep_opts);
-const options = b.addOptions();
-options.addOption(bool, "force_blocking", true);
-httpz_module.addOptions("build", options);
-```
-
-While you should always run httpz behind a reverse proxy, it's particularly important to do so in blocking mode due to the ease with which external connections can DOS the server.
-
-In blocking mode, `config.workers.count` is hard-coded to 1. (This worker does considerably less work than the non-blocking workers). If `config.workers.count` is > 1, than those extra workers will go towards `config.thread_pool.count`. In other words:
-
-In non-blocking mode, if `config.workers.count = 2` and `config.thread_pool.count = 4`, then you'll have 6 threads: 2 threads that read+parse requests and send replies, and 4 threads to execute application code.
-
-In blocking more, the same config will also use 6 threads, but there will only be: 1 thread that accepts connections, and 5 threads to read+parse requests, send replies and execute application code.
-
-The goal is for the same configuration to result in the same # of threads regardless of the mode, and to have more thread_pool threads in blocking mode since they do more work.
-
-In blocking mode, `config.workers.large_buffer_count` defaults to the size of the thread pool.
-
-In blocking mode, `config.workers.max_conn` and `config.workers.min_conn` are ignored. The maximum number of connections is simply the size of the thread_pool.
-
-If you aren't using a reverse proxy, you should always set the `config.timeout.request`, `config.timeout.keepalive` and `config.timeout.request_count` settings. In blocking mode, consider using conservative values: say 5/5/5 (5 second request timeout, 5 second keepalive timeout, and 5 keepalive count). You can monitor the `httpz_timeout_active` metric to see if the request timeout is too low.
 
 # Testing
 The `httpz.testing` namespace exists to help application developers setup an `*httpz.Request` and assert an `*httpz.Response`.

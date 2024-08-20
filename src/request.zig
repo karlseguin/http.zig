@@ -67,6 +67,11 @@ pub const Request = struct {
     // this arena. This is the same arena as response.arena.
     arena: Allocator,
 
+    // Arbitrary place for middlewares (or really anyone), to store data.
+    // Middleware can store data here while executing, and then provide a function
+    // to retrieved the [typed] data to the action.
+    middlewares: *std.StringHashMap(*anyopaque),
+
     pub const State = Self.State;
     pub const Config = Self.Config;
     pub const Reader = Self.Reader;
@@ -87,6 +92,7 @@ pub const Request = struct {
             .body_buffer = state.body,
             .body_len = state.body_len,
             .spare = state.buf[state.pos..],
+            .middlewares = &state.middlewares,
         };
     }
 
@@ -517,6 +523,8 @@ pub const State = struct {
 
     arena: *ArenaAllocator,
 
+    middlewares: std.StringHashMap(*anyopaque),
+
     const asUint = @import("url.zig").asUint;
 
     pub fn init(allocator: Allocator, arena: *ArenaAllocator, buffer_pool: *buffer.Pool, config: *const Config) !Request.State {
@@ -532,6 +540,7 @@ pub const State = struct {
             .arena = arena,
             .buffer_pool = buffer_pool,
             .max_body_size = config.max_body_size orelse 1_048_576,
+            .middlewares = std.StringHashMap(*anyopaque).init(allocator),
             .qs = try KeyValue.init(allocator, config.max_query_count orelse 32),
             .fd = try KeyValue.init(allocator, config.max_form_count orelse 0),
             .mfd = try MultiFormKeyValue.init(allocator, config.max_multiform_count orelse 0),
@@ -553,6 +562,7 @@ pub const State = struct {
         self.mfd.deinit(allocator);
         self.params.deinit(allocator);
         self.headers.deinit(allocator);
+        self.middlewares.deinit();
     }
 
     pub fn reset(self: *State) void {
@@ -575,6 +585,7 @@ pub const State = struct {
         self.mfd.reset();
         self.params.reset();
         self.headers.reset();
+        self.middlewares.clearRetainingCapacity();
     }
 
     // returns true if the header has been fully parsed

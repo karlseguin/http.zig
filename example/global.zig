@@ -9,7 +9,7 @@ pub fn start(allocator: Allocator) !void {
     var server = try httpz.Server(*Handler).init(allocator, .{ .port = 5883 }, &handler);
     defer server.deinit();
     var router = server.router();
-    router.get("/increment", increment);
+    router.get("/increment", increment, .{});
     return server.listen();
 }
 
