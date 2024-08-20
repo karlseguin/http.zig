@@ -30,10 +30,12 @@ pub fn execute(self: *const Cors, req: *httpz.Request, res: *httpz.Response, exe
         return executor.next();
     }
 
-    const mode = req.header("sec-fetch-mode") orelse return;
+    const mode = req.header("sec-fetch-mode") orelse {
+        return executor.next();
+    };
 
     if (std.mem.eql(u8, mode, "cors") == false) {
-        return;
+        return executor.next();
     }
 
     if (self.headers) |headers| {
