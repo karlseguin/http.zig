@@ -1,8 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const ws = @import("websocket").server;
 pub const testing = @import("testing.zig");
+pub const websocket = @import("websocket");
 
 pub const routing = @import("router.zig");
 pub const request = @import("request.zig");
@@ -218,7 +218,7 @@ pub fn Middleware(comptime H: type) type {
 
 // When no WebsocketHandler is specified, we give it a dummy handler just to get
 // the code to compile.
-const DummyWebsocketHandler = struct {
+pub const DummyWebsocketHandler = struct {
     pub fn clientMessage(_: DummyWebsocketHandler, _: []const u8) !void {}
 };
 
@@ -252,7 +252,7 @@ pub fn Server(comptime H: type) type {
         _thread_pool: *TP,
         _signals: []posix.fd_t,
         _max_request_per_connection: u64,
-        _websocket_state: ws.WorkerState,
+        _websocket_state: websocket.server.WorkerState,
         _middlewares: std.SinglyLinkedList(Middleware(H)),
 
         const Self = @This();
@@ -279,7 +279,7 @@ pub fn Server(comptime H: type) type {
 
             // do not pass arena.allocator to WorkerState, it needs to be able to
             // allocate and free at will.
-            var websocket_state = try ws.WorkerState.init(allocator, .{
+            var websocket_state = try websocket.server.WorkerState.init(allocator, .{
                 .max_message_size = config.websocket.max_message_size,
                 .buffers = .{
                     .small_size = config.websocket.small_buffer_size,
@@ -637,13 +637,13 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: an
 
     const http_conn = res.conn;
 
-    const ws_worker: *ws.Worker(H) = @ptrCast(@alignCast(http_conn.ws_worker));
+    const ws_worker: *websocket.server.Worker(H) = @ptrCast(@alignCast(http_conn.ws_worker));
 
     var hc = try ws_worker.createConn(http_conn.stream.handle, http_conn.address, worker.timestamp());
     errdefer ws_worker.cleanupConn(hc);
 
     hc.handler = try H.init(&hc.conn, ctx);
-    try http_conn.stream.writeAll(&ws.Handshake.createReply(key));
+    try http_conn.stream.writeAll(&websocket.Handshake.createReply(key));
     if (comptime std.meta.hasFn(H, "afterInit")) {
         const params = @typeInfo(@TypeOf(H.afterInit)).Fn.params;
         try if (comptime params.len == 1) hc.handler.?.afterInit() else hc.handler.?.afterInit(ctx);
@@ -1249,8 +1249,6 @@ test "websocket: invalid request" {
 }
 
 test "websocket: upgrade" {
-    const websocket = @import("websocket");
-
     const stream = testStream(5998);
     defer stream.close();
     try stream.writeAll("GET /ws HTTP/1.1\r\nContent-Length: 0\r\n");
@@ -1573,9 +1571,9 @@ const TestHandlerHandle = struct {
 const TestWebsocketHandler = struct {
     pub const WebsocketHandler = struct {
         ctx: u32,
-        conn: *ws.Conn,
+        conn: *websocket.Conn,
 
-        pub fn init(conn: *ws.Conn, ctx: u32) !WebsocketHandler {
+        pub fn init(conn: *websocket.Conn, ctx: u32) !WebsocketHandler {
             return .{
                 .ctx = ctx,
                 .conn = conn,

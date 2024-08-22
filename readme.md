@@ -689,7 +689,7 @@ There are many configuration options.
 
 `thread_pool.buffer_size` is the single most important value to tweak. Usage of `req.arena`, `res.arena`, `res.writer()` and `res.json()` all use a fallback allocator which first uses a fast thread-local buffer and then an underlying arena. The total memory this will require is `thread_pool.count * thread_pool.buffer_size`. Since `thread_pool.count` is usually small, a large `buffer_size` is reasonable.
 
-`request.buffer_size` must be large enough to fit the request header. Any extra space might be used to read the body. However, there can be up to `workers.count * workers.max_conn` pending requests, so a large `reuqest.buffer_size` can take up a lot of memory. Instead, consider keeping `request.buffer_size` only large enough for the header (plus a bit of overhead for decoding URL-escape values) and set `workers.large_buffer_size` to a reasonable size for your incoming request bodies. This will take `workers.count * workers.large_buffer_count * workers.large_buffer_size` memory. 
+`request.buffer_size` must be large enough to fit the request header. Any extra space might be used to read the body. However, there can be up to `workers.count * workers.max_conn` pending requests, so a large `request.buffer_size` can take up a lot of memory. Instead, consider keeping `request.buffer_size` only large enough for the header (plus a bit of overhead for decoding URL-escape values) and set `workers.large_buffer_size` to a reasonable size for your incoming request bodies. This will take `workers.count * workers.large_buffer_count * workers.large_buffer_size` memory. 
 
 Buffers for request bodies larger than `workers.large_buffer_size` but smaller than `request.max_body_size` will be dynamic allocated.
 
@@ -1011,44 +1011,42 @@ const StreamContext = struct {
 ```
 
 # Websocket
-http.zig integrates with [https://github.com/karlseguin/websocket.zig](https://github.com/karlseguin/websocket.zig) by calling `httpz.upgradeWebsocket()`. First, your handler must have a `WebsocketHandler` decleration which is the WebSocket handler type used by `websocket.Server(H)`.
+http.zig integrates with [https://github.com/karlseguin/websocket.zig](https://github.com/karlseguin/websocket.zig) by calling `httpz.upgradeWebsocket()`. First, your handler must have a `WebsocketHandler` declaration which is the WebSocket handler type used by `websocket.Server(H)`.
 
 ```zig
-const App = struct {
-    pub const WebsocketHandler = WebSocketHandler;
-};
+const websocket = httpz.websocket;
 
-// App-specific data you want to pass when initializing
-// your WebSocketHandler
-const WebsocketContext = struct {
+const Handler = struct {
+  // App-specific data you want to pass when initializing
+  // your WebSocketHandler
+  const WebsocketContext = struct {
 
-};
+  };
 
+  // See the websocket.zig documentation. But essentially this is your
+  // Application's wrapper around 1 websocket connection
+  pub const WebsocketHandler = struct {
+    conn: *websocket.Conn,
 
-// See the websocket.zig documantion. But essentially this is your
-// Application's wrapper around 1 websocket connection
-const WebsocketHandler = struct {
-  conn: *websocket.Conn,
-
-  // ctx is arbitrary data you passs to httpz.upgradeWebsocket
-  pub fn init(conn: *websocket.Conn, _: WebsocketContext) {
-    return .{
-      .conn =  conn,
+    // ctx is arbitrary data you passs to httpz.upgradeWebsocket
+    pub fn init(conn: *websocket.Conn, _: WebsocketContext) {
+      return .{
+        .conn =  conn,
+      }
     }
-  }
 
-  // echo back
-  pub fn clientMessage(self: *WebsocketHandler, data: []const u8) !void {
-      try self.conn.write(data);
-  }
-}
+    // echo back
+    pub fn clientMessage(self: *WebsocketHandler, data: []const u8) !void {
+        try self.conn.write(data);
+    }
+  }  
+};
 ```
 
-Which this in place, you can call httpz.upgradeWebsocket() within an action:
+With this in place, you can call httpz.upgradeWebsocket() within an action:
 
 ```zig
 fn ws(req: *httpz.Request, res: *httpz.Response) !void {
-
   if (try httpz.upgradeWebsocket(WebsocketHandler, req, res, WebsocketContext{}) == false) {
   // this was not a valid websocket handshake request
   // you should probably return with an error
@@ -1061,3 +1059,5 @@ fn ws(req: *httpz.Request, res: *httpz.Response) !void {
 ```
 
 In websocket.zig, `init` is passed a `websocket.Handshake`. This is not the case with the httpz integration - you are expected to do any necessary validation of the request in the action.
+
+It is an undefined behavior if `Handler.WebsocketHandler` is not the same type passed to `httpz.upgradeWebsocket`.

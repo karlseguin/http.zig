@@ -437,6 +437,11 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                                 }
                             },
                             .websocket => |ptr| {
+                                if (comptime WSH == httpz.DummyWebsocketHandler) {
+                                    log.err("Your handler must have a `WebsocketHandler` declaration which must be the same type passed to `httpz.upgradeWebsocket`. Closing connection.\n", .{});
+                                    self.manager.close(conn);
+                                    continue;
+                                }
                                 const hc: *ws.HandlerConn(WSH) = @ptrCast(@alignCast(ptr));
                                 self.manager.upgrade(conn, hc);
                                 self.loop.monitorRead(hc.socket, @intFromPtr(conn), true) catch {
