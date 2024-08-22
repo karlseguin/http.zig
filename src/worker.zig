@@ -438,7 +438,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                             },
                             .websocket => |ptr| {
                                 if (comptime WSH == httpz.DummyWebsocketHandler) {
-                                    log.err("Your handler must have a `WebsocketHandler` declaration which must be the same type passed to `httpz.upgradeWebsocket`. Closing connection.\n", .{});
+                                    std.debug.print("Your httpz handler must have a `WebsocketHandler` declaration. This must be the same type passed to `httpz.upgradeWebsocket`. Closing the connection.\n", .{});
                                     self.manager.close(conn);
                                     continue;
                                 }
