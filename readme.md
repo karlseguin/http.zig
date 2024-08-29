@@ -605,8 +605,8 @@ var admin_routes = router.group("/admin", .{
   .dispatcher = Handler.dispathAuth,
   .middlewares = &.{cors_middleware},
 });
-admin_routes.get("/users", listUsers);
-admin_routs.delete("/users/:id", deleteUsers);
+admin_routes.get("/users", listUsers, .{});
+admin_routs.delete("/users/:id", deleteUsers, .{});
 ```
 
 The first parameter to `group` is a prefix to prepend to each route in the group. An empty prefix is acceptable. Thus, route groups can be used to configure either a common prefix and/or a common configuration across multiple routes.

@@ -251,71 +251,80 @@ pub fn Group(comptime Handler: type, comptime Action: type) type {
             };
         }
 
-        pub fn get(self: *Self, path: []const u8, action: Action) void {
-            self._router.get(self.createPath(path), action, self._config);
+        pub fn get(self: *Self, path: []const u8, action: Action, override: C) void {
+            self._router.get(self.createPath(path), action, self.mergeConfig(override));
         }
-        pub fn tryGet(self: *Self, path: []const u8, action: Action) !void {
-            return self._router.tryGet(self.tryCreatePath(path), action, self._config);
-        }
-
-        pub fn put(self: *Self, path: []const u8, action: Action) void {
-            self._router.put(self.createPath(path), action, self._config);
-        }
-        pub fn tryPut(self: *Self, path: []const u8, action: Action) !void {
-            return self._router.tryPut(self.tryCreatePath(path), action, self._config);
+        pub fn tryGet(self: *Self, path: []const u8, action: Action, override: C) !void {
+            return self._router.tryGet(self.tryCreatePath(path), action, self.mergeConfig(override));
         }
 
-        pub fn post(self: *Self, path: []const u8, action: Action) void {
-            self._router.post(self.createPath(path), action, self._config);
+        pub fn put(self: *Self, path: []const u8, action: Action, override: C) void {
+            self._router.put(self.createPath(path), action, self.mergeConfig(override));
         }
-        pub fn tryPost(self: *Self, path: []const u8, action: Action) !void {
-            return self._router.tryPost(self.tryCreatePath(path), action, self._config);
-        }
-
-        pub fn head(self: *Self, path: []const u8, action: Action) void {
-            self._router.head(self.createPath(path), action, self._config);
-        }
-        pub fn tryHead(self: *Self, path: []const u8, action: Action) !void {
-            return self._router.tryHead(self.tryCreatePath(path), action, self._config);
+        pub fn tryPut(self: *Self, path: []const u8, action: Action, override: C) !void {
+            return self._router.tryPut(self.tryCreatePath(path), action, self.mergeConfig(override));
         }
 
-        pub fn patch(self: *Self, path: []const u8, action: Action) void {
-            self._router.patch(self.createPath(path), action, self._config);
+        pub fn post(self: *Self, path: []const u8, action: Action, override: C) void {
+            self._router.post(self.createPath(path), action, self.mergeConfig(override));
         }
-        pub fn tryPatch(self: *Self, path: []const u8, action: Action) !void {
-            return self._router.tryPatch(self.tryCreatePath(path), action, self._config);
-        }
-
-        pub fn trace(self: *Self, path: []const u8, action: Action) void {
-            self._router.trace(self.createPath(path), action, self._config);
-        }
-        pub fn tryTrace(self: *Self, path: []const u8, action: Action) !void {
-            return self._router.tryTrace(self.tryCreatePath(path), action, self._config);
+        pub fn tryPost(self: *Self, path: []const u8, action: Action, override: C) !void {
+            return self._router.tryPost(self.tryCreatePath(path), action, self.mergeConfig(override));
         }
 
-        pub fn delete(self: *Self, path: []const u8, action: Action) void {
-            self._router.delete(self.createPath(path), action, self._config);
+        pub fn head(self: *Self, path: []const u8, action: Action, override: C) void {
+            self._router.head(self.createPath(path), action, self.mergeConfig(override));
         }
-        pub fn tryDelete(self: *Self, path: []const u8, action: Action) !void {
-            return self._router.tryDelete(self.tryCreatePath(path), action, self._config);
-        }
-
-        pub fn options(self: *Self, path: []const u8, action: Action) void {
-            self._router.options(self.createPath(path), action, self._config);
-        }
-        pub fn tryOptions(self: *Self, path: []const u8, action: Action) !void {
-            return self._router.tryOptions(self.tryCreatePath(path), action, self._config);
+        pub fn tryHead(self: *Self, path: []const u8, action: Action, override: C) !void {
+            return self._router.tryHead(self.tryCreatePath(path), action, self.mergeConfig(override));
         }
 
-        pub fn all(self: *Self, path: []const u8, action: Action) void {
-            self._router.all(self.createPath(path), action, self._config);
+        pub fn patch(self: *Self, path: []const u8, action: Action, override: C) void {
+            self._router.patch(self.createPath(path), action, self.mergeConfig(override));
         }
-        pub fn tryAll(self: *Self, path: []const u8, action: Action) !void {
-            return self._router.tryAll(self.tryCreatePath(path), action, self._config);
+        pub fn tryPatch(self: *Self, path: []const u8, action: Action, override: C) !void {
+            return self._router.tryPatch(self.tryCreatePath(path), action, self.mergeConfig(override));
+        }
+
+        pub fn trace(self: *Self, path: []const u8, action: Action, override: C) void {
+            self._router.trace(self.createPath(path), action, self.mergeConfig(override));
+        }
+        pub fn tryTrace(self: *Self, path: []const u8, action: Action, override: C) !void {
+            return self._router.tryTrace(self.tryCreatePath(path), action, self.mergeConfig(override));
+        }
+
+        pub fn delete(self: *Self, path: []const u8, action: Action, override: C) void {
+            self._router.delete(self.createPath(path), action, self.mergeConfig(override));
+        }
+        pub fn tryDelete(self: *Self, path: []const u8, action: Action, override: C) !void {
+            return self._router.tryDelete(self.tryCreatePath(path), action, self.mergeConfig(override));
+        }
+
+        pub fn options(self: *Self, path: []const u8, action: Action, override: C) void {
+            self._router.options(self.createPath(path), action, self.mergeConfig(override));
+        }
+        pub fn tryOptions(self: *Self, path: []const u8, action: Action, override: C) !void {
+            return self._router.tryOptions(self.tryCreatePath(path), action, self.mergeConfig(override));
+        }
+
+        pub fn all(self: *Self, path: []const u8, action: Action, override: C) void {
+            self._router.all(self.createPath(path), action, self.mergeConfig(override));
+        }
+        pub fn tryAll(self: *Self, path: []const u8, action: Action, override: C) !void {
+            return self._router.tryAll(self.tryCreatePath(path), action, self.mergeConfig(override));
         }
 
         fn createPath(self: *Self, path: []const u8) []const u8 {
             return self.tryCreatePath(path) catch unreachable;
+        }
+
+        fn mergeConfig(self: *const Self, override: C) C {
+            return .{
+                .data = override.data orelse self._config.data,
+                .handler = override.handler orelse self._config.handler,
+                .dispatcher = override.dispatcher orelse self._config.dispatcher,
+                .middlewares = override.middlewares orelse self._config.middlewares,
+            };
         }
 
         fn tryCreatePath(self: *Self, path: []const u8) ![]const u8 {

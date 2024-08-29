@@ -776,12 +776,12 @@ test "tests:beforeAll" {
         router.all("/api/:version/users/:UserId", TestHandlerDefaultDispatch.params, .{});
 
         var admin_routes = router.group("/admin/", .{ .dispatcher = TestHandlerDefaultDispatch.dispatch2, .handler = &test_handler_default_dispatch2 });
-        admin_routes.get("/users", TestHandlerDefaultDispatch.echo);
-        admin_routes.put("/users/:id", TestHandlerDefaultDispatch.echo);
+        admin_routes.get("/users", TestHandlerDefaultDispatch.echo, .{});
+        admin_routes.put("/users/:id", TestHandlerDefaultDispatch.echo, .{});
 
         var debug_routes = router.group("/debug", .{ .dispatcher = TestHandlerDefaultDispatch.dispatch3, .handler = &test_handler_default_dispatch3 });
-        debug_routes.head("/ping", TestHandlerDefaultDispatch.echo);
-        debug_routes.options("/stats", TestHandlerDefaultDispatch.echo);
+        debug_routes.head("/ping", TestHandlerDefaultDispatch.echo, .{});
+        debug_routes.options("/stats", TestHandlerDefaultDispatch.echo, .{});
 
         test_server_threads[1] = try dispatch_default_server.listenInNewThread();
     }
