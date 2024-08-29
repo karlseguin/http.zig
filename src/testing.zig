@@ -149,7 +149,7 @@ pub const Testing = struct {
     pub fn form(self: *Testing, data: anytype) void {
         var arr = ArrayList(u8).init(self.arena);
 
-        inline for (@typeInfo(@TypeOf(data)).Struct.fields) |field| {
+        inline for (@typeInfo(@TypeOf(data)).@"struct".fields) |field| {
             const name = escapeString(self.arena, field.name) catch unreachable;
             const value = escapeString(self.arena, @field(data, field.name)) catch unreachable;
             arr.appendSlice(name) catch unreachable;
@@ -483,7 +483,7 @@ const JsonComparer = struct {
 
 fn isString(comptime T: type) bool {
     switch (@typeInfo(T)) {
-        .Pointer => |ptr| switch (ptr.size) {
+        .pointer => |ptr| switch (ptr.size) {
             .Slice => return ptr.child == u8,
             .One => switch (@typeInfo(ptr.child)) {
                 .Array => |arr| return arr.child == u8,
@@ -491,7 +491,7 @@ fn isString(comptime T: type) bool {
             },
             else => return false,
         },
-        .Array => return false,
+        .array => return false,
         else => return false,
     }
 }

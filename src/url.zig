@@ -154,7 +154,7 @@ pub const Url = struct {
 
 /// converts ascii to unsigned int of appropriate size
 pub fn asUint(comptime string: anytype) @Type(std.builtin.Type{
-    .Int = .{
+    .int = .{
         .bits = @bitSizeOf(@TypeOf(string.*)) - 8, // (- 8) to exclude sentinel 0
         .signedness = .unsigned,
     },

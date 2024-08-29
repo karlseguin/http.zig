@@ -190,13 +190,13 @@ pub fn Middleware(comptime H: type) type {
                 pub fn deinit(pointer: *anyopaque) void {
                     const self: T = @ptrCast(@alignCast(pointer));
                     if (std.meta.hasMethod(T, "deinit")) {
-                        return ptr_info.Pointer.child.deinit(self);
+                        return ptr_info.pointer.child.deinit(self);
                     }
                 }
 
                 pub fn execute(pointer: *anyopaque, req: *Request, res: *Response, executor: *Server(H).Executor) anyerror!void {
                     const self: T = @ptrCast(@alignCast(pointer));
-                    return ptr_info.Pointer.child.execute(self, req, res, executor);
+                    return ptr_info.pointer.child.execute(self, req, res, executor);
                 }
             };
 
@@ -230,13 +230,13 @@ pub const MiddlewareConfig = struct {
 
 pub fn Server(comptime H: type) type {
     const Handler = switch (@typeInfo(H)) {
-        .Struct => H,
-        .Pointer => |ptr| ptr.child,
-        .Void => void,
+        .@"struct" => H,
+        .pointer => |ptr| ptr.child,
+        .@"void" => void,
         else => @compileError("Server handler must be a struct, got: " ++ @tagName(@typeInfo(H))),
     };
 
-    const ActionArg = if (comptime std.meta.hasFn(Handler, "dispatch")) @typeInfo(@TypeOf(Handler.dispatch)).Fn.params[1].type.? else Action(H);
+    const ActionArg = if (comptime std.meta.hasFn(Handler, "dispatch")) @typeInfo(@TypeOf(Handler.dispatch)).@"fn".params[1].type.? else Action(H);
 
     const WebsocketHandler = if (Handler != void and comptime @hasDecl(Handler, "WebsocketHandler")) Handler.WebsocketHandler else DummyWebsocketHandler;
 
@@ -565,7 +565,7 @@ pub fn Server(comptime H: type) type {
 
             const m = try arena.create(M);
             errdefer arena.destroy(m);
-            switch (comptime @typeInfo(@TypeOf(M.init)).Fn.params.len) {
+            switch (comptime @typeInfo(@TypeOf(M.init)).@"fn".params.len) {
                 1 => m.* = try M.init(config),
                 2 => m.* = try M.init(config, MiddlewareConfig{
                     .arena = arena,
@@ -647,7 +647,7 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: an
     hc.handler = try H.init(&hc.conn, ctx);
     try http_conn.stream.writeAll(&websocket.Handshake.createReply(key));
     if (comptime std.meta.hasFn(H, "afterInit")) {
-        const params = @typeInfo(@TypeOf(H.afterInit)).Fn.params;
+        const params = @typeInfo(@TypeOf(H.afterInit)).@"fn".params;
         try if (comptime params.len == 1) hc.handler.?.afterInit() else hc.handler.?.afterInit(ctx);
     }
 
@@ -1308,7 +1308,7 @@ test "websocket: upgrade" {
 }
 
 test "ContentType: forX" {
-    inline for (@typeInfo(ContentType).Enum.fields) |field| {
+    inline for (@typeInfo(ContentType).@"enum".fields) |field| {
         if (comptime std.mem.eql(u8, "BINARY", field.name)) continue;
         if (comptime std.mem.eql(u8, "EVENTS", field.name)) continue;
         try t.expectEqual(@field(ContentType, field.name), ContentType.forExtension(field.name));

@@ -460,7 +460,7 @@ test "route: root" {
     try t.expectEqual(null, router.route(httpz.Method.DELETE, urls[0], &params));
 
     // test "all" route
-    inline for (@typeInfo(httpz.Method).Enum.fields) |field| {
+    inline for (@typeInfo(httpz.Method).@"enum".fields) |field| {
         const m = @as(httpz.Method, @enumFromInt(field.value));
         try t.expectEqual(&testRoute4, router.route(m, urls[2], &params).?.action);
     }

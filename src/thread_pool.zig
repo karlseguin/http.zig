@@ -31,7 +31,7 @@ pub fn ThreadPool(comptime F: anytype) type {
     inline for (full_fields[0..ARG_COUNT], 0..) |field, index| fields[index] = field;
 
     const Args = comptime @Type(.{
-        .Struct = .{
+        .@"struct" = .{
             .layout = .auto,
             .is_tuple = true,
             .fields = &fields,
