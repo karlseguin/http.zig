@@ -570,7 +570,7 @@ The last parameter to the various `router` methods is a route configuration. In 
 * `dispatcher` - The dispatch method to use. This overrides the default dispatcher, which is either httpz built-in dispatcher or [your handler's `dispatch` method](#custom-dispatch).
 * `handler` - The handler instance to use. The default handler is the 3rd parameter passed to `Server(H).init` but you can override this on a route-per-route basis.
 * `middlewares` - A list of [middlewares](#middlewares) to run. By default, no middlewares are run.
-* `data` - Arbitrary data (`*const anyopaque`) to make available to `req.route_data`
+* `data` - Arbitrary data (`*const anyopaque`) to make available to `req.route_data`. This must be a `const`.
 
 You can specify a separate configuration for each route. To change the configuration for a group of routes, you have two options. The first, is to directly change the router's `handler`, `dispatcher` and `middlewares` field. Any subsequent routes will use these values:
 
