@@ -67,6 +67,8 @@ pub const Request = struct {
     // this arena. This is the same arena as response.arena.
     arena: Allocator,
 
+    route_data: ?*const anyopaque,
+
     // Arbitrary place for middlewares (or really anyone), to store data.
     // Middleware can store data here while executing, and then provide a function
     // to retrieved the [typed] data to the action.
@@ -87,6 +89,7 @@ pub const Request = struct {
             .protocol = state.protocol.?,
             .url = Url.parse(state.url.?),
             .address = conn.address,
+            .route_data = null,
             .params = state.params,
             .headers = state.headers,
             .body_buffer = state.body,

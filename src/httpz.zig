@@ -166,6 +166,7 @@ pub fn Dispatcher(comptime Handler: type, comptime ActionArg: type) type {
 
 pub fn DispatchableAction(comptime Handler: type, comptime ActionArg: type) type {
     return struct {
+        data: ?*const anyopaque,
         handler: Handler,
         action: ActionArg,
         dispatcher: Dispatcher(Handler, ActionArg),
@@ -545,6 +546,7 @@ pub fn Server(comptime H: type) type {
                 return;
             };
 
+            req.route_data = da.data;
             var executor = Executor{
                 .da = da,
                 .index = 0,
@@ -755,6 +757,7 @@ test "tests:beforeAll" {
         router.get("/test/query", TestDummyHandler.reqQuery, .{});
         router.get("/test/stream", TestDummyHandler.eventStream, .{});
         router.get("/test/chunked", TestDummyHandler.chunked, .{});
+        router.get("/test/route_data", TestDummyHandler.routeData, .{.data = &TestDummyHandler.RouteData{.power = 12345}});
         router.all("/test/cors", TestDummyHandler.jsonRes, .{.middlewares = cors});
         router.all("/test/middlewares", TestDummyHandler.middlewares, .{.middlewares = middlewares});
         router.all("/test/dispatcher", TestDummyHandler.dispatchedAction, .{ .dispatcher = TestDummyHandler.routeSpecificDispacthcer });
@@ -1165,6 +1168,16 @@ test "httpz: keepalive" {
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 19\r\n\r\nversion=v2,user=123", testReadAll(stream, &buf));
 }
 
+test "httpz: route data" {
+    const stream = testStream(5992);
+    defer stream.close();
+    try stream.writeAll("GET /test/route_data HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+    var res = testReadParsed(stream);
+    defer res.deinit();
+    try res.expectJson(.{ .power = 12345 });
+}
+
 test "httpz: keepalive with explicit write" {
     const stream = testStream(5993);
     defer stream.close();
@@ -1392,6 +1405,10 @@ const TestUser = struct {
 // simulates having a void handler, but keeps the test actions organized within
 // this namespace.
 const TestDummyHandler = struct {
+    const RouteData = struct {
+        power: usize,
+    };
+
     fn fail(_: *Request, _: *Response) !void {
         return error.Failure;
     }
@@ -1411,6 +1428,10 @@ const TestDummyHandler = struct {
     fn jsonRes(_: *Request, res: *Response) !void {
         res.status = 201;
         try res.json(.{ .over = 9000, .teg = "soup" }, .{});
+    }
+    fn routeData(req: *Request, res: *Response) !void {
+        const rd: *const RouteData = @ptrCast(@alignCast(req.route_data.?));
+        try res.json(.{ .power = rd.power }, .{});
     }
 
     fn eventStream(_: *Request, res: *Response) !void {

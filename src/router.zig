@@ -11,6 +11,7 @@ const StringHashMap = std.StringHashMap;
 pub fn Config(comptime Handler: type, comptime Action: type) type {
     const Dispatcher = httpz.Dispatcher(Handler, Action);
     return struct {
+        data: ?*const anyopaque = null,
         handler: ?Handler = null,
         dispatcher: ?Dispatcher = null,
         middlewares: ?[]const httpz.Middleware(Handler) = null,
@@ -148,6 +149,7 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
         fn addRoute(self: *Self, root: *P, path: []const u8, action: Action, config: C) !void {
             const da = DispatchableAction{
                 .action = action,
+                .data = config.data,
                 .handler = config.handler orelse self.handler,
                 .dispatcher = config.dispatcher orelse self.dispatcher,
                 .middlewares = config.middlewares orelse self.middlewares orelse &.{},

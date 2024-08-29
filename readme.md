@@ -314,6 +314,8 @@ The following fields are the most useful:
 * `url.path` - the path of the request (`[]const u8`)
 * `address` - the std.net.Address of the client
 
+If you give your route a `data` configuration, the value can be retrieved from the optional `route_data` field of the request.
+
 ## Path Parameters
 The `param` method of `*Request` returns an `?[]const u8`. For example, given the following path:
 
@@ -568,6 +570,7 @@ The last parameter to the various `router` methods is a route configuration. In 
 * `dispatcher` - The dispatch method to use. This overrides the default dispatcher, which is either httpz built-in dispatcher or [your handler's `dispatch` method](#custom-dispatch).
 * `handler` - The handler instance to use. The default handler is the 3rd parameter passed to `Server(H).init` but you can override this on a route-per-route basis.
 * `middlewares` - A list of [middlewares](#middlewares) to run. By default, no middlewares are run.
+* `data` - Arbitrary data (`*const anyopaque`) to make available to `req.route_data`
 
 You can specify a separate configuration for each route. To change the configuration for a group of routes, you have two options. The first, is to directly change the router's `handler`, `dispatcher` and `middlewares` field. Any subsequent routes will use these values:
 
