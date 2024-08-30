@@ -517,6 +517,9 @@ pub fn Server(comptime H: type) type {
             conn.handover = if (conn.request_count < self._max_request_per_connection and req.canKeepAlive()) .keepalive else .close;
 
             if (comptime std.meta.hasFn(Handler, "handle")) {
+                if (comptime @typeInfo(@TypeOf(Handler.handle)).@"fn".return_type != void) {
+                    @compileError(@typeName(Handler) ++ ".handle must return 'void'");
+                }
                 self.handler.handle(&req, &res);
             } else {
                 const dispatchable_action = self._router.route(req.method, req.url.path, &req.params);

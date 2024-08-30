@@ -2,7 +2,7 @@ const std = @import("std");
 const httpz = @import("httpz");
 const Allocator = std.mem.Allocator;
 
-const PORT = 8800;
+const PORT = 8801;
 
 // This example demonstrates basic httpz usage, with focus on using the
 // httpz.Request and httpz.Response objects.
@@ -37,6 +37,7 @@ pub fn main() !void {
     router.get("/metrics", metrics, .{});
     router.get("/form_data", formShow, .{});
     router.post("/form_data", formPost, .{});
+    router.get("/explicit_write", explicitWrite, .{});
 
     std.debug.print("listening http://localhost:{d}/\n", .{PORT});
     // Starts the server, this is blocking.
@@ -52,6 +53,7 @@ fn index(_: *httpz.Request, res: *httpz.Response) !void {
         \\ <li><a href="/json/hello/Duncan">Path parameter + json writer</a>
         \\ <li><a href="/metrics">Internal metrics</a>
         \\ <li><a href="/form_data">Form Data</a>
+        \\ <li><a href="/explicit_write">Explicit Write</a>
     ;
 }
 
@@ -106,4 +108,13 @@ fn formPost(req: *httpz.Request, res: *httpz.Response) !void {
     while (it.next()) |kv| {
         try std.fmt.format(w, "{s}={s}\n", .{kv.key, kv.value});
     }
+}
+
+fn explicitWrite(_: *httpz.Request, res: *httpz.Response) !void {
+    res.body =
+        \\ There may be cases where your response is tied to data which
+        \\ required cleanup. If `res.arena` and `res.writer()` can't solve
+        \\ the issue, you can always call `res.write()` explicitly
+    ;
+    return res.write();
 }

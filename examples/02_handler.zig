@@ -2,7 +2,7 @@ const std = @import("std");
 const httpz = @import("httpz");
 const Allocator = std.mem.Allocator;
 
-const PORT = 8801;
+const PORT = 8802;
 
 // This example demonstrates using a custom Handler. It shows how to have
 // global state (here we show a counter, but it could be a more complex struct
@@ -64,6 +64,10 @@ const Handler = struct {
 fn index(_: *Handler, _: *httpz.Request, res: *httpz.Response) !void {
     res.body =
         \\<!DOCTYPE html>
+        \\ <p>Except in very simple cases, you'll want to use a custom Handler.
+        \\ <p>A custom Handler is how you share app-specific data with your actions (like a DB pool)
+        \\    and define a custom not found and error function.
+        \\ <p>Other examples show more advanced things you can do with a custom Handler.
         \\ <ul>
         \\ <li><a href="/hits">Shared global hit counter</a>
         \\ <li><a href="/not_found">Custom not found handler</a>

@@ -2,7 +2,7 @@ const std = @import("std");
 const httpz = @import("httpz");
 const Allocator = std.mem.Allocator;
 
-const PORT = 8802;
+const PORT = 8803;
 
 // This example uses a custom dispatch method on our handler for greater control
 // in how actions are executed.
@@ -37,10 +37,17 @@ const Handler = struct {
         // we could do authentication and set the response directly on error.
         try action(self, req, res);
 
-        std.debug.print("{d}\t{d}us\t{s}\n", .{std.time.timestamp(), start.lap() / 1000, req.url.path});
+        std.debug.print("ts={d} us={d} path={s}\n", .{std.time.timestamp(), start.lap() / 1000, req.url.path});
     }
 };
 
 fn index(_: *Handler, _: *httpz.Request, res: *httpz.Response) !void {
-    res.body = "see the console logs";
+    res.body =
+        \\ If defied, the dispatch method will be invoked for every request with a matching route.
+        \\ It is up to dispatch to decide how/if the action should be called. While httpz
+        \\ supports middleware, most cases can be more easily and cleanly handled with
+        \\ a custom dispatch alone (you can always use both middlewares and a custom dispatch though).
+        \\
+        \\ Check out the console, our custom dispatch function times & logs each request.
+    ;
 }

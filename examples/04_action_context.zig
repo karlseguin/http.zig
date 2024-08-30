@@ -2,7 +2,7 @@ const std = @import("std");
 const httpz = @import("httpz");
 const Allocator = std.mem.Allocator;
 
-const PORT = 8803;
+const PORT = 8804;
 
 // This example is very similar to 03_dispatch.zig, but shows how the action
 // state can be a different type than the handler.
@@ -72,10 +72,13 @@ const Env = struct{
 };
 
 fn index(_: *Env, _: *httpz.Request, res: *httpz.Response) !void {
+    res.content_type = .HTML;
     res.body =
         \\<!DOCTYPE html>
-        \\ <ul>
-        \\ <li><a href="/admin?auth=sudo">admin</a>
+        \\ <p>The <code>Handler.dispatch</code> method takes an <code>httpz.Action(*Env)</code>.
+        \\ <p>This allows the handler method to create a request-specific value to pass into actions.
+        \\ <p>For example, dispatch might load a User (using a request header value maybe) and make it available to the action.
+        \\ <p>Goto <a href="/admin?auth=superuser">admin</a> to simulate a (very insecure) authentication.
     ;
 }
 
