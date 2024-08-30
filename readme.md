@@ -27,6 +27,7 @@ fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
 ```
 
 # Table of Contents
+* [Examples](#examples)
 * [Installation](#installation)
 * [Alternatives](#alternatives)
 * [Handler](#handler)
@@ -49,6 +50,14 @@ fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
 
 # Migration
 If you're coming from a previous version, I've made some breaking changes recently (largely to accomodate much better integration with websocket.zig). See the [Migration Wiki](https://github.com/karlseguin/http.zig/wiki/Migration) for more details.
+
+# Examples
+See the [examples](https://github.com/karlseguin/http.zig/tree/master/examples) folder for examples. If you clone this repository, you can run `zig build example_#` to run a specific example:
+
+```bash
+$ zig build example_1
+listening http://localhost:8800/
+```
 
 # Installation
 1) Add into `dependencies` at `build.zig.zon`:
@@ -438,7 +447,7 @@ The original casing of both the key and the name are preserved.
 To iterate over all fields, use:
 
 ```zig
-var it = req.formData.iterator();
+var it = (try req.formData()).iterator();
 while (it.next()) |kv| {
   // kv.key
   // kv.value
