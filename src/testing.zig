@@ -486,7 +486,7 @@ fn isString(comptime T: type) bool {
         .pointer => |ptr| switch (ptr.size) {
             .Slice => return ptr.child == u8,
             .One => switch (@typeInfo(ptr.child)) {
-                .Array => |arr| return arr.child == u8,
+                .array => |arr| return arr.child == u8,
                 else => return false,
             },
             else => return false,
