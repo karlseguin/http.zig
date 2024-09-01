@@ -240,6 +240,10 @@ pub fn Server(comptime H: type) type {
 
     const WebsocketHandler = if (Handler != void and comptime @hasDecl(Handler, "WebsocketHandler")) Handler.WebsocketHandler else DummyWebsocketHandler;
 
+    const RouterConfig = struct {
+        middlewares: []const Middleware(H) = &.{},
+    };
+
     return struct {
         const TP = if (blockingMode()) ThreadPool(worker.Blocking(*Self, WebsocketHandler).handleConnection) else ThreadPool(worker.NonBlocking(*Self, WebsocketHandler).processData);
 
@@ -253,8 +257,9 @@ pub fn Server(comptime H: type) type {
         _thread_pool: *TP,
         _signals: []posix.fd_t,
         _max_request_per_connection: u64,
+        _middlewares: []const Middleware(H),
         _websocket_state: websocket.server.WorkerState,
-        _middlewares: std.SinglyLinkedList(Middleware(H)),
+        _middleware_registry: std.SinglyLinkedList(Middleware(H)),
 
         const Self = @This();
 
@@ -305,8 +310,9 @@ pub fn Server(comptime H: type) type {
                 .arena = arena.allocator(),
                 ._mut = .{},
                 ._cond = .{},
-                ._middlewares = .{},
+                ._middleware_registry = .{},
                 ._signals = signals,
+                ._middlewares = &.{},
                 ._thread_pool = thread_pool,
                 ._websocket_state = websocket_state,
                 ._router = try Router(H, ActionArg).init(arena.allocator(), default_dispatcher, handler),
@@ -315,11 +321,10 @@ pub fn Server(comptime H: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-
             self._thread_pool.stop();
             self._websocket_state.deinit();
 
-            var node = self._middlewares.first;
+            var node = self._middleware_registry.first;
             while (node) |n| {
                 n.data.deinit();
                 node = n.next;
@@ -467,11 +472,14 @@ pub fn Server(comptime H: type) type {
             }
         }
 
-        pub fn dispatcher(self: *Self, d: Dispatcher(H, ActionArg)) void {
-            (&self._router).dispatcher(d);
-        }
+        pub fn router(self: *Self, config: RouterConfig) *Router(H, ActionArg) {
+            // we store this in self for us when no route is found (these will
+            // still be executed).
+            self._middlewares = config.middlewares;
 
-        pub fn router(self: *Self) *Router(H, ActionArg) {
+            // we store this in router to append to add/append to created routes
+            self._router.middlewares = config.middlewares;
+
             return &self._router;
         }
 
@@ -523,7 +531,25 @@ pub fn Server(comptime H: type) type {
                 self.handler.handle(&req, &res);
             } else {
                 const dispatchable_action = self._router.route(req.method, req.url.path, &req.params);
-                self.dispatch(dispatchable_action, &req, &res) catch |err| {
+
+                var executor = Executor{
+                    .index = 0,
+                    .req = &req,
+                    .res = &res,
+                    .handler = self.handler,
+                    .middlewares = undefined,
+                    .dispatchable_action = dispatchable_action,
+                };
+
+                if (dispatchable_action) |da| {
+                    req.route_data = da.data;
+                    executor.middlewares = da.middlewares;
+                } else {
+                    req.route_data = null;
+                    executor.middlewares = self._middlewares;
+                }
+
+                executor.next() catch |err| {
                     if (comptime std.meta.hasFn(Handler, "uncaughtError")) {
                         self.handler.uncaughtError(&req, &res, err);
                     } else {
@@ -537,27 +563,6 @@ pub fn Server(comptime H: type) type {
             res.write() catch {
                 conn.handover = .close;
             };
-        }
-
-        fn dispatch(self: *const Self, dispatchable_action: ?DispatchableAction(H, ActionArg), req: *Request, res: *Response) !void {
-            const da = dispatchable_action orelse {
-                if (comptime std.meta.hasFn(Handler, "notFound")) {
-                    return self.handler.notFound(req, res);
-                }
-                res.status = 404;
-                res.body = "Not Found";
-                return;
-            };
-
-            req.route_data = da.data;
-            var executor = Executor{
-                .da = da,
-                .index = 0,
-                .req = req,
-                .res = res,
-                .middlewares = da.middlewares,
-            };
-            return executor.next();
         }
 
         pub fn middleware(self: *Self, comptime M: type, config: M.Config) !Middleware(H) {
@@ -579,7 +584,7 @@ pub fn Server(comptime H: type) type {
 
             const iface = Middleware(H).init(m);
             node.data = iface;
-            self._middlewares.prepend(node);
+            self._middleware_registry.prepend(node);
 
             return iface;
         }
@@ -588,24 +593,35 @@ pub fn Server(comptime H: type) type {
             index: usize,
             req: *Request,
             res: *Response,
+            handler: H,
             // pull this out of da since we'll access it a lot (not really, but w/e)
             middlewares: []const Middleware(H),
-            da: DispatchableAction(H, ActionArg),
+            dispatchable_action: ?DispatchableAction(H, ActionArg),
 
             pub fn next(self: *Executor) !void {
                 const index = self.index;
                 const middlewares = self.middlewares;
 
-                if (index == middlewares.len) {
-                    const da = self.da;
+                if (index < middlewares.len) {
+                    self.index = index + 1;
+                   return middlewares[index].execute(self.req, self.res, self);
+                }
+
+                // done executing our middlewares, now we either execute the
+                // dispatcher or not found.
+                if (self.dispatchable_action) |da| {
                     if (comptime H == void) {
                         return da.dispatcher(da.action, self.req, self.res);
                     }
                     return da.dispatcher(da.handler, da.action, self.req, self.res);
                 }
 
-                self.index = index + 1;
-                return middlewares[index].execute(self.req, self.res, self);
+                if (comptime std.meta.hasFn(Handler, "notFound")) {
+                    return self.handler.notFound(self.req, self.res);
+                }
+                self.res.status = 404;
+                self.res.body = "Not Found";
+                return;
             }
         };
     };
@@ -753,7 +769,7 @@ test "tests:beforeAll" {
         middlewares[0] = try default_server.middleware(TestMiddleware, .{.id = 100});
         middlewares[1] = cors[0];
 
-        var router = default_server.router();
+        var router = default_server.router(.{});
         // router.get("/test/ws", testWS);
         router.get("/fail", TestDummyHandler.fail, .{});
         router.get("/test/json", TestDummyHandler.jsonRes, .{});
@@ -769,7 +785,7 @@ test "tests:beforeAll" {
 
     {
         dispatch_default_server = try Server(*TestHandlerDefaultDispatch).init(ga, .{ .port = 5993 }, &test_handler_default_dispatch1);
-        var router = dispatch_default_server.router();
+        var router = dispatch_default_server.router(.{});
         router.get("/", TestHandlerDefaultDispatch.echo, .{});
         router.get("/write/*", TestHandlerDefaultDispatch.echoWrite, .{});
         router.get("/fail", TestHandlerDefaultDispatch.fail, .{});
@@ -791,14 +807,14 @@ test "tests:beforeAll" {
 
     {
         dispatch_server = try Server(*TestHandlerDispatch).init(ga, .{ .port = 5994 }, &test_handler_dispatch);
-        var router = dispatch_server.router();
+        var router = dispatch_server.router(.{});
         router.get("/", TestHandlerDispatch.root, .{});
         test_server_threads[2] = try dispatch_server.listenInNewThread();
     }
 
     {
         dispatch_action_context_server = try Server(*TestHandlerDispatchContext).init(ga, .{ .port = 5995 }, &test_handler_disaptch_context);
-        var router = dispatch_action_context_server.router();
+        var router = dispatch_action_context_server.router(.{});
         router.get("/", TestHandlerDispatchContext.root, .{});
         test_server_threads[3] = try dispatch_action_context_server.listenInNewThread();
     }
@@ -807,7 +823,7 @@ test "tests:beforeAll" {
         // with only 1 worker, and a min/max conn of 1, each request should
         // hit our reset path.
         reuse_server = try Server(void).init(ga, .{ .port = 5996, .workers = .{ .count = 1, .min_conn = 1, .max_conn = 1 } }, {});
-        var router = reuse_server.router();
+        var router = reuse_server.router(.{});
         router.get("/test/writer", TestDummyHandler.reuseWriter, .{});
         test_server_threads[4] = try reuse_server.listenInNewThread();
     }
@@ -819,7 +835,7 @@ test "tests:beforeAll" {
 
     {
         websocket_server = try Server(TestWebsocketHandler).init(ga, .{ .port = 5998 }, TestWebsocketHandler{});
-        var router = websocket_server.router();
+        var router = websocket_server.router(.{});
         router.get("/ws", TestWebsocketHandler.upgrade, .{});
         test_server_threads[6] = try websocket_server.listenInNewThread();
     }

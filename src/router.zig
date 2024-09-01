@@ -8,22 +8,28 @@ const Response = httpz.Response;
 const Allocator = std.mem.Allocator;
 const StringHashMap = std.StringHashMap;
 
-pub fn Config(comptime Handler: type, comptime Action: type) type {
+fn RouteConfig(comptime Handler: type, comptime Action: type) type {
     const Dispatcher = httpz.Dispatcher(Handler, Action);
     return struct {
         data: ?*const anyopaque = null,
         handler: ?Handler = null,
         dispatcher: ?Dispatcher = null,
         middlewares: ?[]const httpz.Middleware(Handler) = null,
+        middleware_strategy: ?MiddlewareStrategy = null,
     };
 }
+
+pub const MiddlewareStrategy = enum {
+    append,
+    replace,
+};
 
 pub fn Router(comptime Handler: type, comptime Action: type) type {
     const Dispatcher = httpz.Dispatcher(Handler, Action);
     const DispatchableAction = httpz.DispatchableAction(Handler, Action);
 
-    const C = Config(Handler, Action);
     const P = Part(DispatchableAction);
+    const RC = RouteConfig(Handler, Action);
 
     return struct {
         _get: P,
@@ -37,7 +43,7 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
         _allocator: Allocator,
         handler: Handler,
         dispatcher: Dispatcher,
-        middlewares: ?[]const httpz.Middleware(Handler),
+        middlewares: []const httpz.Middleware(Handler),
 
         const Self = @This();
 
@@ -47,7 +53,7 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
                 .handler = handler,
                 ._allocator = allocator,
                 .dispatcher = dispatcher,
-                .middlewares = null,
+                .middlewares = &.{},
                 ._get = try P.init(allocator),
                 ._head = try P.init(allocator),
                 ._post = try P.init(allocator),
@@ -56,11 +62,10 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
                 ._trace = try P.init(allocator),
                 ._delete = try P.init(allocator),
                 ._options = try P.init(allocator),
-
             };
         }
 
-        pub fn group(self: *Self, prefix: []const u8, config: C) Group(Handler, Action) {
+        pub fn group(self: *Self, prefix: []const u8, config: RC) Group(Handler, Action) {
             return Group(Handler, Action).init(self, prefix, config);
         }
 
@@ -76,66 +81,66 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
             };
         }
 
-        pub fn get(self: *Self, path: []const u8, action: Action, config: C) void {
+        pub fn get(self: *Self, path: []const u8, action: Action, config: RC) void {
             self.tryGet(path, action, config) catch @panic("failed to create route");
         }
-        pub fn tryGet(self: *Self, path: []const u8, action: Action, config: C) !void {
+        pub fn tryGet(self: *Self, path: []const u8, action: Action, config: RC) !void {
             return self.addRoute(&self._get, path, action, config);
         }
 
-        pub fn put(self: *Self, path: []const u8, action: Action, config: C) void {
+        pub fn put(self: *Self, path: []const u8, action: Action, config: RC) void {
             self.tryPut(path, action, config) catch @panic("failed to create route");
         }
-        pub fn tryPut(self: *Self, path: []const u8, action: Action, config: C) !void {
+        pub fn tryPut(self: *Self, path: []const u8, action: Action, config: RC) !void {
             return self.addRoute(&self._put, path, action, config);
         }
 
-        pub fn post(self: *Self, path: []const u8, action: Action, config: C) void {
+        pub fn post(self: *Self, path: []const u8, action: Action, config: RC) void {
             self.tryPost(path, action, config) catch @panic("failed to create route");
         }
-        pub fn tryPost(self: *Self, path: []const u8, action: Action, config: C) !void {
+        pub fn tryPost(self: *Self, path: []const u8, action: Action, config: RC) !void {
            return self.addRoute(&self._post, path, action, config);
         }
 
-        pub fn head(self: *Self, path: []const u8, action: Action, config: C) void {
+        pub fn head(self: *Self, path: []const u8, action: Action, config: RC) void {
             self.tryHead(path, action, config) catch @panic("failed to create route");
         }
-        pub fn tryHead(self: *Self, path: []const u8, action: Action, config: C) !void {
+        pub fn tryHead(self: *Self, path: []const u8, action: Action, config: RC) !void {
            return self.addRoute(&self._head, path, action, config);
         }
 
-        pub fn patch(self: *Self, path: []const u8, action: Action, config: C) void {
+        pub fn patch(self: *Self, path: []const u8, action: Action, config: RC) void {
             self.tryPatch(path, action, config) catch @panic("failed to create route");
         }
-        pub fn tryPatch(self: *Self, path: []const u8, action: Action, config: C) !void {
+        pub fn tryPatch(self: *Self, path: []const u8, action: Action, config: RC) !void {
             return self.addRoute(&self._patch, path, action, config);
         }
 
-        pub fn trace(self: *Self, path: []const u8, action: Action, config: C) void {
+        pub fn trace(self: *Self, path: []const u8, action: Action, config: RC) void {
             self.tryTrace(path, action, config) catch @panic("failed to create route");
         }
-        pub fn tryTrace(self: *Self, path: []const u8, action: Action, config: C) !void {
+        pub fn tryTrace(self: *Self, path: []const u8, action: Action, config: RC) !void {
             return self.addRoute(&self._trace, path, action, config);
         }
 
-        pub fn delete(self: *Self, path: []const u8, action: Action, config: C) void {
+        pub fn delete(self: *Self, path: []const u8, action: Action, config: RC) void {
             self.tryDelete(path, action, config) catch @panic("failed to create route");
         }
-        pub fn tryDelete(self: *Self, path: []const u8, action: Action, config: C) !void {
+        pub fn tryDelete(self: *Self, path: []const u8, action: Action, config: RC) !void {
             return self.addRoute(&self._delete, path, action, config);
         }
 
-        pub fn options(self: *Self, path: []const u8, action: Action, config: C) void {
+        pub fn options(self: *Self, path: []const u8, action: Action, config: RC) void {
             self.tryOptions(path, action, config) catch @panic("failed to create route");
         }
-        pub fn tryOptions(self: *Self, path: []const u8, action: Action, config: C) !void {
+        pub fn tryOptions(self: *Self, path: []const u8, action: Action, config: RC) !void {
             return self.addRoute(&self._options, path, action, config);
         }
 
-        pub fn all(self: *Self, path: []const u8, action: Action, config: C) void {
+        pub fn all(self: *Self, path: []const u8, action: Action, config: RC) void {
             self.tryAll(path, action, config) catch @panic("failed to create route");
         }
-        pub fn tryAll(self: *Self, path: []const u8, action: Action, config: C) !void {
+        pub fn tryAll(self: *Self, path: []const u8, action: Action, config: RC) !void {
             try self.tryGet(path, action, config);
             try self.tryPut(path, action, config);
             try self.tryPost(path, action, config);
@@ -146,13 +151,13 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
             try self.tryOptions(path, action, config);
         }
 
-        fn addRoute(self: *Self, root: *P, path: []const u8, action: Action, config: C) !void {
+        fn addRoute(self: *Self, root: *P, path: []const u8, action: Action, config: RC) !void {
             const da = DispatchableAction{
                 .action = action,
                 .data = config.data,
                 .handler = config.handler orelse self.handler,
                 .dispatcher = config.dispatcher orelse self.dispatcher,
-                .middlewares = config.middlewares orelse self.middlewares orelse &.{},
+                .middlewares = try self.mergeMiddleware(self.middlewares, config),
             };
 
             if (path.len == 0 or (path.len == 1 and path[0] == '/')) {
@@ -229,20 +234,35 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
 
             route_part.action = da;
         }
+
+        fn mergeMiddleware(self: *Self, parent_middlewares: []const httpz.Middleware(Handler), config: RC) ![]const httpz.Middleware(Handler) {
+            const route_middlewares = config.middlewares orelse return parent_middlewares;
+
+            const strategy = config.middleware_strategy orelse .append;
+            if (strategy == .replace or parent_middlewares.len == 0) {
+                return route_middlewares;
+            }
+
+            // allocator is an arena
+            const merged = try self._allocator.alloc(httpz.Middleware(Handler), route_middlewares.len + parent_middlewares.len);
+            @memcpy(merged[0..parent_middlewares.len], parent_middlewares);
+            @memcpy(merged[parent_middlewares.len..], route_middlewares);
+            return merged;
+        }
     };
 }
 
 pub fn Group(comptime Handler: type, comptime Action: type) type {
-    const C = Config(Handler, Action);
+    const RC = RouteConfig(Handler, Action);
     return struct {
         _allocator: Allocator,
         _prefix: []const u8,
         _router: *Router(Handler, Action),
-        _config: Config(Handler, Action),
+        _config: RouteConfig(Handler, Action),
 
         const Self = @This();
 
-        fn init(router: *Router(Handler, Action), prefix: []const u8, config: C) Self {
+        fn init(router: *Router(Handler, Action), prefix: []const u8, config: RC) Self {
             return .{
                 ._prefix = prefix,
                 ._router = router,
@@ -251,80 +271,71 @@ pub fn Group(comptime Handler: type, comptime Action: type) type {
             };
         }
 
-        pub fn get(self: *Self, path: []const u8, action: Action, override: C) void {
+        pub fn get(self: *Self, path: []const u8, action: Action, override: RC) void {
             self._router.get(self.createPath(path), action, self.mergeConfig(override));
         }
-        pub fn tryGet(self: *Self, path: []const u8, action: Action, override: C) !void {
-            return self._router.tryGet(self.tryCreatePath(path), action, self.mergeConfig(override));
+        pub fn tryGet(self: *Self, path: []const u8, action: Action, override: RC) !void {
+            return self._router.tryGet(self.tryCreatePath(path), action, self.tryMergeConfig(override));
         }
 
-        pub fn put(self: *Self, path: []const u8, action: Action, override: C) void {
+        pub fn put(self: *Self, path: []const u8, action: Action, override: RC) void {
             self._router.put(self.createPath(path), action, self.mergeConfig(override));
         }
-        pub fn tryPut(self: *Self, path: []const u8, action: Action, override: C) !void {
-            return self._router.tryPut(self.tryCreatePath(path), action, self.mergeConfig(override));
+        pub fn tryPut(self: *Self, path: []const u8, action: Action, override: RC) !void {
+            return self._router.tryPut(self.tryCreatePath(path), action, self.tryMergeConfig(override));
         }
 
-        pub fn post(self: *Self, path: []const u8, action: Action, override: C) void {
+        pub fn post(self: *Self, path: []const u8, action: Action, override: RC) void {
             self._router.post(self.createPath(path), action, self.mergeConfig(override));
         }
-        pub fn tryPost(self: *Self, path: []const u8, action: Action, override: C) !void {
-            return self._router.tryPost(self.tryCreatePath(path), action, self.mergeConfig(override));
+        pub fn tryPost(self: *Self, path: []const u8, action: Action, override: RC) !void {
+            return self._router.tryPost(self.tryCreatePath(path), action, self.tryMergeConfig(override));
         }
 
-        pub fn head(self: *Self, path: []const u8, action: Action, override: C) void {
+        pub fn head(self: *Self, path: []const u8, action: Action, override: RC) void {
             self._router.head(self.createPath(path), action, self.mergeConfig(override));
         }
-        pub fn tryHead(self: *Self, path: []const u8, action: Action, override: C) !void {
-            return self._router.tryHead(self.tryCreatePath(path), action, self.mergeConfig(override));
+        pub fn tryHead(self: *Self, path: []const u8, action: Action, override: RC) !void {
+            return self._router.tryHead(self.tryCreatePath(path), action, self.tryMergeConfig(override));
         }
 
-        pub fn patch(self: *Self, path: []const u8, action: Action, override: C) void {
+        pub fn patch(self: *Self, path: []const u8, action: Action, override: RC) void {
             self._router.patch(self.createPath(path), action, self.mergeConfig(override));
         }
-        pub fn tryPatch(self: *Self, path: []const u8, action: Action, override: C) !void {
-            return self._router.tryPatch(self.tryCreatePath(path), action, self.mergeConfig(override));
+        pub fn tryPatch(self: *Self, path: []const u8, action: Action, override: RC) !void {
+            return self._router.tryPatch(self.tryCreatePath(path), action, self.tryMergeConfig(override));
         }
 
-        pub fn trace(self: *Self, path: []const u8, action: Action, override: C) void {
+        pub fn trace(self: *Self, path: []const u8, action: Action, override: RC) void {
             self._router.trace(self.createPath(path), action, self.mergeConfig(override));
         }
-        pub fn tryTrace(self: *Self, path: []const u8, action: Action, override: C) !void {
-            return self._router.tryTrace(self.tryCreatePath(path), action, self.mergeConfig(override));
+        pub fn tryTrace(self: *Self, path: []const u8, action: Action, override: RC) !void {
+            return self._router.tryTrace(self.tryCreatePath(path), action, self.tryMergeConfig(override));
         }
 
-        pub fn delete(self: *Self, path: []const u8, action: Action, override: C) void {
+        pub fn delete(self: *Self, path: []const u8, action: Action, override: RC) void {
             self._router.delete(self.createPath(path), action, self.mergeConfig(override));
         }
-        pub fn tryDelete(self: *Self, path: []const u8, action: Action, override: C) !void {
-            return self._router.tryDelete(self.tryCreatePath(path), action, self.mergeConfig(override));
+        pub fn tryDelete(self: *Self, path: []const u8, action: Action, override: RC) !void {
+            return self._router.tryDelete(self.tryCreatePath(path), action, self.tryMergeConfig(override));
         }
 
-        pub fn options(self: *Self, path: []const u8, action: Action, override: C) void {
+        pub fn options(self: *Self, path: []const u8, action: Action, override: RC) void {
             self._router.options(self.createPath(path), action, self.mergeConfig(override));
         }
-        pub fn tryOptions(self: *Self, path: []const u8, action: Action, override: C) !void {
-            return self._router.tryOptions(self.tryCreatePath(path), action, self.mergeConfig(override));
+        pub fn tryOptions(self: *Self, path: []const u8, action: Action, override: RC) !void {
+            return self._router.tryOptions(self.tryCreatePath(path), action, self.tryMergeConfig(override));
         }
 
-        pub fn all(self: *Self, path: []const u8, action: Action, override: C) void {
+        pub fn all(self: *Self, path: []const u8, action: Action, override: RC) void {
             self._router.all(self.createPath(path), action, self.mergeConfig(override));
         }
-        pub fn tryAll(self: *Self, path: []const u8, action: Action, override: C) !void {
-            return self._router.tryAll(self.tryCreatePath(path), action, self.mergeConfig(override));
+        pub fn tryAll(self: *Self, path: []const u8, action: Action, override: RC) !void {
+            return self._router.tryAll(self.tryCreatePath(path), action, self.tryMergeConfig(override));
         }
 
         fn createPath(self: *Self, path: []const u8) []const u8 {
             return self.tryCreatePath(path) catch unreachable;
-        }
-
-        fn mergeConfig(self: *const Self, override: C) C {
-            return .{
-                .data = override.data orelse self._config.data,
-                .handler = override.handler orelse self._config.handler,
-                .dispatcher = override.dispatcher orelse self._config.dispatcher,
-                .middlewares = override.middlewares orelse self._config.middlewares,
-            };
         }
 
         fn tryCreatePath(self: *Self, path: []const u8) ![]const u8 {
@@ -347,6 +358,20 @@ pub fn Group(comptime Handler: type, comptime Action: type) type {
             @memcpy(joined[0..prefix.len], prefix);
             @memcpy(joined[prefix.len..], path);
             return joined;
+        }
+
+        fn mergeConfig(self: *Self, override: RC) RC {
+            return self.tryMergeConfig(override) catch unreachable;
+        }
+
+        fn tryMergeConfig(self: *Self, override: RC) !RC {
+            return .{
+                .data = override.data orelse self._config.data,
+                .handler = override.handler orelse self._config.handler,
+                .dispatcher = override.dispatcher orelse self._config.dispatcher,
+                .middlewares = try self._router.mergeMiddleware(self._config.middlewares orelse &.{}, override),
+                .middleware_strategy = override.middleware_strategy orelse self._config.middleware_strategy,
+            };
         }
     };
 }
@@ -623,6 +648,150 @@ test "route: glob" {
         try t.expectEqual(0, params.len);
     }
 }
+
+test "route: middlewares no global" {
+    defer t.reset();
+
+    const m1 = fakeMiddleware(&.{.id = 1});
+    const m2 = fakeMiddleware(&.{.id = 2});
+    const m3 = fakeMiddleware(&.{.id = 3});
+
+    var params = try Params.init(t.arena.allocator(), 5);
+    var router = Router(void, httpz.Action(void)).init(t.arena.allocator(), testDispatcher1, {}) catch unreachable;
+
+    {
+        router.get("/1", testRoute1, .{});
+        router.get("/2", testRoute1, .{.middlewares = &.{m1}});
+        router.get("/3", testRoute1, .{.middlewares = &.{m1}, .middleware_strategy = .replace});
+        router.get("/4", testRoute1, .{.middlewares = &.{m1, m2}});
+        router.get("/5", testRoute1, .{.middlewares = &.{m1, m2}, .middleware_strategy = .replace});
+
+        try assertMiddlewares(&router, &params, "/1", &.{});
+        try assertMiddlewares(&router, &params, "/2", &.{1});
+        try assertMiddlewares(&router, &params, "/3", &.{1});
+        try assertMiddlewares(&router, &params, "/4", &.{1, 2});
+        try assertMiddlewares(&router, &params, "/5", &.{1, 2});
+    }
+
+    {
+        // group with no group-level middleware
+        var group = router.group("/g1", .{});
+        group.get("/1", testRoute1, .{});
+        group.get("/2", testRoute1, .{.middlewares = &.{m1}});
+        group.get("/3", testRoute1, .{.middlewares = &.{m1}, .middleware_strategy = .append});
+        group.get("/4", testRoute1, .{.middlewares = &.{m1, m2}, .middleware_strategy = .replace});
+
+        try assertMiddlewares(&router, &params, "/g1/1", &.{});
+        try assertMiddlewares(&router, &params, "/g1/2", &.{1});
+        try assertMiddlewares(&router, &params, "/g1/3", &.{1});
+        try assertMiddlewares(&router, &params, "/g1/4", &.{1, 2});
+    }
+
+    {
+        // group with group-level middleware
+        var group = router.group("/g2", .{.middlewares = &.{m1}});
+        group.get("/1", testRoute1, .{});
+        group.get("/2", testRoute1, .{.middlewares = &.{m2}});
+        group.get("/3", testRoute1, .{.middlewares = &.{m2, m3}, .middleware_strategy = .append});
+        group.get("/4", testRoute1, .{.middlewares = &.{m2, m3}, .middleware_strategy = .replace});
+
+        try assertMiddlewares(&router, &params, "/g2/1", &.{1});
+        try assertMiddlewares(&router, &params, "/g2/2", &.{1, 2});
+        try assertMiddlewares(&router, &params, "/g2/3", &.{1, 2, 3});
+        try assertMiddlewares(&router, &params, "/g2/4", &.{2, 3});
+    }
+}
+
+test "route: middlewares with global" {
+    defer t.reset();
+
+    const m1 = fakeMiddleware(&.{.id = 1});
+    const m2 = fakeMiddleware(&.{.id = 2});
+    const m3 = fakeMiddleware(&.{.id = 3});
+    const m4 = fakeMiddleware(&.{.id = 4});
+    const m5 = fakeMiddleware(&.{.id = 5});
+
+    var params = try Params.init(t.arena.allocator(), 5);
+    var router = Router(void, httpz.Action(void)).init(t.arena.allocator(), testDispatcher1, {}) catch unreachable;
+    router.middlewares = &.{m4, m5};
+
+    {
+        router.get("/1", testRoute1, .{});
+        router.get("/2", testRoute1, .{.middlewares = &.{m1}});
+        router.get("/3", testRoute1, .{.middlewares = &.{m1}, .middleware_strategy = .replace});
+        router.get("/4", testRoute1, .{.middlewares = &.{m1, m2}});
+        router.get("/5", testRoute1, .{.middlewares = &.{m1, m2}, .middleware_strategy = .replace});
+
+        try assertMiddlewares(&router, &params, "/1", &.{4, 5});
+        try assertMiddlewares(&router, &params, "/2", &.{4, 5, 1});
+        try assertMiddlewares(&router, &params, "/3", &.{1});
+        try assertMiddlewares(&router, &params, "/4", &.{4, 5, 1, 2});
+        try assertMiddlewares(&router, &params, "/5", &.{1, 2});
+    }
+
+    {
+        // group with no group-level middleware
+        var group = router.group("/g1", .{});
+        group.get("/1", testRoute1, .{});
+        group.get("/2", testRoute1, .{.middlewares = &.{m1}});
+        group.get("/3", testRoute1, .{.middlewares = &.{m1, m2}, .middleware_strategy = .append});
+        group.get("/4", testRoute1, .{.middlewares = &.{m1, m2}, .middleware_strategy = .replace});
+
+        try assertMiddlewares(&router, &params, "/g1/1", &.{4, 5});
+        try assertMiddlewares(&router, &params, "/g1/2", &.{4, 5, 1});
+        try assertMiddlewares(&router, &params, "/g1/3", &.{4, 5, 1, 2});
+        try assertMiddlewares(&router, &params, "/g1/4", &.{1, 2});
+    }
+
+    {
+        // group with appended group-level middleware
+        var group = router.group("/g2", .{.middlewares = &.{m1}, .middleware_strategy = .append});
+        group.get("/1", testRoute1, .{});
+        group.get("/2", testRoute1, .{.middlewares = &.{m2}});
+        group.get("/3", testRoute1, .{.middlewares = &.{m2, m3}, .middleware_strategy = .append});
+        group.get("/4", testRoute1, .{.middlewares = &.{m2, m3}, .middleware_strategy = .replace});
+
+        try assertMiddlewares(&router, &params, "/g2/1", &.{4, 5, 1});
+        try assertMiddlewares(&router, &params, "/g2/2", &.{4, 5, 1, 2});
+        try assertMiddlewares(&router, &params, "/g2/3", &.{4, 5, 1, 2, 3});
+        try assertMiddlewares(&router, &params, "/g2/4", &.{2, 3});
+    }
+
+    {
+        // group with replace group-level middleware
+        var group = router.group("/g2", .{.middlewares = &.{m1}, .middleware_strategy = .replace});
+        group.get("/1", testRoute1, .{});
+        group.get("/2", testRoute1, .{.middlewares = &.{m2}});
+        group.get("/3", testRoute1, .{.middlewares = &.{m2, m3}, .middleware_strategy = .append});
+        group.get("/4", testRoute1, .{.middlewares = &.{m2, m3}, .middleware_strategy = .replace});
+
+        try assertMiddlewares(&router, &params, "/g2/1", &.{1});
+        try assertMiddlewares(&router, &params, "/g2/2", &.{1, 2});
+        try assertMiddlewares(&router, &params, "/g2/3", &.{4, 5, 1, 2, 3});
+        try assertMiddlewares(&router, &params, "/g2/4", &.{2, 3});
+    }
+}
+
+fn assertMiddlewares(router: anytype, params: *Params, path: []const u8, expected: []const u32) !void {
+    const middlewares = router.route(httpz.Method.GET, path, params).?.middlewares;
+    try t.expectEqual(expected.len, middlewares.len);
+    for (expected, middlewares) |e, m| {
+        const impl: *const FakeMiddlewareImpl = @ptrCast(@alignCast(m.ptr));
+        try t.expectEqual(e, impl.id);
+    }
+}
+
+fn fakeMiddleware(impl: *const FakeMiddlewareImpl) httpz.Middleware(void) {
+    return .{
+        .ptr = @constCast(impl),
+        .deinitFn = undefined,
+        .executeFn = undefined,
+    };
+}
+
+const FakeMiddlewareImpl = struct {
+    id: u32,
+};
 
 // TODO: this functionality isn't implemented because I can't think of a way
 // to do it which isn't relatively expensive (e.g. recursively or keeping a
