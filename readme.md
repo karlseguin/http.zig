@@ -677,15 +677,20 @@ A middleware instance is created using `server.middleware()` and can then be use
 var server = try httpz.Server(void).init(allocator, .{.port = 5882}, {});
 
 // the middleware method takes the struct name and its configuration
-const cors = server.middleware(middlewares.Cors, .{
+const cors = try server.middleware(httpz.middleware.Cors, .{
   .origin = "https://www.openmymind.net/",
 });
 
-// applies these middlewares to any following route definitions
-router.middlewares = &.{cors};
+// apply this middleware to all routes (unless the route 
+// explicitly opts out)
+var router = server.router(.{.middlewares = .{cors}});
 
-// and/or on a specific route (also available on a route group)
+// or we could add middleware on a route-per-route bassis
 router.get("/v1/users", .{.middlewares = &.{cors}});
+
+// by default, middlewares on a route are appended to the global middlewares
+// we can replace them instead by specifying a middleware_strategy
+router.get("/v1/metrics", .{.middlewares = &.{cors}, .middleware_strategy = .replace});
 ```
 
 ## Cors
