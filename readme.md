@@ -13,7 +13,7 @@ pub fn main() !void {
   // handler, we passed a void ({}) value.
   var server = try httpz.Server(void).init(allocator, .{.port = 5882}, {});
   
-  var router = server.router();
+  var router = server.router(.{});
   router.get("/api/user/:id", getUser, .{});
 
   // blocks
@@ -60,21 +60,21 @@ listening http://localhost:8800/
 ```
 
 # Installation
-1) Add into `dependencies` at `build.zig.zon`:
-```zig
-.dependencies = .{
-  .httpz = .{
-    .url = "git+https://github.com/karlseguin/http.zig#master",
-    .hash = {{ actual_hash string, remove this line before 'zig build' to get actual hash }},
-  },
-},
+1) Add http.zig as a dependency in your `build.zig.zon`:
+
+```bash
+`
 ```
-2) Add this in `build.zig`:
+
+2) In your `build.zig`, add the `httpz` module as a dependency you your program:
+
 ```zig
 const httpz = b.dependency("httpz", .{
-  .target = target,
-  .optimize = optimize,
+    .target = target,
+    .optimize = optimize,
 });
+
+// the executable from your call to b.addExecutable(...)
 exe.root_module.addImport("httpz", httpz.module("httpz"));
 ```
 
@@ -115,7 +115,7 @@ pub fn main() !void {
   };
 
   var server = try httpz.Server(*App).init(allocator, .{.port = 5882}, &app);
-  var router = server.router();
+  var router = server.router(.{});
   router.get("/api/user/:id", getUser, .{});
   try server.listen();
 }
@@ -257,7 +257,7 @@ pub fn main() !void {
     // overwrite the default error handler
     server.errorHandler(errorHandler); 
 
-    var router = server.router();
+    var router = server.router(.{});
 
     // use get/post/put/head/patch/options/delete
     // you can also use "all" to attach to all methods
@@ -550,6 +550,10 @@ pub fn info(app: *MyApp, _: *httpz.Request, res: *httpz.Response) !void {
 ```
 
 # Router
+You get an instance of the router by calling `server.route(.{})`. Currently, the configuration takes a single parameter:
+
+* `middlewares` - A list of middlewares to apply to each request. These middleware will be executed even for requests with no matching route (i.e. not found). An individual route can opt-out of these middleware, see the `middleware_strategy` route configuration.
+
 You can use the `get`, `put`, `post`, `head`, `patch`, `trace`, `delete` or `options` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
 
 These functions can all `@panic` as they allocate memory. Each function has an equivalent `tryXYZ` variant which will return an error rather than panicking:
@@ -578,7 +582,8 @@ The last parameter to the various `router` methods is a route configuration. In 
 
 * `dispatcher` - The dispatch method to use. This overrides the default dispatcher, which is either httpz built-in dispatcher or [your handler's `dispatch` method](#custom-dispatch).
 * `handler` - The handler instance to use. The default handler is the 3rd parameter passed to `Server(H).init` but you can override this on a route-per-route basis.
-* `middlewares` - A list of [middlewares](#middlewares) to run. By default, no middlewares are run.
+* `middlewares` - A list of [middlewares](#middlewares) to run. By default, no middlewares are run. By default, this list of middleware is appended to the list given to `server.route(.{.middlewares = .{....})`.
+* `middleware_strategy` - How the given middleware should be merged with the global middlewares. Defaults to `.append`, can also be `.replace`.
 * `data` - Arbitrary data (`*const anyopaque`) to make available to `req.route_data`. This must be a `const`.
 
 You can specify a separate configuration for each route. To change the configuration for a group of routes, you have two options. The first, is to directly change the router's `handler`, `dispatcher` and `middlewares` field. Any subsequent routes will use these values:
@@ -586,7 +591,7 @@ You can specify a separate configuration for each route. To change the configura
 ```zig
 var server = try httpz.Server(Handler).init(allocator, .{.port = 5882}, &handler);
   
-var router = server.router();
+var router = server.router(.{});
 
 // Will use Handler.dispatch on the &handler instance passed to init
 // No middleware

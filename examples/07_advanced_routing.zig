@@ -24,7 +24,7 @@ pub fn main() !void {
     var server = try httpz.Server(*Handler).init(allocator, .{.port = PORT}, &default_handler);
     defer server.deinit();
 
-    var router = server.router();
+    var router = server.router(.{});
 
     router.get("/", index, .{});
 

@@ -25,7 +25,7 @@ pub fn main() !void {
     }, {});
     defer server.deinit();
 
-    var router = server.router();
+    var router = server.router(.{});
 
     // Register routes. The last parameter is a Route Config. For these basic
     // examples, we aren't using it.
