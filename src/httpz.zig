@@ -509,7 +509,7 @@ pub fn Server(comptime H: type) type {
         // because the response data must outlive the execution of this function
         // (and thus, in nonblocking, outlives this threadpool's execution unit).
         pub fn handleRequest(self: *Self, conn: *HTTPConn, thread_buf: []u8) void {
-            const aa = conn.arena.allocator();
+            const aa = conn.req_arena.allocator();
 
             var fba = FixedBufferAllocator.init(thread_buf);
             var fb = FallbackAllocator{

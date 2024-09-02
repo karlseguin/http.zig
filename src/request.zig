@@ -14,7 +14,6 @@ const KeyValue = @import("key_value.zig").KeyValue;
 const MultiFormKeyValue = @import("key_value.zig").MultiFormKeyValue;
 const Config = @import("config.zig").Config.Request;
 
-const Stream = std.net.Stream;
 const Address = std.net.Address;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
@@ -75,8 +74,6 @@ pub const Request = struct {
     middlewares: *std.StringHashMap(*anyopaque),
 
     pub const State = Self.State;
-    pub const Config = Self.Config;
-    pub const Reader = Self.Reader;
 
     pub fn init(arena: Allocator, conn: *HTTPConn) Request {
         const state = &conn.req_state;
@@ -524,48 +521,37 @@ pub const State = struct {
     // know what it is from the content-length header
     body_len: usize,
 
-    arena: *ArenaAllocator,
-
     middlewares: std.StringHashMap(*anyopaque),
 
     const asUint = @import("url.zig").asUint;
 
-    pub fn init(allocator: Allocator, arena: *ArenaAllocator, buffer_pool: *buffer.Pool, config: *const Config) !Request.State {
+    pub fn init(arena: Allocator, buffer_pool: *buffer.Pool, config: *const Config) !Request.State {
         return .{
             .pos = 0,
             .len = 0,
             .url = null,
-            .method = null,
-            .protocol = null,
             .body = null,
             .body_pos = 0,
             .body_len = 0,
-            .arena = arena,
+            .method = null,
+            .protocol = null,
             .buffer_pool = buffer_pool,
             .max_body_size = config.max_body_size orelse 1_048_576,
-            .middlewares = std.StringHashMap(*anyopaque).init(allocator),
-            .qs = try KeyValue.init(allocator, config.max_query_count orelse 32),
-            .fd = try KeyValue.init(allocator, config.max_form_count orelse 0),
-            .mfd = try MultiFormKeyValue.init(allocator, config.max_multiform_count orelse 0),
-            .buf = try allocator.alloc(u8, config.buffer_size orelse 4_096),
-            .headers = try KeyValue.init(allocator, config.max_header_count orelse 32),
-            .params = try Params.init(allocator, config.max_param_count orelse 10),
+            .middlewares = std.StringHashMap(*anyopaque).init(arena),
+            .qs = try KeyValue.init(arena, config.max_query_count orelse 32),
+            .fd = try KeyValue.init(arena, config.max_form_count orelse 0),
+            .mfd = try MultiFormKeyValue.init(arena, config.max_multiform_count orelse 0),
+            .buf = try arena.alloc(u8, config.buffer_size orelse 4_096),
+            .headers = try KeyValue.init(arena, config.max_header_count orelse 32),
+            .params = try Params.init(arena, config.max_param_count orelse 10),
         };
     }
 
-    pub fn deinit(self: *State, allocator: Allocator) void {
-        // not our job to clear the arena!
+    pub fn deinit(self: *State) void {
         if (self.body) |buf| {
             self.buffer_pool.release(buf);
             self.body = null;
         }
-        allocator.free(self.buf);
-        self.qs.deinit(allocator);
-        self.fd.deinit(allocator);
-        self.mfd.deinit(allocator);
-        self.params.deinit(allocator);
-        self.headers.deinit(allocator);
-        self.middlewares.deinit();
     }
 
     pub fn reset(self: *State) void {
@@ -592,7 +578,7 @@ pub const State = struct {
     }
 
     // returns true if the header has been fully parsed
-    pub fn parse(self: *State, stream: anytype) !bool {
+    pub fn parse(self: *State, req_arena: Allocator, stream: anytype) !bool {
         if (self.body != null) {
             // if we have a body, then we've read the header. We want to read into
             // self.body, not self.buf.
@@ -609,13 +595,13 @@ pub const State = struct {
         self.len = len;
 
         if (self.method == null) {
-            if (try self.parseMethod(buf[0..len])) return true;
+            if (try self.parseMethod(req_arena, buf[0..len])) return true;
         } else if (self.url == null) {
-            if (try self.parseUrl(buf[self.pos..len])) return true;
+            if (try self.parseUrl(req_arena, buf[self.pos..len])) return true;
         } else if (self.protocol == null) {
-            if (try self.parseProtocol(buf[self.pos..len])) return true;
+            if (try self.parseProtocol(req_arena, buf[self.pos..len])) return true;
         } else {
-            if (try self.parseHeaders(buf[self.pos..len])) return true;
+            if (try self.parseHeaders(req_arena, buf[self.pos..len])) return true;
         }
 
         if (self.body == null and len == buf.len) {
@@ -625,7 +611,7 @@ pub const State = struct {
         return false;
     }
 
-    fn parseMethod(self: *State, buf: []u8) !bool {
+    fn parseMethod(self: *State, req_arena: Allocator, buf: []u8) !bool {
         const buf_len = buf.len;
 
         // Shortest method is only 3 characters (+1 trailing space), so
@@ -677,10 +663,10 @@ pub const State = struct {
             else => return error.UnknownMethod,
         }
 
-        return try self.parseUrl(buf[self.pos..]);
+        return try self.parseUrl(req_arena, buf[self.pos..]);
     }
 
-    fn parseUrl(self: *State, buf: []u8) !bool {
+    fn parseUrl(self: *State, req_arena: Allocator, buf: []u8) !bool {
         const buf_len = buf.len;
         if (buf_len == 0) return false;
 
@@ -706,10 +692,10 @@ pub const State = struct {
         }
 
         self.pos += len;
-        return self.parseProtocol(buf[len..]);
+        return self.parseProtocol(req_arena, buf[len..]);
     }
 
-    fn parseProtocol(self: *State, buf: []u8) !bool {
+    fn parseProtocol(self: *State, req_arena: Allocator, buf: []u8) !bool {
         const buf_len = buf.len;
         if (buf_len < 10) return false;
 
@@ -728,10 +714,10 @@ pub const State = struct {
         }
 
         self.pos += 10;
-        return try self.parseHeaders(buf[10..]);
+        return try self.parseHeaders(req_arena, buf[10..]);
     }
 
-    fn parseHeaders(self: *State, full: []u8) !bool {
+    fn parseHeaders(self: *State, req_arena: Allocator, full: []u8) !bool {
         var buf = full;
         var headers = &self.headers;
         line: while (buf.len > 0) {
@@ -802,7 +788,7 @@ pub const State = struct {
                         if (buf[1] == '\n') {
                             // we have \r\n at the start of a line, we're done
                             self.pos += 2;
-                            return try self.prepareForBody();
+                            return try self.prepareForBody(req_arena);
                         }
                         // we have a \r followed by something that isn't a \n, can't be right
                         return error.InvalidHeaderLine;
@@ -818,7 +804,7 @@ pub const State = struct {
     }
 
     // we've finished reading the header
-    fn prepareForBody(self: *State) !bool {
+    fn prepareForBody(self: *State, req_arena: Allocator) !bool {
         const str = self.headers.get("content-length") orelse return true;
         const cl = atoi(str) orelse return error.InvalidContentLength;
 
@@ -861,7 +847,7 @@ pub const State = struct {
             self.pos = len + missing;
         } else {
             // We don't have the [full] body, and our static buffer is too small
-            const body_buf = try self.buffer_pool.arenaAlloc(self.arena.allocator(), cl);
+            const body_buf = try self.buffer_pool.arenaAlloc(req_arena, cl);
             @memcpy(body_buf.data[0..read], buf[pos .. pos + read]);
             self.body = body_buf;
         }
@@ -1517,11 +1503,11 @@ test "request: fuzz" {
             var conn = ctx.conn;
             var fake_reader = ctx.fakeReader();
             while (true) {
-                const done = try conn.req_state.parse(&fake_reader);
+                const done = try conn.req_state.parse(conn.req_arena.allocator(), &fake_reader);
                 if (done) break;
             }
 
-            var request = Request.init(conn.arena.allocator(), conn);
+            var request = Request.init(conn.req_arena.allocator(), conn);
 
             // assert the headers
             var it = headers.iterator();
@@ -1550,10 +1536,10 @@ fn testParse(input: []const u8, config: Config) !Request {
     var ctx = t.Context.allocInit(t.arena.allocator(), .{ .request = config });
     ctx.write(input);
     while (true) {
-        const done = try ctx.conn.req_state.parse(ctx.stream);
+        const done = try ctx.conn.req_state.parse(ctx.conn.req_arena.allocator(), ctx.stream);
         if (done) break;
     }
-    return Request.init(ctx.conn.arena.allocator(), ctx.conn);
+    return Request.init(ctx.conn.req_arena.allocator(), ctx.conn);
 }
 
 fn expectParseError(expected: anyerror, input: []const u8, config: Config) !void {
@@ -1561,7 +1547,7 @@ fn expectParseError(expected: anyerror, input: []const u8, config: Config) !void
     defer ctx.deinit();
 
     ctx.write(input);
-    try t.expectError(expected, ctx.conn.req_state.parse(ctx.stream));
+    try t.expectError(expected, ctx.conn.req_state.parse(ctx.conn.req_arena.allocator(), ctx.stream));
 }
 
 fn randomMethod(random: std.Random) []const u8 {

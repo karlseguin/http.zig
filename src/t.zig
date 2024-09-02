@@ -5,6 +5,8 @@
 const std = @import("std");
 const httpz = @import("httpz.zig");
 
+const Allocator = std.mem.Allocator;
+
 const Conn = @import("worker.zig").HTTPConn;
 const BufferPool = @import("buffer.zig").Pool;
 
@@ -46,7 +48,7 @@ pub const Context = struct {
     to_read: std.ArrayList(u8),
     _random: ?std.Random.DefaultPrng = null,
 
-    pub fn allocInit(ctx_allocator: std.mem.Allocator, config_: httpz.Config) Context {
+    pub fn allocInit(ctx_allocator: Allocator, config_: httpz.Config) Context {
         var pair: [2]c_int = undefined;
         const rc = std.c.socketpair(std.posix.AF.LOCAL, std.posix.SOCK.STREAM, 0, &pair);
         if (rc != 0) {
@@ -73,6 +75,7 @@ pub const Context = struct {
 
         var ctx_arena = ctx_allocator.create(std.heap.ArenaAllocator) catch unreachable;
         ctx_arena.* = std.heap.ArenaAllocator.init(ctx_allocator);
+
         const aa = ctx_arena.allocator();
 
         const bp = aa.create(BufferPool) catch unreachable;
@@ -90,13 +93,7 @@ pub const Context = struct {
             if (cw.large_buffer_size == null) config.workers.large_buffer_size = 256;
         }
 
-        // a bit over the top..we could use ctx_arena here, but this better mimics
-        // the actual code where the conn has a distinct arena (whereas ctx_arena is
-        // something specific to this test context)
-        const conn_arena = aa.create(std.heap.ArenaAllocator) catch unreachable;
-        conn_arena.* = std.heap.ArenaAllocator.init(aa);
-
-        const req_state = httpz.Request.State.init(aa, conn_arena, bp, &config.request) catch unreachable;
+        const req_state = httpz.Request.State.init(aa, bp, &config.request) catch unreachable;
         const res_state = httpz.Response.State.init(aa, &config.response) catch unreachable;
 
         const conn = aa.create(Conn) catch unreachable;
@@ -110,8 +107,9 @@ pub const Context = struct {
             .timeout = 0,
             .request_count = 0,
             .close = false,
-            .arena = conn_arena,
             .ws_worker = undefined,
+            .conn_arena = ctx_arena,
+            .req_arena = std.heap.ArenaAllocator.init(aa),
         };
 
         return .{
@@ -158,7 +156,7 @@ pub const Context = struct {
         }
     }
 
-    pub fn read(self: Context, a: std.mem.Allocator) !std.ArrayList(u8) {
+    pub fn read(self: Context, a: Allocator) !std.ArrayList(u8) {
         var buf: [1024]u8 = undefined;
         var arr = std.ArrayList(u8).init(a);
 
@@ -231,11 +229,11 @@ pub const Context = struct {
     }
 
     pub fn request(self: Context) httpz.Request {
-        return httpz.Request.init(self.conn.arena.allocator(), self.conn);
+        return httpz.Request.init(self.conn.req_arena.allocator(), self.conn);
     }
 
     pub fn response(self: Context) httpz.Response {
-        return httpz.Response.init(self.conn.arena.allocator(), self.conn);
+        return httpz.Response.init(self.conn.req_arena.allocator(), self.conn);
     }
 
     pub fn reset(self: Context) void {
@@ -271,7 +269,7 @@ pub const Context = struct {
     };
 };
 
-pub fn randomString(random: std.Random, a: std.mem.Allocator, max: usize) []u8 {
+pub fn randomString(random: std.Random, a: Allocator, max: usize) []u8 {
     var buf = a.alloc(u8, random.uintAtMost(usize, max) + 1) catch unreachable;
     const valid = "abcdefghijklmnopqrstuvwxyz0123456789-_";
     for (0..buf.len) |i| {

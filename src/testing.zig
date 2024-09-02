@@ -18,13 +18,13 @@ pub fn init(config: httpz.Config) Testing {
     // thereafter to change whatever properties they want.
     var base_request = std.io.fixedBufferStream("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     while (true) {
-        const done = conn.req_state.parse(&base_request) catch unreachable;
+        const done = conn.req_state.parse(conn.req_arena.allocator(), &base_request) catch unreachable;
         if (done) {
             break;
         }
     }
 
-    const aa = conn.arena.allocator();
+    const aa = conn.req_arena.allocator();
 
     const req = aa.create(httpz.Request) catch unreachable;
     req.* = ctx.request();
