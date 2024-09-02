@@ -4,7 +4,7 @@ const mem = std.mem;
 const ascii = std.ascii;
 const Allocator = std.mem.Allocator;
 
-fn MakeKeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) bool) type {
+fn KeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) callconv(.Inline) bool) type {
     return struct {
         len: usize,
         keys: []K,
@@ -89,21 +89,21 @@ fn MakeKeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) bool) type {
     };
 }
 
-fn strEql(lhs: []const u8, rhs: []const u8) bool {
+inline fn strEql(lhs: []const u8, rhs: []const u8) bool {
     return std.mem.eql(u8, lhs, rhs);
 }
 
-pub const KeyValue = MakeKeyValue([]const u8, []const u8, strEql);
+pub const StringKeyValue = KeyValue([]const u8, []const u8, strEql);
 
 const MultiForm = struct {
     value: []const u8,
     filename: ?[]const u8 = null,
 };
-pub const MultiFormKeyValue = MakeKeyValue([]const u8, MultiForm, strEql);
+pub const MultiFormKeyValue = KeyValue([]const u8, MultiForm, strEql);
 
 const t = @import("t.zig");
 test "KeyValue: get" {
-    var kv = try KeyValue.init(t.allocator, 2);
+    var kv = try StringKeyValue.init(t.allocator, 2);
     defer kv.deinit(t.allocator);
 
     var key = "content-type".*;
@@ -118,7 +118,7 @@ test "KeyValue: get" {
 }
 
 test "KeyValue: ignores beyond max" {
-    var kv = try KeyValue.init(t.allocator, 2);
+    var kv = try StringKeyValue.init(t.allocator, 2);
     defer kv.deinit(t.allocator);
     var n1 = "content-length".*;
     kv.add(&n1, "cl");

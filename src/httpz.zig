@@ -530,7 +530,7 @@ pub fn Server(comptime H: type) type {
                 }
                 self.handler.handle(&req, &res);
             } else {
-                const dispatchable_action = self._router.route(req.method, req.url.path, &req.params);
+                const dispatchable_action = self._router.route(req.method, req.url.path, req.params);
 
                 var executor = Executor{
                     .index = 0,

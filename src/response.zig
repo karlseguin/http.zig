@@ -5,8 +5,8 @@ const httpz = @import("httpz.zig");
 const buffer = @import("buffer.zig");
 
 const HTTPConn = @import("worker.zig").HTTPConn;
-const KeyValue = @import("key_value.zig").KeyValue;
 const Config = @import("config.zig").Config.Response;
+const StringKeyValue = @import("key_value.zig").StringKeyValue;
 
 const mem = std.mem;
 const Stream = std.net.Stream;
@@ -28,7 +28,7 @@ pub const Response = struct {
 
     // The response headers.
     // Using res.header(NAME, VALUE) is preferred.
-    headers: KeyValue,
+    headers: StringKeyValue,
 
     // The content type. Use header("content-type", value) for a content type
     // which isn't available in the httpz.ContentType enum.
@@ -427,10 +427,10 @@ fn writeAllIOVec(conn: *HTTPConn, vec: []std.posix.iovec_const) !void {
 // to request.
 pub const State = struct {
     // re-used from request to request, exposed in via res.header(name, value
-    headers: KeyValue,
+    headers: StringKeyValue,
 
     pub fn init(allocator: Allocator, config: *const Config) !Response.State {
-        var headers = try KeyValue.init(allocator, config.max_header_count orelse 16);
+        var headers = try StringKeyValue.init(allocator, config.max_header_count orelse 16);
         errdefer headers.deinit(allocator);
 
         return .{

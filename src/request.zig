@@ -10,7 +10,7 @@ const Self = @This();
 const Url = @import("url.zig").Url;
 const HTTPConn = @import("worker.zig").HTTPConn;
 const Params = @import("params.zig").Params;
-const KeyValue = @import("key_value.zig").KeyValue;
+const StringKeyValue = @import("key_value.zig").StringKeyValue;
 const MultiFormKeyValue = @import("key_value.zig").MultiFormKeyValue;
 const Config = @import("config.zig").Config.Request;
 
@@ -27,10 +27,10 @@ pub const Request = struct {
 
     // Path params (extracted from the URL based on the route).
     // Using req.param(NAME) is preferred.
-    params: Params,
+    params: *Params,
 
     // The headers of the request. Using req.header(NAME) is preferred.
-    headers: KeyValue,
+    headers: *StringKeyValue,
 
     // The request method.
     method: http.Method,
@@ -46,16 +46,16 @@ pub const Request = struct {
     qs_read: bool = false,
 
     // The query string lookup.
-    qs: KeyValue,
+    qs: *StringKeyValue,
 
     // cannot use an optional on fd, because it's pre-allocated so always exists
     fd_read: bool = false,
 
     // The formData lookup.
-    fd: KeyValue,
+    fd: *StringKeyValue,
 
     // The multiFormData lookup.
-    mfd: MultiFormKeyValue,
+    mfd: *MultiFormKeyValue,
 
     // Spare space we still have in our static buffer after parsing the request
     // We can use this, if needed, for example to unescape querystring parameters
@@ -79,16 +79,16 @@ pub const Request = struct {
         const state = &conn.req_state;
         return .{
             .arena = arena,
-            .qs = state.qs,
-            .fd = state.fd,
-            .mfd = state.mfd,
+            .qs = &state.qs,
+            .fd = &state.fd,
+            .mfd = &state.mfd,
             .method = state.method.?,
             .protocol = state.protocol.?,
             .url = Url.parse(state.url.?),
             .address = conn.address,
             .route_data = null,
-            .params = state.params,
-            .headers = state.headers,
+            .params = &state.params,
+            .headers = &state.headers,
             .body_buffer = state.body,
             .body_len = state.body_len,
             .spare = state.buf[state.pos..],
@@ -122,7 +122,7 @@ pub const Request = struct {
         return self.params.get(name);
     }
 
-    pub fn query(self: *Request) !KeyValue {
+    pub fn query(self: *Request) !*StringKeyValue {
         if (self.qs_read) {
             return self.qs;
         }
@@ -147,14 +147,14 @@ pub const Request = struct {
         }
     }
 
-    pub fn formData(self: *Request) !KeyValue {
+    pub fn formData(self: *Request) !*StringKeyValue {
         if (self.fd_read) {
             return self.fd;
         }
         return self.parseFormData();
     }
 
-    pub fn multiFormData(self: *Request) !MultiFormKeyValue {
+    pub fn multiFormData(self: *Request) !*MultiFormKeyValue {
         if (self.fd_read) {
             return self.mfd;
         }
@@ -166,14 +166,14 @@ pub const Request = struct {
     // there's a url-escaped component (a key or value), we need memory to store
     // the un-escaped version. Ideally, we'd like to use our static buffer for this
     // but, we might not have enough space.
-    fn parseQuery(self: *Request) !KeyValue {
+    fn parseQuery(self: *Request) !*StringKeyValue {
         const raw = self.url.query;
         if (raw.len == 0) {
             self.qs_read = true;
             return self.qs;
         }
 
-        var qs = &self.qs;
+        var qs = self.qs;
         var buf = self.spare;
         const allocator = self.arena;
 
@@ -205,14 +205,14 @@ pub const Request = struct {
         return self.qs;
     }
 
-    fn parseFormData(self: *Request) !KeyValue {
+    fn parseFormData(self: *Request) !*StringKeyValue {
         const b = self.body() orelse "";
         if (b.len == 0) {
             self.fd_read = true;
             return self.fd;
         }
 
-        var fd = &self.fd;
+        var fd = self.fd;
         var buf = self.spare;
         const allocator = self.arena;
 
@@ -245,7 +245,7 @@ pub const Request = struct {
 
     fn parseMultiFormData(
         self: *Request,
-    ) !MultiFormKeyValue {
+    ) !*MultiFormKeyValue {
         const body_ = self.body() orelse "";
         if (body_.len == 0) {
             self.fd_read = true;
@@ -295,7 +295,7 @@ pub const Request = struct {
             return error.InvalidMultiPartFormDataHeader;
         };
 
-        var mfd = &self.mfd;
+        var mfd = self.mfd;
         var entry_it = std.mem.splitSequence(u8, body_, boundary);
 
         {
@@ -476,10 +476,10 @@ pub const State = struct {
     len: usize,
 
     // Lazy-loaded in request.query();
-    qs: KeyValue,
+    qs: StringKeyValue,
 
     // Lazy-loaded in request.formData();
-    fd: KeyValue,
+    fd: StringKeyValue,
 
     // Lazy-loaded in request.multiFormData();
     mfd: MultiFormKeyValue,
@@ -508,7 +508,7 @@ pub const State = struct {
     // is because once we finish parsing the headers, if there's no body, we'll
     // signal the worker that we have a complete request and it can proceed to
     // handle it. Thus, body == null or body_len == 0 doesn't mean anything.
-    headers: KeyValue,
+    headers: StringKeyValue,
 
     // Our body. This be a slice pointing to` buf`, or be from the buffer_pool or
     // be dynamically allocated.
@@ -538,11 +538,11 @@ pub const State = struct {
             .buffer_pool = buffer_pool,
             .max_body_size = config.max_body_size orelse 1_048_576,
             .middlewares = std.StringHashMap(*anyopaque).init(arena),
-            .qs = try KeyValue.init(arena, config.max_query_count orelse 32),
-            .fd = try KeyValue.init(arena, config.max_form_count orelse 0),
+            .qs = try StringKeyValue.init(arena, config.max_query_count orelse 32),
+            .fd = try StringKeyValue.init(arena, config.max_form_count orelse 0),
             .mfd = try MultiFormKeyValue.init(arena, config.max_multiform_count orelse 0),
             .buf = try arena.alloc(u8, config.buffer_size orelse 4_096),
-            .headers = try KeyValue.init(arena, config.max_header_count orelse 32),
+            .headers = try StringKeyValue.init(arena, config.max_header_count orelse 32),
             .params = try Params.init(arena, config.max_param_count orelse 10),
         };
     }
@@ -594,24 +594,53 @@ pub const State = struct {
         len = len + n;
         self.len = len;
 
+        // When https://github.com/ziglang/zig/issues/8220 lands, we can probably
+        // DRY this up.
         if (self.method == null) {
-            if (try self.parseMethod(req_arena, buf[0..len])) return true;
+            if (try self.parseMethod(buf[0..len]) == false) {
+                return false;
+            }
+            if (try self.parseUrl(buf[self.pos..len]) == false) {
+                return false;
+            }
+            if (try self.parseProtocol(buf[self.pos..len]) == false) {
+                return false;
+            }
+            if (try self.parseHeaders(req_arena, buf[self.pos..len]) == true) {
+                return true;
+            }
         } else if (self.url == null) {
-            if (try self.parseUrl(req_arena, buf[self.pos..len])) return true;
+            if (try self.parseUrl(buf[self.pos..len]) == false) {
+                return false;
+            }
+            if (try self.parseProtocol(buf[self.pos..len]) == false) {
+                return false;
+            }
+            if (try self.parseHeaders(req_arena, buf[self.pos..len]) == true) {
+                return true;
+            }
         } else if (self.protocol == null) {
-            if (try self.parseProtocol(req_arena, buf[self.pos..len])) return true;
+            if (try self.parseProtocol(buf[self.pos..len]) == false) {
+                return false;
+            }
+            if (try self.parseHeaders(req_arena, buf[self.pos..len]) == true) {
+                return true;
+            }
         } else {
-            if (try self.parseHeaders(req_arena, buf[self.pos..len])) return true;
+            if (try self.parseHeaders(req_arena, buf[self.pos..len]) == true) {
+                return true;
+            }
         }
 
         if (self.body == null and len == buf.len) {
             metrics.headerTooBig();
             return error.HeaderTooBig;
         }
+
         return false;
     }
 
-    fn parseMethod(self: *State, req_arena: Allocator, buf: []u8) !bool {
+    fn parseMethod(self: *State, buf: []u8) !bool {
         const buf_len = buf.len;
 
         // Shortest method is only 3 characters (+1 trailing space), so
@@ -662,11 +691,10 @@ pub const State = struct {
             },
             else => return error.UnknownMethod,
         }
-
-        return try self.parseUrl(req_arena, buf[self.pos..]);
+        return true;
     }
 
-    fn parseUrl(self: *State, req_arena: Allocator, buf: []u8) !bool {
+    fn parseUrl(self: *State, buf: []u8) !bool {
         const buf_len = buf.len;
         if (buf_len == 0) return false;
 
@@ -692,12 +720,11 @@ pub const State = struct {
         }
 
         self.pos += len;
-        return self.parseProtocol(req_arena, buf[len..]);
+        return true;
     }
 
-    fn parseProtocol(self: *State, req_arena: Allocator, buf: []u8) !bool {
-        const buf_len = buf.len;
-        if (buf_len < 10) return false;
+    fn parseProtocol(self: *State, buf: []u8) !bool {
+        if (buf.len < 10) return false;
 
         if (@as(u32, @bitCast(buf[0..4].*)) != asUint("HTTP")) {
             return error.UnknownProtocol;
@@ -714,7 +741,7 @@ pub const State = struct {
         }
 
         self.pos += 10;
-        return try self.parseHeaders(req_arena, buf[10..]);
+        return true;
     }
 
     fn parseHeaders(self: *State, req_arena: Allocator, full: []u8) !bool {

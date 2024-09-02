@@ -104,7 +104,7 @@ pub const Testing = struct {
         // This is ugly, but the Param structure is optimized for how the router
         // works, so we don't have a clean API for setting 1 key=value pair. We'll
         // just dig into the internals instead
-        var p = &self.req.params;
+        var p = self.req.params;
         p.names[p.len] = name;
         p.values[p.len] = value;
         p.len += 1;
