@@ -12,17 +12,17 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     var handler = Handler{};
-    var server = try httpz.Server(*Handler).init(allocator, .{.port = PORT}, &handler);
+    var server = try httpz.Server(*Handler).init(allocator, .{ .port = PORT }, &handler);
     defer server.deinit();
 
     var router = server.router(.{});
 
-    const restricted_route = &RouteData{.restricted = true};
+    const restricted_route = &RouteData{ .restricted = true };
 
     // We can register arbitrary data to a route, which we can retrieve
     // via req.route_data. This is stored as a `*const anyopaque`.
     router.get("/", index, .{});
-    router.get("/admin", admin, .{.data = restricted_route});
+    router.get("/admin", admin, .{ .data = restricted_route });
 
     std.debug.print("listening http://localhost:{d}/\n", .{PORT});
 
@@ -62,11 +62,11 @@ const Handler = struct {
     }
 };
 
-const RouteData = struct{
+const RouteData = struct {
     restricted: bool,
 };
 
-const Env = struct{
+const Env = struct {
     handler: *Handler,
     user: ?[]const u8,
 };

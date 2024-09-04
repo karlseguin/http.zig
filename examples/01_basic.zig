@@ -106,7 +106,7 @@ fn formPost(req: *httpz.Request, res: *httpz.Response) !void {
 
     const w = res.writer();
     while (it.next()) |kv| {
-        try std.fmt.format(w, "{s}={s}\n", .{kv.key, kv.value});
+        try std.fmt.format(w, "{s}={s}\n", .{ kv.key, kv.value });
     }
 }
 

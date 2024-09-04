@@ -8,11 +8,9 @@ const Allocator = std.mem.Allocator;
 const PORT = 8808;
 
 // websocket.zig is verbose, let's limit it to err messages
-pub const std_options = .{
-    .log_scope_levels = &[_]std.log.ScopeLevel{
-        .{ .scope = .websocket, .level = .err },
-    }
-};
+pub const std_options = .{ .log_scope_levels = &[_]std.log.ScopeLevel{
+    .{ .scope = .websocket, .level = .err },
+} };
 
 // This example show how to upgrade a request to websocket.
 pub fn main() !void {
@@ -21,7 +19,7 @@ pub fn main() !void {
 
     // For websocket support, you _must_ define a Handler, and your Handler _must_
     // have a WebsocketHandler decleration
-    var server = try httpz.Server(Handler).init(allocator, .{.port = PORT}, Handler{});
+    var server = try httpz.Server(Handler).init(allocator, .{ .port = PORT }, Handler{});
     defer server.deinit();
 
     var router = server.router(.{});
@@ -86,7 +84,7 @@ fn index(_: Handler, _: *httpz.Request, res: *httpz.Response) !void {
 fn ws(_: Handler, req: *httpz.Request, res: *httpz.Response) !void {
     // Could do authentication or anything else before upgrading the connection
     // The context is any arbitrary data you want to pass to Client.init.
-    const ctx = Client.Context{.user_id = 9001};
+    const ctx = Client.Context{ .user_id = 9001 };
 
     // The first parameter, Client, ***MUST*** be the same as Handler.WebSocketHandler
     // I'm sorry about the awkwardness of that.

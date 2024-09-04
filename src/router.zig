@@ -99,14 +99,14 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
             self.tryPost(path, action, config) catch @panic("failed to create route");
         }
         pub fn tryPost(self: *Self, path: []const u8, action: Action, config: RC) !void {
-           return self.addRoute(&self._post, path, action, config);
+            return self.addRoute(&self._post, path, action, config);
         }
 
         pub fn head(self: *Self, path: []const u8, action: Action, config: RC) void {
             self.tryHead(path, action, config) catch @panic("failed to create route");
         }
         pub fn tryHead(self: *Self, path: []const u8, action: Action, config: RC) !void {
-           return self.addRoute(&self._head, path, action, config);
+            return self.addRoute(&self._head, path, action, config);
         }
 
         pub fn patch(self: *Self, path: []const u8, action: Action, config: RC) void {
@@ -652,123 +652,123 @@ test "route: glob" {
 test "route: middlewares no global" {
     defer t.reset();
 
-    const m1 = fakeMiddleware(&.{.id = 1});
-    const m2 = fakeMiddleware(&.{.id = 2});
-    const m3 = fakeMiddleware(&.{.id = 3});
+    const m1 = fakeMiddleware(&.{ .id = 1 });
+    const m2 = fakeMiddleware(&.{ .id = 2 });
+    const m3 = fakeMiddleware(&.{ .id = 3 });
 
     var params = try Params.init(t.arena.allocator(), 5);
     var router = Router(void, httpz.Action(void)).init(t.arena.allocator(), testDispatcher1, {}) catch unreachable;
 
     {
         router.get("/1", testRoute1, .{});
-        router.get("/2", testRoute1, .{.middlewares = &.{m1}});
-        router.get("/3", testRoute1, .{.middlewares = &.{m1}, .middleware_strategy = .replace});
-        router.get("/4", testRoute1, .{.middlewares = &.{m1, m2}});
-        router.get("/5", testRoute1, .{.middlewares = &.{m1, m2}, .middleware_strategy = .replace});
+        router.get("/2", testRoute1, .{ .middlewares = &.{m1} });
+        router.get("/3", testRoute1, .{ .middlewares = &.{m1}, .middleware_strategy = .replace });
+        router.get("/4", testRoute1, .{ .middlewares = &.{ m1, m2 } });
+        router.get("/5", testRoute1, .{ .middlewares = &.{ m1, m2 }, .middleware_strategy = .replace });
 
         try assertMiddlewares(&router, &params, "/1", &.{});
         try assertMiddlewares(&router, &params, "/2", &.{1});
         try assertMiddlewares(&router, &params, "/3", &.{1});
-        try assertMiddlewares(&router, &params, "/4", &.{1, 2});
-        try assertMiddlewares(&router, &params, "/5", &.{1, 2});
+        try assertMiddlewares(&router, &params, "/4", &.{ 1, 2 });
+        try assertMiddlewares(&router, &params, "/5", &.{ 1, 2 });
     }
 
     {
         // group with no group-level middleware
         var group = router.group("/g1", .{});
         group.get("/1", testRoute1, .{});
-        group.get("/2", testRoute1, .{.middlewares = &.{m1}});
-        group.get("/3", testRoute1, .{.middlewares = &.{m1}, .middleware_strategy = .append});
-        group.get("/4", testRoute1, .{.middlewares = &.{m1, m2}, .middleware_strategy = .replace});
+        group.get("/2", testRoute1, .{ .middlewares = &.{m1} });
+        group.get("/3", testRoute1, .{ .middlewares = &.{m1}, .middleware_strategy = .append });
+        group.get("/4", testRoute1, .{ .middlewares = &.{ m1, m2 }, .middleware_strategy = .replace });
 
         try assertMiddlewares(&router, &params, "/g1/1", &.{});
         try assertMiddlewares(&router, &params, "/g1/2", &.{1});
         try assertMiddlewares(&router, &params, "/g1/3", &.{1});
-        try assertMiddlewares(&router, &params, "/g1/4", &.{1, 2});
+        try assertMiddlewares(&router, &params, "/g1/4", &.{ 1, 2 });
     }
 
     {
         // group with group-level middleware
-        var group = router.group("/g2", .{.middlewares = &.{m1}});
+        var group = router.group("/g2", .{ .middlewares = &.{m1} });
         group.get("/1", testRoute1, .{});
-        group.get("/2", testRoute1, .{.middlewares = &.{m2}});
-        group.get("/3", testRoute1, .{.middlewares = &.{m2, m3}, .middleware_strategy = .append});
-        group.get("/4", testRoute1, .{.middlewares = &.{m2, m3}, .middleware_strategy = .replace});
+        group.get("/2", testRoute1, .{ .middlewares = &.{m2} });
+        group.get("/3", testRoute1, .{ .middlewares = &.{ m2, m3 }, .middleware_strategy = .append });
+        group.get("/4", testRoute1, .{ .middlewares = &.{ m2, m3 }, .middleware_strategy = .replace });
 
         try assertMiddlewares(&router, &params, "/g2/1", &.{1});
-        try assertMiddlewares(&router, &params, "/g2/2", &.{1, 2});
-        try assertMiddlewares(&router, &params, "/g2/3", &.{1, 2, 3});
-        try assertMiddlewares(&router, &params, "/g2/4", &.{2, 3});
+        try assertMiddlewares(&router, &params, "/g2/2", &.{ 1, 2 });
+        try assertMiddlewares(&router, &params, "/g2/3", &.{ 1, 2, 3 });
+        try assertMiddlewares(&router, &params, "/g2/4", &.{ 2, 3 });
     }
 }
 
 test "route: middlewares with global" {
     defer t.reset();
 
-    const m1 = fakeMiddleware(&.{.id = 1});
-    const m2 = fakeMiddleware(&.{.id = 2});
-    const m3 = fakeMiddleware(&.{.id = 3});
-    const m4 = fakeMiddleware(&.{.id = 4});
-    const m5 = fakeMiddleware(&.{.id = 5});
+    const m1 = fakeMiddleware(&.{ .id = 1 });
+    const m2 = fakeMiddleware(&.{ .id = 2 });
+    const m3 = fakeMiddleware(&.{ .id = 3 });
+    const m4 = fakeMiddleware(&.{ .id = 4 });
+    const m5 = fakeMiddleware(&.{ .id = 5 });
 
     var params = try Params.init(t.arena.allocator(), 5);
     var router = Router(void, httpz.Action(void)).init(t.arena.allocator(), testDispatcher1, {}) catch unreachable;
-    router.middlewares = &.{m4, m5};
+    router.middlewares = &.{ m4, m5 };
 
     {
         router.get("/1", testRoute1, .{});
-        router.get("/2", testRoute1, .{.middlewares = &.{m1}});
-        router.get("/3", testRoute1, .{.middlewares = &.{m1}, .middleware_strategy = .replace});
-        router.get("/4", testRoute1, .{.middlewares = &.{m1, m2}});
-        router.get("/5", testRoute1, .{.middlewares = &.{m1, m2}, .middleware_strategy = .replace});
+        router.get("/2", testRoute1, .{ .middlewares = &.{m1} });
+        router.get("/3", testRoute1, .{ .middlewares = &.{m1}, .middleware_strategy = .replace });
+        router.get("/4", testRoute1, .{ .middlewares = &.{ m1, m2 } });
+        router.get("/5", testRoute1, .{ .middlewares = &.{ m1, m2 }, .middleware_strategy = .replace });
 
-        try assertMiddlewares(&router, &params, "/1", &.{4, 5});
-        try assertMiddlewares(&router, &params, "/2", &.{4, 5, 1});
+        try assertMiddlewares(&router, &params, "/1", &.{ 4, 5 });
+        try assertMiddlewares(&router, &params, "/2", &.{ 4, 5, 1 });
         try assertMiddlewares(&router, &params, "/3", &.{1});
-        try assertMiddlewares(&router, &params, "/4", &.{4, 5, 1, 2});
-        try assertMiddlewares(&router, &params, "/5", &.{1, 2});
+        try assertMiddlewares(&router, &params, "/4", &.{ 4, 5, 1, 2 });
+        try assertMiddlewares(&router, &params, "/5", &.{ 1, 2 });
     }
 
     {
         // group with no group-level middleware
         var group = router.group("/g1", .{});
         group.get("/1", testRoute1, .{});
-        group.get("/2", testRoute1, .{.middlewares = &.{m1}});
-        group.get("/3", testRoute1, .{.middlewares = &.{m1, m2}, .middleware_strategy = .append});
-        group.get("/4", testRoute1, .{.middlewares = &.{m1, m2}, .middleware_strategy = .replace});
+        group.get("/2", testRoute1, .{ .middlewares = &.{m1} });
+        group.get("/3", testRoute1, .{ .middlewares = &.{ m1, m2 }, .middleware_strategy = .append });
+        group.get("/4", testRoute1, .{ .middlewares = &.{ m1, m2 }, .middleware_strategy = .replace });
 
-        try assertMiddlewares(&router, &params, "/g1/1", &.{4, 5});
-        try assertMiddlewares(&router, &params, "/g1/2", &.{4, 5, 1});
-        try assertMiddlewares(&router, &params, "/g1/3", &.{4, 5, 1, 2});
-        try assertMiddlewares(&router, &params, "/g1/4", &.{1, 2});
+        try assertMiddlewares(&router, &params, "/g1/1", &.{ 4, 5 });
+        try assertMiddlewares(&router, &params, "/g1/2", &.{ 4, 5, 1 });
+        try assertMiddlewares(&router, &params, "/g1/3", &.{ 4, 5, 1, 2 });
+        try assertMiddlewares(&router, &params, "/g1/4", &.{ 1, 2 });
     }
 
     {
         // group with appended group-level middleware
-        var group = router.group("/g2", .{.middlewares = &.{m1}, .middleware_strategy = .append});
+        var group = router.group("/g2", .{ .middlewares = &.{m1}, .middleware_strategy = .append });
         group.get("/1", testRoute1, .{});
-        group.get("/2", testRoute1, .{.middlewares = &.{m2}});
-        group.get("/3", testRoute1, .{.middlewares = &.{m2, m3}, .middleware_strategy = .append});
-        group.get("/4", testRoute1, .{.middlewares = &.{m2, m3}, .middleware_strategy = .replace});
+        group.get("/2", testRoute1, .{ .middlewares = &.{m2} });
+        group.get("/3", testRoute1, .{ .middlewares = &.{ m2, m3 }, .middleware_strategy = .append });
+        group.get("/4", testRoute1, .{ .middlewares = &.{ m2, m3 }, .middleware_strategy = .replace });
 
-        try assertMiddlewares(&router, &params, "/g2/1", &.{4, 5, 1});
-        try assertMiddlewares(&router, &params, "/g2/2", &.{4, 5, 1, 2});
-        try assertMiddlewares(&router, &params, "/g2/3", &.{4, 5, 1, 2, 3});
-        try assertMiddlewares(&router, &params, "/g2/4", &.{2, 3});
+        try assertMiddlewares(&router, &params, "/g2/1", &.{ 4, 5, 1 });
+        try assertMiddlewares(&router, &params, "/g2/2", &.{ 4, 5, 1, 2 });
+        try assertMiddlewares(&router, &params, "/g2/3", &.{ 4, 5, 1, 2, 3 });
+        try assertMiddlewares(&router, &params, "/g2/4", &.{ 2, 3 });
     }
 
     {
         // group with replace group-level middleware
-        var group = router.group("/g2", .{.middlewares = &.{m1}, .middleware_strategy = .replace});
+        var group = router.group("/g2", .{ .middlewares = &.{m1}, .middleware_strategy = .replace });
         group.get("/1", testRoute1, .{});
-        group.get("/2", testRoute1, .{.middlewares = &.{m2}});
-        group.get("/3", testRoute1, .{.middlewares = &.{m2, m3}, .middleware_strategy = .append});
-        group.get("/4", testRoute1, .{.middlewares = &.{m2, m3}, .middleware_strategy = .replace});
+        group.get("/2", testRoute1, .{ .middlewares = &.{m2} });
+        group.get("/3", testRoute1, .{ .middlewares = &.{ m2, m3 }, .middleware_strategy = .append });
+        group.get("/4", testRoute1, .{ .middlewares = &.{ m2, m3 }, .middleware_strategy = .replace });
 
         try assertMiddlewares(&router, &params, "/g2/1", &.{1});
-        try assertMiddlewares(&router, &params, "/g2/2", &.{1, 2});
-        try assertMiddlewares(&router, &params, "/g2/3", &.{4, 5, 1, 2, 3});
-        try assertMiddlewares(&router, &params, "/g2/4", &.{2, 3});
+        try assertMiddlewares(&router, &params, "/g2/2", &.{ 1, 2 });
+        try assertMiddlewares(&router, &params, "/g2/3", &.{ 4, 5, 1, 2, 3 });
+        try assertMiddlewares(&router, &params, "/g2/4", &.{ 2, 3 });
     }
 }
 

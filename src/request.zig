@@ -243,9 +243,7 @@ pub const Request = struct {
         return self.fd;
     }
 
-    fn parseMultiFormData(
-        self: *Request,
-    ) !*MultiFormKeyValue {
+    fn parseMultiFormData(self: *Request) !*MultiFormKeyValue {
         const body_ = self.body() orelse "";
         if (body_.len == 0) {
             self.fd_read = true;

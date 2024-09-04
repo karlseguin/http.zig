@@ -191,19 +191,19 @@ pub const Response = struct {
         const names = headers.keys[0..headers.len];
         const values = headers.values[0..headers.len];
 
-        var len: usize = 0;
+        // 200 gives us enough space to fit:
+        // 1 - The status/first line
+        // 2 - The Content-Length header or the Transfer-Encoding header.
+        // 3 - Our longest supported built-in content type (for a custom content
+        //     type, it would have been set via the res.header(...) call, so would
+        //     be included in `len)
+        var len: usize = 200;
         for (names, values) |name, value| {
             // +4 for the colon, space and trailer
             len += name.len + value.len + 4;
         }
 
-        // +200 gives us enough space to fit:
-        // The status/first line
-        // Our longest supported built-in content type (for a custom content
-        // type, it would have been set via the res.header(...) call, so would
-        // be included in `len)
-        // The Content-Length header or the Transfer-Encoding header.
-        var buf = try self.arena.alloc(u8, len + 200);
+        var buf = try self.arena.alloc(u8, len);
 
         var pos: usize = "HTTP/1.1 XXX \r\n".len;
         switch (self.status) {

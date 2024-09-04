@@ -12,7 +12,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     var handler = Handler{};
-    var server = try httpz.Server(*Handler).init(allocator, .{.port = PORT}, &handler);
+    var server = try httpz.Server(*Handler).init(allocator, .{ .port = PORT }, &handler);
     defer server.deinit();
 
     var router = server.router(.{});
@@ -37,7 +37,7 @@ const Handler = struct {
         // we could do authentication and set the response directly on error.
         try action(self, req, res);
 
-        std.debug.print("ts={d} us={d} path={s}\n", .{std.time.timestamp(), start.lap() / 1000, req.url.path});
+        std.debug.print("ts={d} us={d} path={s}\n", .{ std.time.timestamp(), start.lap() / 1000, req.url.path });
     }
 };
 

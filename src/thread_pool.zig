@@ -128,12 +128,12 @@ pub fn ThreadPool(comptime F: anytype) type {
 
         // assumed to be called under lock
         inline fn isFull(self: *Self, queue_end: usize) bool {
-          const tail = self.tail;
-          const head = self.head;
-          if (tail == 0) {
-            return head == queue_end;
-          }
-          return head == tail - 1;
+            const tail = self.tail;
+            const head = self.head;
+            if (tail == 0) {
+                return head == queue_end;
+            }
+            return head == tail - 1;
         }
 
         // Having a re-usable buffer per thread is the most efficient way

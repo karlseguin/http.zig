@@ -232,7 +232,7 @@ pub fn Server(comptime H: type) type {
     const Handler = switch (@typeInfo(H)) {
         .@"struct" => H,
         .pointer => |ptr| ptr.child,
-        .@"void" => void,
+        .void => void,
         else => @compileError("Server handler must be a struct, got: " ++ @tagName(@typeInfo(H))),
     };
 
@@ -604,7 +604,7 @@ pub fn Server(comptime H: type) type {
 
                 if (index < middlewares.len) {
                     self.index = index + 1;
-                   return middlewares[index].execute(self.req, self.res, self);
+                    return middlewares[index].execute(self.req, self.res, self);
                 }
 
                 // done executing our middlewares, now we either execute the
@@ -752,7 +752,7 @@ test "tests:beforeAll" {
     const ga = global_test_allocator.allocator();
 
     {
-        default_server = try Server(void).init(ga, .{.port = 5992}, {});
+        default_server = try Server(void).init(ga, .{ .port = 5992 }, {});
 
         // only need to do this because we're using listenInNewThread instead
         // of blocking here. So the array to hold the middleware needs to outlive
@@ -766,7 +766,7 @@ test "tests:beforeAll" {
         });
 
         var middlewares = try default_server.arena.alloc(Middleware(void), 2);
-        middlewares[0] = try default_server.middleware(TestMiddleware, .{.id = 100});
+        middlewares[0] = try default_server.middleware(TestMiddleware, .{ .id = 100 });
         middlewares[1] = cors[0];
 
         var router = default_server.router(.{});
@@ -776,9 +776,9 @@ test "tests:beforeAll" {
         router.get("/test/query", TestDummyHandler.reqQuery, .{});
         router.get("/test/stream", TestDummyHandler.eventStream, .{});
         router.get("/test/chunked", TestDummyHandler.chunked, .{});
-        router.get("/test/route_data", TestDummyHandler.routeData, .{.data = &TestDummyHandler.RouteData{.power = 12345}});
-        router.all("/test/cors", TestDummyHandler.jsonRes, .{.middlewares = cors});
-        router.all("/test/middlewares", TestDummyHandler.middlewares, .{.middlewares = middlewares});
+        router.get("/test/route_data", TestDummyHandler.routeData, .{ .data = &TestDummyHandler.RouteData{ .power = 12345 } });
+        router.all("/test/cors", TestDummyHandler.jsonRes, .{ .middlewares = cors });
+        router.all("/test/middlewares", TestDummyHandler.middlewares, .{ .middlewares = middlewares });
         router.all("/test/dispatcher", TestDummyHandler.dispatchedAction, .{ .dispatcher = TestDummyHandler.routeSpecificDispacthcer });
         test_server_threads[0] = try default_server.listenInNewThread();
     }
@@ -1091,7 +1091,6 @@ test "httpz: CORS" {
         try stream.writeAll("GET /test/cors HTTP/1.1\r\nSec-Fetch-Mode: cors\r\n\r\n");
         var res = testReadParsed(stream);
         defer res.deinit();
-
 
         try t.expectEqual(null, res.headers.get("Access-Control-Max-Age"));
         try t.expectEqual(null, res.headers.get("Access-Control-Allow-Methods"));
@@ -1476,7 +1475,6 @@ const TestDummyHandler = struct {
         return res.directWriter().writeAll("action");
     }
 
-
     fn middlewares(req: *Request, res: *Response) !void {
         return res.json(.{
             .v1 = TestMiddleware.value1(req),
@@ -1641,7 +1639,6 @@ const TestWebsocketHandler = struct {
     }
 };
 
-
 const TestMiddleware = struct {
     const Config = struct {
         id: i32,
@@ -1659,7 +1656,7 @@ const TestMiddleware = struct {
         };
     }
 
-    pub fn deinit(self: *const TestMiddleware)void {
+    pub fn deinit(self: *const TestMiddleware) void {
         self.allocator.free(self.v2);
     }
 

@@ -21,7 +21,7 @@ pub fn main() !void {
         .log = false,
     };
 
-    var server = try httpz.Server(*Handler).init(allocator, .{.port = PORT}, &default_handler);
+    var server = try httpz.Server(*Handler).init(allocator, .{ .port = PORT }, &default_handler);
     defer server.deinit();
 
     var router = server.router(.{});
@@ -30,11 +30,11 @@ pub fn main() !void {
 
     // We can define a dispatch function per-route. This will be used instead of Handler.dispatch
     // But, sadly, every dispatch method must have the same signature (they must all accept the same type of action)
-    router.get("/page1", page1, .{.dispatcher = Handler.infoDispatch});
+    router.get("/page1", page1, .{ .dispatcher = Handler.infoDispatch });
 
     // We can define a handler instance per-route. This will be used instead of the
     // handler instance passed to the init method above.
-    router.get("/page2", page2, .{.handler = &nolog_handler});
+    router.get("/page2", page2, .{ .handler = &nolog_handler });
 
     std.debug.print("listening http://localhost:{d}/\n", .{PORT});
 
@@ -53,7 +53,7 @@ const Handler = struct {
     pub fn dispatch(h: *Handler, action: httpz.Action(*Handler), req: *httpz.Request, res: *httpz.Response) !void {
         try action(h, req, res);
         if (h.log) {
-            std.debug.print("ts={d} path={s} status={d}\n", .{std.time.timestamp(), req.url.path, res.status});
+            std.debug.print("ts={d} path={s} status={d}\n", .{ std.time.timestamp(), req.url.path, res.status });
         }
     }
 };

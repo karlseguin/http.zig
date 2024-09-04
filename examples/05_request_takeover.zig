@@ -12,7 +12,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     var handler = Handler{};
-    var server = try httpz.Server(*Handler).init(allocator, .{.port = PORT}, &handler);
+    var server = try httpz.Server(*Handler).init(allocator, .{ .port = PORT }, &handler);
     defer server.deinit();
 
     // Routes aren't used in this mode

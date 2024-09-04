@@ -10,14 +10,13 @@ const PORT = 8802;
 // handlers.
 
 pub fn main() !void {
-
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
     // We specify our "Handler" and, as the last parameter to init, pass an
     // instance of it.
     var handler = Handler{};
-    var server = try httpz.Server(*Handler).init(allocator, .{.port = PORT}, &handler);
+    var server = try httpz.Server(*Handler).init(allocator, .{ .port = PORT }, &handler);
     defer server.deinit();
 
     var router = server.router(.{});
@@ -41,7 +40,7 @@ const Handler = struct {
     // when a request is made and no route matches.
     pub fn notFound(_: *Handler, _: *httpz.Request, res: *httpz.Response) !void {
         res.status = 404;
-        res.body =  "NOPE!";
+        res.body = "NOPE!";
     }
 
     // If the handler defines the special "uncaughtError" function, it'll be
@@ -49,7 +48,7 @@ const Handler = struct {
     // Note that this function takes an additional parameter (the error) and
     // returns a `void` rather than a `!void`.
     pub fn uncaughtError(_: *Handler, req: *httpz.Request, res: *httpz.Response, err: anyerror) void {
-        std.debug.print("uncaught http error at {s}: {}\n", .{req.url.path, err});
+        std.debug.print("uncaught http error at {s}: {}\n", .{ req.url.path, err });
 
         // Alternative to res.content_type = .TYPE
         // useful for dynamic content types, or content types not defined in
@@ -80,9 +79,9 @@ pub fn hits(h: *Handler, _: *httpz.Request, res: *httpz.Response) !void {
 
     // @atomicRmw returns the previous version so we need to +1 it
     // to display the count includin this hit
-    return res.json(.{.hits = count + 1}, .{});
+    return res.json(.{ .hits = count + 1 }, .{});
 }
 
-fn @"error"(_: *Handler, _: *httpz.Request,  _: *httpz.Response) !void {
+fn @"error"(_: *Handler, _: *httpz.Request, _: *httpz.Response) !void {
     return error.ActionError;
 }

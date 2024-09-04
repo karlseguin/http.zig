@@ -17,12 +17,12 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var server = try httpz.Server(void).init(allocator, .{.port = PORT}, {});
+    var server = try httpz.Server(void).init(allocator, .{ .port = PORT }, {});
     defer server.deinit();
 
     // creates an instance of the middleware with the given configuration
     // see example/middleware/Logger.zig
-    const logger = try server.middleware(Logger, .{.query = true});
+    const logger = try server.middleware(Logger, .{ .query = true });
 
     var router = server.router(.{});
 
@@ -30,7 +30,7 @@ pub fn main() !void {
     router.middlewares = &.{logger};
 
     router.get("/", index, .{});
-    router.get("/other", other, .{.middlewares = &.{}});
+    router.get("/other", other, .{ .middlewares = &.{} });
 
     std.debug.print("listening http://localhost:{d}/\n", .{PORT});
 
