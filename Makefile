@@ -15,7 +15,7 @@ tb:
 
 .PHONY: s
 s:
-	zig build run -freference-trace
+	zig build example_1 -freference-trace
 
 .phony: d
 d:
