@@ -459,17 +459,26 @@ pub fn Server(comptime H: type) type {
         }
 
         pub fn stop(self: *Self) void {
-            self._mut.lock();
-            defer self._mut.unlock();
-            for (self._signals) |s| {
-                if (blockingMode()) {
-                    // necessary to unblock accept on linux
-                    // (which might not be that necessary since, on Linux,
-                    // NonBlocking should be used)
-                    posix.shutdown(s, .recv) catch {};
+            // Order matters. When thread_pool.stop() is called, pending requests
+            // will continue to be processed. Only once the thread-pool queue is
+            // empty, does the thread-pool really stop.
+            // So we need to close the signal, which tells the worker to stop
+            // accepting / processing new requests.
+            {
+                self._mut.lock();
+                defer self._mut.unlock();
+                for (self._signals) |s| {
+                    if (blockingMode()) {
+                        // necessary to unblock accept on linux
+                        // (which might not be that necessary since, on Linux,
+                        // NonBlocking should be used)
+                        posix.shutdown(s, .recv) catch {};
+                    }
+                    posix.close(s);
                 }
-                posix.close(s);
             }
+            @atomicStore(u64, &self._max_request_per_connection, 0, .monotonic);
+            self._thread_pool.stop();
         }
 
         pub fn router(self: *Self, config: RouterConfig) *Router(H, ActionArg) {
@@ -522,7 +531,6 @@ pub fn Server(comptime H: type) type {
             var req = Request.init(allocator, conn);
             var res = Response.init(allocator, conn);
 
-            conn.handover = if (conn.request_count < self._max_request_per_connection and req.canKeepAlive()) .keepalive else .close;
 
             if (comptime std.meta.hasFn(Handler, "handle")) {
                 if (comptime @typeInfo(@TypeOf(Handler.handle)).@"fn".return_type != void) {
@@ -558,6 +566,11 @@ pub fn Server(comptime H: type) type {
                         std.log.warn("httpz: unhandled exception for request: {s}\nErr: {}", .{ req.url.raw, err });
                     }
                 };
+            }
+
+            if (conn.handover == .unknown) {
+                // close is the default
+                conn.handover = if (req.canKeepAlive() and conn.request_count < @atomicLoad(usize, &self._max_request_per_connection, .monotonic)) .keepalive else .close;
             }
 
             res.write() catch {

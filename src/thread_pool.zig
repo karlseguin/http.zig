@@ -93,9 +93,16 @@ pub fn ThreadPool(comptime F: anytype) type {
         }
 
         pub fn stop(self: *Self) void {
-            self.mutex.lock();
-            self.stopped = true;
-            self.mutex.unlock();
+            {
+                // allow stop to be called as part of server.stop()
+                // but also in server.deinit(), or in both.
+                self.mutex.lock();
+                defer self.mutex.unlock();
+                if (self.stopped) {
+                    return;
+                }
+                self.stopped = true;
+            }
 
             self.read_cond.broadcast();
             for (self.threads) |thrd| {

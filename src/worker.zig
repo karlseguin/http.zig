@@ -29,7 +29,6 @@ const MAX_TIMEOUT = 2_147_483_647;
 pub fn Blocking(comptime S: type, comptime WSH: type) type {
     return struct {
         server: S,
-        running: bool,
         config: *const Config,
         allocator: Allocator,
         buffer_pool: *BufferPool,
@@ -90,7 +89,6 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             const retain_allocated_bytes_keepalive = config.workers.retain_allocated_bytes orelse 8192;
 
             return .{
-                .running = true,
                 .server = server,
                 .config = config,
                 .allocator = allocator,
@@ -123,6 +121,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 var address_len: posix.socklen_t = @sizeOf(net.Address);
                 const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
                     if (err == error.ConnectionAborted or err == error.SocketNotListening) {
+                        self.websocket.shutdown();
                         return;
                     }
                     log.err("Failed to accept socket: {}", .{err});
@@ -152,7 +151,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                         is_keepalive = true;
                         conn.keepalive(self.retain_allocated_bytes_keepalive);
                     },
-                    .close => {
+                    .close, .unknown => {
                         posix.close(socket);
                         self.http_conn_pool.release(conn);
                         return;
@@ -356,7 +355,6 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                     if (data == 1) {
                         if (self.processSignal(now) == false) {
-                            self.manager.shutdown();
                             self.websocket.shutdown();
                             // signal was closed, we're being told to shutdown
                             return;
@@ -428,7 +426,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                                 };
                                 self.manager.keepalive(conn, now);
                             },
-                            .close => self.manager.close(conn),
+                            .close, .unknown => self.manager.close(conn),
                             .disown => {
                                 if (self.loop.remove(http_conn.stream.handle)) {
                                     self.manager.disown(conn);
@@ -554,7 +552,10 @@ const Signal = struct {
 
         var index: usize = 0;
         while (index < buf.len) {
-            index += try posix.write(fd, buf[index..]);
+            index += posix.write(fd, buf[index..]) catch |err| switch (err) {
+                error.NotOpenForWriting => return, // signal was closed, we must be shutting down
+                else => return err,
+            };
         }
     }
 
@@ -667,6 +668,9 @@ fn ConnManager(comptime WSH: type) type {
         }
 
         pub fn deinit(self: *Self) void {
+            self.shutdownList(&self.active_list);
+            self.shutdownList(&self.keepalive_list);
+
             const allocator = self.allocator;
             self.buffer_pool.deinit();
             self.conn_mem_pool.deinit();
@@ -747,11 +751,6 @@ fn ConnManager(comptime WSH: type) type {
             self.active_list.remove(conn);
             self.http_conn_pool.release(conn.protocol.http);
             conn.protocol = .{ .websocket = hc };
-        }
-
-        fn shutdown(self: *Self) void {
-            self.shutdownList(&self.active_list);
-            self.shutdownList(&self.keepalive_list);
         }
 
         fn shutdownList(self: *Self, list: *List(Conn(WSH))) void {
@@ -1235,6 +1234,7 @@ pub const HTTPConn = struct {
     pub const Handover = union(enum) {
         disown,
         close,
+        unknown,
         keepalive,
         websocket: *anyopaque,
     };
@@ -1298,7 +1298,7 @@ pub const HTTPConn = struct {
         return .{
             .close = false,
             .state = .active,
-            .handover = .close,
+            .handover = .unknown,
             .stream = undefined,
             .address = undefined,
             .req_state = req_state,
@@ -1327,7 +1327,7 @@ pub const HTTPConn = struct {
     // getting put back into the pool
     pub fn reset(self: *HTTPConn, retain_allocated_bytes: usize) void {
         self.close = false;
-        self.handover = .close;
+        self.handover = .unknown;
         self.stream = undefined;
         self.address = undefined;
         self.request_count = 0;

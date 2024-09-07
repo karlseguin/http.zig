@@ -62,6 +62,7 @@ pub fn build(b: *std.Build) !void {
         .{.file = "examples/06_middleware.zig", .name = "example_6"},
         .{.file = "examples/07_advanced_routing.zig", .name = "example_7"},
         .{.file = "examples/08_websocket.zig", .name = "example_8"},
+        .{.file = "examples/09_shutdown.zig", .name = "example_9"},
     };
 
     {
