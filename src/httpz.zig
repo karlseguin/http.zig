@@ -31,7 +31,7 @@ const ThreadPool = @import("thread_pool.zig").ThreadPool;
 const build = @import("build");
 const force_blocking: bool = if (@hasDecl(build, "httpz_blocking")) build.httpz_blocking else false;
 
-const MAX_REQUEST_COUNT = 4_294_967_295;
+const MAX_REQUEST_COUNT = std.math.maxInt(usize);
 
 pub fn writeMetrics(writer: anytype) !void {
     return @import("metrics.zig").write(writer);
@@ -256,7 +256,7 @@ pub fn Server(comptime H: type) type {
         _cond: Thread.Condition,
         _thread_pool: *TP,
         _signals: []posix.fd_t,
-        _max_request_per_connection: u64,
+        _max_request_per_connection: usize,
         _middlewares: []const Middleware(H),
         _websocket_state: websocket.server.WorkerState,
         _middleware_registry: std.SinglyLinkedList(Middleware(H)),
@@ -477,7 +477,7 @@ pub fn Server(comptime H: type) type {
                     posix.close(s);
                 }
             }
-            @atomicStore(u64, &self._max_request_per_connection, 0, .monotonic);
+            @atomicStore(usize, &self._max_request_per_connection, 0, .monotonic);
             self._thread_pool.stop();
         }
 

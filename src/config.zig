@@ -48,7 +48,7 @@ pub const Config = struct {
     pub const Timeout = struct {
         request: ?u32 = null,
         keepalive: ?u32 = null,
-        request_count: ?u32 = null,
+        request_count: ?usize = null,
     };
 
     pub const Websocket = struct {
