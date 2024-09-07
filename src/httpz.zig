@@ -238,7 +238,8 @@ pub fn Server(comptime H: type) type {
 
     const ActionArg = if (comptime std.meta.hasFn(Handler, "dispatch")) @typeInfo(@TypeOf(Handler.dispatch)).@"fn".params[1].type.? else Action(H);
 
-    const WebsocketHandler = if (Handler != void and comptime @hasDecl(Handler, "WebsocketHandler")) Handler.WebsocketHandler else DummyWebsocketHandler;
+    const has_websocket = Handler != void and @hasDecl(Handler, "WebsocketHandler");
+    const WebsocketHandler = if (has_websocket) Handler.WebsocketHandler else DummyWebsocketHandler;
 
     const RouterConfig = struct {
         middlewares: []const Middleware(H) = &.{},
@@ -288,10 +289,10 @@ pub fn Server(comptime H: type) type {
             var websocket_state = try websocket.server.WorkerState.init(allocator, .{
                 .max_message_size = config.websocket.max_message_size,
                 .buffers = .{
-                    .small_size = config.websocket.small_buffer_size,
-                    .small_pool = config.websocket.small_buffer_pool,
-                    .large_size = config.websocket.large_buffer_size,
-                    .large_pool = config.websocket.large_buffer_pool,
+                    .small_size = if (has_websocket) config.websocket.small_buffer_size else 0,
+                    .small_pool = if (has_websocket) config.websocket.small_buffer_pool else 0,
+                    .large_size = if (has_websocket) config.websocket.large_buffer_size else 0,
+                    .large_pool = if (has_websocket) config.websocket.large_buffer_pool else 0,
                 },
                 // disable handshake memory allocation since httpz is handling
                 // the handshake request directly
