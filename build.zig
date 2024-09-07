@@ -53,6 +53,7 @@ pub fn build(b: *std.Build) !void {
     const examples = [_]struct{
         file: []const u8,
         name: []const u8,
+        libc: bool = false,
     } {
         .{.file = "examples/01_basic.zig", .name = "example_1"},
         .{.file = "examples/02_handler.zig", .name = "example_2"},
@@ -62,7 +63,7 @@ pub fn build(b: *std.Build) !void {
         .{.file = "examples/06_middleware.zig", .name = "example_6"},
         .{.file = "examples/07_advanced_routing.zig", .name = "example_7"},
         .{.file = "examples/08_websocket.zig", .name = "example_8"},
-        .{.file = "examples/09_shutdown.zig", .name = "example_9"},
+        .{.file = "examples/09_shutdown.zig", .name = "example_9", .libc = true},
     };
 
     {
@@ -75,7 +76,9 @@ pub fn build(b: *std.Build) !void {
             });
             exe.root_module.addImport("httpz", httpz_module);
             exe.root_module.addImport("metrics", metrics_module);
-            // exe.root_module.addImport("websocket", websocket_module);
+            if (ex.libc) {
+                exe.linkLibC();
+            }
             b.installArtifact(exe);
 
             const run_cmd = b.addRunArtifact(exe);
