@@ -470,18 +470,18 @@ pub fn Server(comptime H: type) type {
                 self._mut.lock();
                 defer self._mut.unlock();
 
-                if (self._listener) |l| {
-                    posix.close(l);
+                for (self._signals) |s| {
+                    posix.close(s);
                 }
 
-                for (self._signals) |s| {
-                    if (blockingMode()) {
+                if (self._listener) |l| {
+                    if (comptime blockingMode()) {
                         // necessary to unblock accept on linux
                         // (which might not be that necessary since, on Linux,
                         // NonBlocking should be used)
-                        posix.shutdown(s, .recv) catch {};
+                        posix.shutdown(l, .recv) catch {};
                     }
-                    posix.close(s);
+                    posix.close(l);
                 }
             }
             @atomicStore(usize, &self._max_request_per_connection, 0, .monotonic);

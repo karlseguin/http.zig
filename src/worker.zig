@@ -345,20 +345,20 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 now = timestamp();
 
                 while (it.next()) |data| {
-                    if (data == 0) {
-                        self.accept(listener, now) catch |err| {
-                            log.err("Failed to accept connection: {}", .{err});
-                            std.time.sleep(std.time.ns_per_ms * 10);
-                        };
-                        continue;
-                    }
-
                     if (data == 1) {
                         if (self.processSignal(now) == false) {
                             self.websocket.shutdown();
                             // signal was closed, we're being told to shutdown
                             return;
                         }
+                        continue;
+                    }
+
+                    if (data == 0) {
+                        self.accept(listener, now) catch |err| {
+                            log.err("Failed to accept connection: {}", .{err});
+                            std.time.sleep(std.time.ns_per_ms * 10);
+                        };
                         continue;
                     }
 
