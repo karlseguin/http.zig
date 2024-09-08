@@ -22,7 +22,12 @@ pub fn main() !void {
     };
 
     var server = try httpz.Server(*Handler).init(allocator, .{ .port = PORT }, &default_handler);
+
     defer server.deinit();
+
+    // ensures a clean shutdown, finishing off any existing requests
+    // see 09_shutdown.zig for how to to break server.listen with an interrupt
+    defer server.stop();
 
     var router = server.router(.{});
 

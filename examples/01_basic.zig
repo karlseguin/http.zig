@@ -25,6 +25,10 @@ pub fn main() !void {
     }, {});
     defer server.deinit();
 
+    // ensures a clean shutdown, finishing off any existing requests
+    // see 09_shutdown.zig for how to to break server.listen with an interrupt
+    defer server.stop();
+
     var router = server.router(.{});
 
     // Register routes. The last parameter is a Route Config. For these basic
@@ -40,6 +44,7 @@ pub fn main() !void {
     router.get("/explicit_write", explicitWrite, .{});
 
     std.debug.print("listening http://localhost:{d}/\n", .{PORT});
+
     // Starts the server, this is blocking.
     try server.listen();
 }

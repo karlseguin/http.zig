@@ -20,7 +20,12 @@ pub fn main() !void {
     // For websocket support, you _must_ define a Handler, and your Handler _must_
     // have a WebsocketHandler decleration
     var server = try httpz.Server(Handler).init(allocator, .{ .port = PORT }, Handler{});
+
     defer server.deinit();
+
+    // ensures a clean shutdown, finishing off any existing requests
+    // see 09_shutdown.zig for how to to break server.listen with an interrupt
+    defer server.stop();
 
     var router = server.router(.{});
 

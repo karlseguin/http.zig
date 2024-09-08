@@ -256,6 +256,7 @@ pub fn Server(comptime H: type) type {
         _mut: Thread.Mutex,
         _cond: Thread.Condition,
         _thread_pool: *TP,
+        _listener: ?posix.fd_t,
         _signals: []posix.fd_t,
         _max_request_per_connection: usize,
         _middlewares: []const Middleware(H),
@@ -280,7 +281,7 @@ pub fn Server(comptime H: type) type {
                 .buffer_size = config.thread_pool.buffer_size orelse 32_768,
             });
 
-            const signals = try arena.allocator().alloc(posix.fd_t, config.workerCount());
+            const signals: []posix.socket_t = if (blockingMode()) &.{} else try arena.allocator().alloc(posix.fd_t, config.workerCount());
 
             const default_dispatcher = if (comptime Handler == void) defaultDispatcher else defaultDispatcherWithHandler;
 
@@ -311,9 +312,10 @@ pub fn Server(comptime H: type) type {
                 .arena = arena.allocator(),
                 ._mut = .{},
                 ._cond = .{},
-                ._middleware_registry = .{},
+                ._listener = null,
                 ._signals = signals,
                 ._middlewares = &.{},
+                ._middleware_registry = .{},
                 ._thread_pool = thread_pool,
                 ._websocket_state = websocket_state,
                 ._router = try Router(H, ActionArg).init(arena.allocator(), default_dispatcher, handler),
@@ -359,7 +361,7 @@ pub fn Server(comptime H: type) type {
                 }
             };
 
-            const socket = blk: {
+            const listener = blk: {
                 var sock_flags: u32 = posix.SOCK.STREAM | posix.SOCK.CLOEXEC;
                 if (blockingMode() == false) sock_flags |= posix.SOCK.NONBLOCK;
 
@@ -373,41 +375,40 @@ pub fn Server(comptime H: type) type {
                 // if (@hasDecl(os.TCP, "NODELAY")) {
                 //  try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, os.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
                 // }
-                try posix.setsockopt(socket, posix.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
+                try posix.setsockopt(listener, posix.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
             }
 
             if (@hasDecl(posix.SO, "REUSEPORT_LB")) {
-                try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.REUSEPORT_LB, &std.mem.toBytes(@as(c_int, 1)));
+                try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEPORT_LB, &std.mem.toBytes(@as(c_int, 1)));
             } else if (@hasDecl(posix.SO, "REUSEPORT")) {
-                try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1)));
+                try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1)));
             } else {
-                try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
+                try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
             }
 
             {
                 const socklen = address.getOsSockLen();
-                try posix.bind(socket, &address.any, socklen);
-                try posix.listen(socket, 1024); // kernel backlog
+                try posix.bind(listener, &address.any, socklen);
+                try posix.listen(listener, 1024); // kernel backlog
             }
 
+            self._listener = listener;
             const allocator = self.allocator;
 
             if (comptime blockingMode()) {
-                errdefer posix.close(socket);
                 var w = try worker.Blocking(*Self, WebsocketHandler).init(allocator, self, &config);
                 defer w.deinit();
 
-                const thrd = try Thread.spawn(.{}, worker.Blocking(*Self, WebsocketHandler).listen, .{ &w, socket });
+                const thrd = try Thread.spawn(.{}, worker.Blocking(*Self, WebsocketHandler).listen, .{ &w, listener });
 
                 // incase listenInNewThread was used and is waiting for us to start
                 self._cond.signal();
-
-                // we shutdown our blocking worker by closing the listening socket
-                self._signals[0] = socket;
                 self._mut.unlock();
+
+                // This will unblock when server.stop() is called and the listening
+                // socket is closed.
                 thrd.join();
             } else {
-                defer posix.close(socket);
                 const Worker = worker.NonBlocking(*Self, WebsocketHandler);
                 var signals = self._signals;
                 const worker_count = signals.len;
@@ -434,7 +435,7 @@ pub fn Server(comptime H: type) type {
                     workers[i] = try Worker.init(allocator, pipe, self, &config);
                     errdefer workers[i].deinit();
 
-                    threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], socket });
+                    threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], listener });
                     started += 1;
                 }
 
@@ -468,6 +469,11 @@ pub fn Server(comptime H: type) type {
             {
                 self._mut.lock();
                 defer self._mut.unlock();
+
+                if (self._listener) |l| {
+                    posix.close(l);
+                }
+
                 for (self._signals) |s| {
                     if (blockingMode()) {
                         // necessary to unblock accept on linux

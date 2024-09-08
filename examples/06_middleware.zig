@@ -18,7 +18,12 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     var server = try httpz.Server(void).init(allocator, .{ .port = PORT }, {});
+
     defer server.deinit();
+
+    // ensures a clean shutdown, finishing off any existing requests
+    // see 09_shutdown.zig for how to to break server.listen with an interrupt
+    defer server.stop();
 
     // creates an instance of the middleware with the given configuration
     // see example/middleware/Logger.zig
