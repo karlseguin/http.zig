@@ -256,8 +256,8 @@ pub fn Server(comptime H: type) type {
         _mut: Thread.Mutex,
         _cond: Thread.Condition,
         _thread_pool: *TP,
-        _listener: ?posix.fd_t,
         _signals: []posix.fd_t,
+        _listener: ?posix.socket_t,
         _max_request_per_connection: usize,
         _middlewares: []const Middleware(H),
         _websocket_state: websocket.server.WorkerState,
@@ -281,7 +281,7 @@ pub fn Server(comptime H: type) type {
                 .buffer_size = config.thread_pool.buffer_size orelse 32_768,
             });
 
-            const signals: []posix.socket_t = if (blockingMode()) &.{} else try arena.allocator().alloc(posix.fd_t, config.workerCount());
+            const signals: []posix.fd_t = if (blockingMode()) &.{} else try arena.allocator().alloc(posix.fd_t, config.workerCount());
 
             const default_dispatcher = if (comptime Handler == void) defaultDispatcher else defaultDispatcherWithHandler;
 
