@@ -46,6 +46,7 @@ pub fn main() !void {
 
 fn shutdown(_: c_int) callconv(.C) void {
     if (server_instance) |server| {
+        server_instance = null;
         server.stop();
     }
 }
