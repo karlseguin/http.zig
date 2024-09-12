@@ -16,7 +16,10 @@ pub fn main() !void {
     // We specify our "Handler" and, as the last parameter to init, pass an
     // instance of it.
     var handler = Handler{};
-    var server = try httpz.Server(*Handler).init(allocator, .{ .port = PORT }, &handler);
+    var server = try httpz.Server(*Handler).init(allocator, .{
+        .port = PORT,
+        .print_uncaught_error_stack_trace = .debug,
+    }, &handler);
 
     defer server.deinit();
 

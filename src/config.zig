@@ -1,6 +1,7 @@
 const httpz = @import("httpz.zig");
 const request = @import("request.zig");
 const response = @import("response.zig");
+const std = @import("std");
 
 // don't like using CPU detection since hyperthread cores are marketing.
 const DEFAULT_WORKERS = 2;
@@ -15,6 +16,7 @@ pub const Config = struct {
     timeout: Timeout = .{},
     thread_pool: ThreadPool = .{},
     websocket: Websocket = .{},
+    print_uncaught_error_stack_trace: ?std.log.Level = null,
 
     pub const ThreadPool = struct {
         count: ?u16 = null,

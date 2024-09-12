@@ -538,7 +538,6 @@ pub fn Server(comptime H: type) type {
             var req = Request.init(allocator, conn);
             var res = Response.init(allocator, conn);
 
-
             if (comptime std.meta.hasFn(Handler, "handle")) {
                 if (comptime @typeInfo(@TypeOf(Handler.handle)).@"fn".return_type != void) {
                     @compileError(@typeName(Handler) ++ ".handle must return 'void'");
@@ -565,6 +564,12 @@ pub fn Server(comptime H: type) type {
                 }
 
                 executor.next() catch |err| {
+                    if (self.config.print_uncaught_error_stack_trace) |level| {
+                        switch (level) {
+                            inline else => |v| std.log.defaultLog(v, .default, "{any}", .{@errorReturnTrace()}),
+                        }
+                    }
+
                     if (comptime std.meta.hasFn(Handler, "uncaughtError")) {
                         self.handler.uncaughtError(&req, &res, err);
                     } else {
