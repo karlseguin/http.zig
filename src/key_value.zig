@@ -4,11 +4,12 @@ const mem = std.mem;
 const ascii = std.ascii;
 const Allocator = std.mem.Allocator;
 
-fn KeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) callconv(.Inline) bool) type {
+fn KeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) callconv(.Inline) bool,  hashFn: fn (key: K) callconv(.Inline) u8) type {
     return struct {
         len: usize,
         keys: []K,
         values: []V,
+        hashes: []u8,
 
         pub const Value = V;
 
@@ -19,12 +20,14 @@ fn KeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) callconv(.Inline) boo
                 .len = 0,
                 .keys = try allocator.alloc(K, max),
                 .values = try allocator.alloc(V, max),
+                .hashes = try allocator.alloc(u8, max),
             };
         }
 
         pub fn deinit(self: *Self, allocator: Allocator) void {
             allocator.free(self.keys);
             allocator.free(self.values);
+            allocator.free(self.hashes);
         }
 
         pub fn add(self: *Self, key: K, value: V) void {
@@ -36,14 +39,15 @@ fn KeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) callconv(.Inline) boo
 
             keys[len] = key;
             self.values[len] = value;
+            self.hashes[len] = hashFn(key);
             self.len = len + 1;
         }
 
-        pub fn get(self: *const Self, needle: K) ?V {
+        pub fn get(self: *const Self, key: K) ?V {
+            const hash = hashFn(key);
             const keys = self.keys[0..self.len];
-            for (keys, 0..) |key, i| {
-                if (equalFn(key, needle)) {
-                    // return key;
+            for (self.hashes[0..self.len], 0..) |h, i| {
+                if (h == hash and equalFn(keys[i], key)) {
                     return self.values[i];
                 }
             }
@@ -89,17 +93,24 @@ fn KeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) callconv(.Inline) boo
     };
 }
 
+inline fn strHash(key: []const u8) u8 {
+    if (key.len == 0) {
+        return 0;
+    }
+    return @as(u8, @truncate(key.len)) | (key[0]) ^ (key[key.len - 1]);
+}
+
 inline fn strEql(lhs: []const u8, rhs: []const u8) bool {
     return std.mem.eql(u8, lhs, rhs);
 }
 
-pub const StringKeyValue = KeyValue([]const u8, []const u8, strEql);
+pub const StringKeyValue = KeyValue([]const u8, []const u8, strEql, strHash);
 
 const MultiForm = struct {
     value: []const u8,
     filename: ?[]const u8 = null,
 };
-pub const MultiFormKeyValue = KeyValue([]const u8, MultiForm, strEql);
+pub const MultiFormKeyValue = KeyValue([]const u8, MultiForm, strEql, strHash);
 
 const t = @import("t.zig");
 test "KeyValue: get" {
