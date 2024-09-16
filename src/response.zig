@@ -123,8 +123,7 @@ pub const Response = struct {
     }
 
     pub fn chunk(self: *Response, data: []const u8) !void {
-        const conn = self.conn;
-        const stream = conn.stream;
+        const stream = self.conn.stream;
         if (!self.chunked) {
             self.chunked = true;
             const header_buf = try self.prepareHeader();
@@ -144,7 +143,7 @@ pub const Response = struct {
             .{ .len = len + 2, .base = &buf },
             .{ .len = data.len, .base = data.ptr },
         };
-        try writeAllIOVec(self.conn, &vec);
+        try writeAllIOVec(stream.handle, &vec);
     }
 
     pub fn clearWriter(self: *Response) void {
@@ -165,12 +164,12 @@ pub const Response = struct {
         }
         self.written = true;
 
-        const conn = self.conn;
+        const stream = self.conn.stream;
         if (self.chunked) {
             // If the response was chunked, then we've already written the header
             // the connection is already in blocking mode, but the trailing chunk
             // hasn't bene written yet. We'll write that now, and that's it.
-            return conn.stream.writeAll("\r\n0\r\n\r\n");
+            return stream.writeAll("\r\n0\r\n\r\n");
         }
 
         const header_buf = try self.prepareHeader();
@@ -183,7 +182,7 @@ pub const Response = struct {
             .{ .len = body.len, .base = body.ptr },
         };
 
-        try writeAllIOVec(conn, &vec);
+        try writeAllIOVec(stream.handle, &vec);
     }
 
     fn prepareHeader(self: *Response) ![]const u8 {
@@ -407,9 +406,7 @@ pub const Response = struct {
     };
 };
 
-fn writeAllIOVec(conn: *HTTPConn, vec: []std.posix.iovec_const) !void {
-    const socket = conn.stream.handle;
-
+fn writeAllIOVec(socket: std.posix.socket_t, vec: []std.posix.iovec_const) !void {
     var i: usize = 0;
     while (true) {
         var n = try std.posix.writev(socket, vec[i..]);
