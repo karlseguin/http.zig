@@ -410,7 +410,8 @@ pub fn Part(comptime A: type) type {
 }
 
 fn getRoute(comptime A: type, root: *const Part(A), url: []const u8, params: *Params) ?A {
-    if (url.len == 0 or (url.len == 1 and url[0] == '/')) {
+    std.debug.assert(url.len != 0);
+    if (url.len == 1 and url[0] == '/') {
         return root.action;
     }
 
@@ -478,17 +479,12 @@ test "route: root" {
 
     router.get("/", testRoute1, .{});
     router.put("/", testRoute2, .{});
-    router.post("", testRoute3, .{});
     router.all("/all", testRoute4, .{});
 
     const urls = .{ "/", "/other", "/all" };
-    try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, "", &params).?.action);
-    try t.expectEqual(&testRoute2, router.route(httpz.Method.PUT, "", &params).?.action);
-    try t.expectEqual(&testRoute3, router.route(httpz.Method.POST, "", &params).?.action);
 
     try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, urls[0], &params).?.action);
     try t.expectEqual(&testRoute2, router.route(httpz.Method.PUT, urls[0], &params).?.action);
-    try t.expectEqual(&testRoute3, router.route(httpz.Method.POST, urls[0], &params).?.action);
 
     try t.expectEqual(null, router.route(httpz.Method.GET, urls[1], &params));
     try t.expectEqual(null, router.route(httpz.Method.DELETE, urls[0], &params));
