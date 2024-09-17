@@ -372,9 +372,11 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         }
 
         fn accept(self: *Self, listener: posix.fd_t, now: u32) !void {
-            var manager = &self.manager;
+            const manager = &self.manager;
+
+            const len = manager.len;
             const max_conn = self.max_conn;
-            while (@atomicLoad(usize, &manager.len, .monotonic) < max_conn) {
+            for (len..max_conn) |_| {
                 var address: net.Address = undefined;
                 var address_len: posix.socklen_t = @sizeOf(net.Address);
 
