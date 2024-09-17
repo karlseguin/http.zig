@@ -344,7 +344,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 };
                 now = timestamp();
 
-                while (it.next()) |data| {
+                while (it.next()) |event| {
+                    const data = event.data;
                     if (data == 1) {
                         if (self.processSignal(now) == false) {
                             self.websocket.shutdown();
@@ -364,6 +365,12 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                     const conn: *Conn(WSH) = @ptrFromInt(data);
                     if (conn.protocol == .http) {
+                        if (event.closed()) {
+                            // no need to launch a thread for this, especially
+                            // since it'l just signal back to the worker to do this
+                            manager.close(conn);
+                            continue;
+                        }
                         manager.active(conn, now);
                     }
                     thread_pool.spawn(.{ self, conn });
@@ -421,12 +428,12 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     .http => |http_conn| {
                         switch (http_conn.handover) {
                             .keepalive => {
+                                self.manager.keepalive(conn, now);
                                 self.loop.monitorRead(http_conn.stream.handle, @intFromPtr(conn), true) catch {
                                     metrics.internalError();
                                     self.manager.close(conn);
                                     continue;
                                 };
-                                self.manager.keepalive(conn, now);
                             },
                             .close, .unknown => self.manager.close(conn),
                             .disown => {
@@ -736,8 +743,8 @@ fn ConnManager(comptime WSH: type) type {
                     switch (http_conn.state) {
                         .active => self.active_list.remove(conn),
                         // a connection in "keepalive" can't be disowned, but
-                        // it can be closed (by timeout), and close call disown.
-                        .keepalive => self.active_list.remove(conn),
+                        // it can be closed (by timeout), and close calls disown.
+                        .keepalive => self.keepalive_list.remove(conn),
                     }
                     self.http_conn_pool.release(http_conn);
                 },
@@ -969,14 +976,27 @@ const KQueue = struct {
         index: usize,
         events: []Kevent,
 
-        fn next(self: *Iterator) ?usize {
+        fn next(self: *Iterator) ?PollEvent {
             const index = self.index;
             const events = self.events;
             if (index == events.len) {
                 return null;
             }
             self.index = index + 1;
-            return self.events[index].udata;
+            const event = &self.events[index];
+            return .{
+                .data = event.udata,
+                .flags = event.flags,
+            };
+        }
+    };
+
+    const PollEvent = struct {
+        data: usize,
+        flags: usize,
+
+        fn closed(self: PollEvent) bool {
+            return self.flags & posix.system.EV.EOF == posix.system.EV.EOF;
         }
     };
 };
@@ -1011,7 +1031,7 @@ const EPoll = struct {
 
     fn monitorRead(self: *EPoll, fd: posix.fd_t, data: usize, comptime rearm: bool) !void {
         const op = if (rearm) linux.EPOLL.CTL_MOD else linux.EPOLL.CTL_ADD;
-        var event = linux.epoll_event{ .events = linux.EPOLL.IN | linux.EPOLL.ONESHOT, .data = .{ .ptr = data } };
+        var event = linux.epoll_event{ .events = linux.EPOLL.IN | linux.EPOLL.RDHUP | linux.EPOLL.ONESHOT, .data = .{ .ptr = data } };
         return posix.epoll_ctl(self.q, op, fd, &event);
     }
 
@@ -1042,14 +1062,28 @@ const EPoll = struct {
         index: usize,
         events: []EpollEvent,
 
-        fn next(self: *Iterator) ?usize {
+        fn next(self: *Iterator) ?PollEvent {
             const index = self.index;
             const events = self.events;
             if (index == events.len) {
                 return null;
             }
             self.index = index + 1;
-            return self.events[index].data.ptr;
+            const event = &self.events[index];
+
+            return .{
+                .data = event.data.ptr,
+                .events = event.events,
+            };
+        }
+    };
+
+    const PollEvent = struct {
+        data: usize,
+        events: u32,
+
+        fn closed(self: PollEvent) bool {
+            return self.events & linux.EPOLL.RDHUP == linux.EPOLL.RDHUP;
         }
     };
 };
