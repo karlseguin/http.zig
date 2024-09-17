@@ -616,7 +616,7 @@ pub fn Server(comptime H: type) type {
             handler: H,
             // pull this out of da since we'll access it a lot (not really, but w/e)
             middlewares: []const Middleware(H),
-            dispatchable_action: ?DispatchableAction(H, ActionArg),
+            dispatchable_action: ?*const DispatchableAction(H, ActionArg),
 
             pub fn next(self: *Executor) !void {
                 const index = self.index;

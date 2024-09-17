@@ -69,7 +69,7 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
             return Group(Handler, Action).init(self, prefix, config);
         }
 
-        pub fn route(self: *Self, method: httpz.Method, url: []const u8, params: *Params) ?DispatchableAction {
+        pub fn route(self: *Self, method: httpz.Method, url: []const u8, params: *Params) ?*const DispatchableAction {
             return switch (method) {
                 httpz.Method.GET => getRoute(DispatchableAction, &self._get, url, params),
                 httpz.Method.POST => getRoute(DispatchableAction, &self._post, url, params),
@@ -409,10 +409,10 @@ pub fn Part(comptime A: type) type {
     };
 }
 
-fn getRoute(comptime A: type, root: *const Part(A), url: []const u8, params: *Params) ?A {
+fn getRoute(comptime A: type, root: *const Part(A), url: []const u8, params: *Params) ?*const A {
     std.debug.assert(url.len != 0);
     if (url.len == 1 and url[0] == '/') {
-        return root.action;
+        return if (root.action) |*a| a else null;
     }
 
     var normalized = url;
@@ -447,14 +447,14 @@ fn getRoute(comptime A: type, root: *const Part(A), url: []const u8, params: *Pa
         } else {
             params.len = 0;
             if (glob_all) |fallback| {
-                return fallback.action;
+                return if (fallback.action) |*a| a else null;
             }
             return null;
         }
         pos = index + 1; // +1 tos skip the slash on the next iteration
     }
 
-    if (route_part.action) |action| {
+    if (route_part.action) |*action| {
         if (route_part.param_names) |names| {
             params.addNames(names);
         } else {
@@ -465,7 +465,7 @@ fn getRoute(comptime A: type, root: *const Part(A), url: []const u8, params: *Pa
 
     params.len = 0;
     if (glob_all) |fallback| {
-        return fallback.action;
+        return if (fallback.action) |*a| a else null;
     }
     return null;
 }
