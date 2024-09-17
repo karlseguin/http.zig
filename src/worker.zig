@@ -826,7 +826,6 @@ fn ConnManager(comptime WSH: type) type {
 
 pub fn List(comptime T: type) type {
     return struct {
-        len: usize = 0,
         head: ?*T = null,
         tail: ?*T = null,
 
@@ -841,7 +840,6 @@ pub fn List(comptime T: type) type {
                 self.head = node;
                 self.tail = node;
             }
-            self.len += 1;
             node.next = null;
         }
 
@@ -877,7 +875,6 @@ pub fn List(comptime T: type) type {
             }
             node.prev = null;
             node.next = null;
-            self.len -= 1;
         }
     };
 }
