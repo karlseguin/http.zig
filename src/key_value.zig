@@ -45,9 +45,8 @@ fn KeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) callconv(.Inline) boo
 
         pub fn get(self: *const Self, key: K) ?V {
             const hash = hashFn(key);
-            const keys = self.keys[0..self.len];
             for (self.hashes[0..self.len], 0..) |h, i| {
-                if (h == hash and equalFn(keys[i], key)) {
+                if (h == hash and equalFn(self.keys[i], key)) {
                     return self.values[i];
                 }
             }
