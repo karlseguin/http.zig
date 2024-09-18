@@ -308,7 +308,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 .websocket = websocket,
                 .allocator = allocator,
                 .signal = .{ .read_fd = signals[0], .write_fd = signals[1] },
-                .max_conn = config.workers.max_conn orelse 512,
+                .max_conn = config.workers.max_conn orelse 8_192,
             };
         }
 
@@ -1107,7 +1107,7 @@ const HTTPConnPool = struct {
     websocket: *anyopaque,
 
     fn init(allocator: Allocator, buffer_pool: *BufferPool, websocket: *anyopaque, config: *const Config) !HTTPConnPool {
-        const min = config.workers.min_conn orelse config.workers.max_conn orelse 64;
+        const min = config.workers.min_conn orelse @min(config.workers.max_conn orelse 64, 64);
 
         var conns = try allocator.alloc(*HTTPConn, min);
         errdefer allocator.free(conns);

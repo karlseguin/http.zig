@@ -752,11 +752,11 @@ try httpz.listen(allocator, &router, .{
 
         // Maximum number of concurrent connection each worker can handle
         // (blocking mode: currently ignored)
-        .max_conn = 500,
+        .max_conn = 8_192,
 
         // Minimum number of connection states each worker should maintain
         // (blocking mode: currently ignored)
-        .min_conn = 32,
+        .min_conn = 64,
 
         // A pool of larger buffers that can be used for any data larger than configured
         // static buffers. For example, if response headers don't fit in in 
