@@ -280,6 +280,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
         websocket: *ws.Worker(WSH),
 
+        // whether or not the worker is full (manager.len == max_conn)
+        full: bool,
+
         const Self = @This();
 
         const Loop = switch (builtin.os.tag) {
@@ -301,6 +304,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             errdefer manager.deinit();
 
             return .{
+                .full = false,
                 .loop = loop,
                 .config = config,
                 .server = server,
@@ -346,11 +350,12 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     continue;
                 };
                 now = timestamp();
+                var closed_conn = false;
 
                 while (it.next()) |event| {
                     const data = event.data;
                     if (data == 1) {
-                        if (self.processSignal(now) == false) {
+                        if (self.processSignal(now, &closed_conn) == false) {
                             self.websocket.shutdown();
                             // signal was closed, we're being told to shutdown
                             return;
@@ -372,6 +377,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                             // no need to launch a thread for this, especially
                             // since it'l just signal back to the worker to do this
                             manager.close(conn);
+                            closed_conn = true;
                             continue;
                         }
                         manager.active(conn, now);
@@ -388,15 +394,37 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     thread_pool.spawn(queue_batch[0..queue_index]);
                     queue_index = 0;
                 }
+
+                if (self.full and closed_conn) {
+                    self.full = false;
+                    self.loop.monitorAccept(listener) catch |err| {
+                        log.err("Failed to enable monitor to listening socket: {}", .{err});
+                        return;
+                    };
+                }
             }
         }
 
         fn accept(self: *Self, listener: posix.fd_t, now: u32) !void {
             const manager = &self.manager;
 
-            const len = manager.len;
+            var len = manager.len;
             const max_conn = self.max_conn;
-            for (len..max_conn) |_| {
+
+            // Don't try to disconnect keepalive connections when len == max_conn.
+            // If you do, you'll get hard-to-reproduce segfaults. Why?
+            // This accept function is being called our event loop, going through
+            // all PollEvents available from loop.wait. If we call
+            // manager.close(keepalive_list.head) here, there's a chance that
+            // the connection which we're closing was raied in our PollEvents.
+            // And if it is, we'll segfault when we try calling conn.active()
+            // since it'll have been freed.
+            while (true) {
+                if (len == max_conn) {
+                    self.full = true;
+                    self.loop.pauseAccept(listener) catch {};
+                    return;
+                }
                 var address: net.Address = undefined;
                 var address_len: posix.socklen_t = @sizeOf(net.Address);
 
@@ -428,10 +456,11 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 http_conn.address = address;
 
                 try self.loop.monitorRead(socket, @intFromPtr(conn), false);
+                len += 1;
             }
         }
 
-        fn processSignal(self: *Self, now: u32) bool {
+        fn processSignal(self: *Self, now: u32, closed_bool: *bool) bool {
             // if there's no iterator (not even an empty one), then it means
             // the signal was closed, indicating a shutdown
             var it = self.signal.iterator() orelse return false;
@@ -448,8 +477,12 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                                     continue;
                                 };
                             },
-                            .close, .unknown => self.manager.close(conn),
+                            .close, .unknown => {
+                                closed_bool.* = true;
+                                self.manager.close(conn);
+                            },
                             .disown => {
+                                closed_bool.* = true;
                                 if (self.loop.remove(http_conn.stream.handle)) {
                                     self.manager.disown(conn);
                                 } else |_| {
@@ -457,6 +490,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                                 }
                             },
                             .websocket => |ptr| {
+                                closed_bool.* = true;
                                 if (comptime WSH == httpz.DummyWebsocketHandler) {
                                     std.debug.print("Your httpz handler must have a `WebsocketHandler` declaration. This must be the same type passed to `httpz.upgradeWebsocket`. Closing the connection.\n", .{});
                                     self.manager.close(conn);
@@ -923,7 +957,11 @@ const KQueue = struct {
     }
 
     fn monitorAccept(self: *KQueue, fd: posix.fd_t) !void {
-        try self.change(fd, 0, posix.system.EVFILT.READ, posix.system.EV.ADD);
+        try self.change(fd, 0, posix.system.EVFILT.READ, posix.system.EV.ENABLE | posix.system.EV.ADD);
+    }
+
+    fn pauseAccept(self: *KQueue, fd: posix.fd_t) !void {
+        try self.change(fd, 0, posix.system.EVFILT.READ, posix.system.EV.DISABLE);
     }
 
     fn monitorSignal(self: *KQueue, fd: posix.fd_t) !void {
@@ -1035,6 +1073,10 @@ const EPoll = struct {
     fn monitorAccept(self: *EPoll, fd: posix.fd_t) !void {
         var event = linux.epoll_event{ .events = linux.EPOLL.IN, .data = .{ .ptr = 0 } };
         return std.posix.epoll_ctl(self.q, linux.EPOLL.CTL_ADD, fd, &event);
+    }
+
+    fn pauseAccept(self: *EPoll, fd: posix.fd_t) !void {
+        return std.posix.epoll_ctl(self.q, linux.EPOLL.CTL_DEL, fd, null);
     }
 
     fn monitorSignal(self: *EPoll, fd: posix.fd_t) !void {
