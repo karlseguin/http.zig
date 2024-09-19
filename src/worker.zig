@@ -283,6 +283,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         // whether or not the worker is full (manager.len == max_conn)
         full: bool,
 
+        // how many bytes should we retain in our arena allocator between keepalive usage
+        retain_allocated_bytes_keepalive: usize,
+
         const Self = @This();
 
         const Loop = switch (builtin.os.tag) {
@@ -303,6 +306,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             const manager = try ConnManager(WSH).init(allocator, websocket, config);
             errdefer manager.deinit();
 
+            const retain_allocated_bytes = config.workers.retain_allocated_bytes orelse 4096;
+            const retain_allocated_bytes_keepalive = @max(retain_allocated_bytes, 8192);
+
             return .{
                 .full = false,
                 .loop = loop,
@@ -311,8 +317,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 .manager = manager,
                 .websocket = websocket,
                 .allocator = allocator,
-                .signal = .{ .read_fd = signals[0], .write_fd = signals[1] },
                 .max_conn = config.workers.max_conn orelse 8_192,
+                .signal = .{ .read_fd = signals[0], .write_fd = signals[1] },
+                .retain_allocated_bytes_keepalive = retain_allocated_bytes_keepalive,
             };
         }
 
@@ -524,46 +531,59 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         // when we have data available - there may or may not be a full message ready
         pub fn processData(self: *Self, conn: *Conn(WSH), thread_buf: []u8) void {
             switch (conn.protocol) {
-                .http => |http_conn| {
-                    const stream = http_conn.stream;
+                .http => |http_conn| self.processHTTPData(conn, thread_buf, http_conn),
+                .websocket => |hc| self.processWebsocketData(conn, thread_buf, hc),
+            }
+        }
 
-                    const done = http_conn.req_state.parse(http_conn.req_arena.allocator(), stream) catch |err| {
-                        requestParseError(http_conn, err) catch {};
-                        http_conn.handover = .close;
-                        self.signal.write(@intFromPtr(conn)) catch @panic("todo");
-                        return;
-                    };
+        pub fn processHTTPData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, http_conn: *HTTPConn) void {
+            const stream = http_conn.stream;
 
-                    if (done == false) {
-                        // we need to wait for more data
-                        self.loop.monitorRead(stream.handle, @intFromPtr(conn), true) catch |err| {
-                            serverError(http_conn, "unknown event loop error: {}", err) catch {};
-                            http_conn.handover = .close;
-                            self.signal.write(@intFromPtr(conn)) catch @panic("todo");
-                        };
-                        return;
-                    }
+            const done = http_conn.req_state.parse(http_conn.req_arena.allocator(), stream) catch |err| {
+                requestParseError(http_conn, err) catch {};
+                http_conn.handover = .close;
+                self.signal.write(@intFromPtr(conn)) catch @panic("todo");
+                return;
+            };
 
-                    metrics.request();
-                    self.server.handleRequest(http_conn, thread_buf);
+            if (done == false) {
+                // we need to wait for more data
+                self.loop.monitorRead(stream.handle, @intFromPtr(conn), true) catch |err| {
+                    serverError(http_conn, "unknown event loop error: {}", err) catch {};
+                    http_conn.handover = .close;
                     self.signal.write(@intFromPtr(conn)) catch @panic("todo");
-                },
-                .websocket => |hc| {
-                    var ws_conn = &hc.conn;
-                    const success = self.websocket.worker.dataAvailable(hc, thread_buf);
-                    if (success == false) {
-                        ws_conn.close(.{ .code = 4997, .reason = "wsz" }) catch {};
-                        self.websocket.cleanupConn(hc);
-                    } else if (ws_conn.isClosed()) {
-                        self.websocket.cleanupConn(hc);
-                    } else {
-                        self.loop.monitorRead(hc.socket, @intFromPtr(conn), true) catch |err| {
-                            log.debug("({}) failed to add read event monitor: {}", .{ ws_conn.address, err });
-                            ws_conn.close(.{ .code = 4998, .reason = "wsz" }) catch {};
-                            self.websocket.cleanupConn(hc);
-                        };
-                    }
-                },
+                };
+                return;
+            }
+
+            metrics.request();
+            self.server.handleRequest(http_conn, thread_buf);
+
+            if (http_conn.handover == .keepalive) {
+                 // Do what we can in the threadpool to setup this connection for
+                // more work. Anything we _don't_ do here has to be done in the worker
+                // thread, which impacts all connections. But, we can only do stuff
+                // that's thread-safe here (i.e. we can't manipulate the ConnManager)
+                http_conn.keepalive(self.retain_allocated_bytes_keepalive);
+                http_conn.state = .keepalive;
+            }
+            self.signal.write(@intFromPtr(conn)) catch @panic("todo");
+        }
+
+        pub fn processWebsocketData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, hc: *ws.HandlerConn(WSH)) void {
+            var ws_conn = &hc.conn;
+            const success = self.websocket.worker.dataAvailable(hc, thread_buf);
+            if (success == false) {
+                ws_conn.close(.{ .code = 4997, .reason = "wsz" }) catch {};
+                self.websocket.cleanupConn(hc);
+            } else if (ws_conn.isClosed()) {
+                self.websocket.cleanupConn(hc);
+            } else {
+                self.loop.monitorRead(hc.socket, @intFromPtr(conn), true) catch |err| {
+                    log.debug("({}) failed to add read event monitor: {}", .{ ws_conn.address, err });
+                    ws_conn.close(.{ .code = 4998, .reason = "wsz" }) catch {};
+                    self.websocket.cleanupConn(hc);
+                };
             }
         }
     };
@@ -691,9 +711,6 @@ fn ConnManager(comptime WSH: type) type {
         timeout_request: u32,
         timeout_keepalive: u32,
 
-        // how many bytes should we retain in our arena allocator between keepalive usage
-        retain_allocated_bytes_keepalive: usize,
-
         const Self = @This();
 
         fn init(allocator: Allocator, websocket: *anyopaque, config: *const Config) !Self {
@@ -706,9 +723,6 @@ fn ConnManager(comptime WSH: type) type {
             const http_conn_pool = try HTTPConnPool.init(allocator, buffer_pool, websocket, config);
             errdefer http_conn_pool.deinit();
 
-            const retain_allocated_bytes = config.workers.retain_allocated_bytes orelse 4096;
-            const retain_allocated_bytes_keepalive = @max(retain_allocated_bytes, 8192);
-
             return .{
                 .len = 0,
                 .active_list = .{},
@@ -717,7 +731,6 @@ fn ConnManager(comptime WSH: type) type {
                 .buffer_pool = buffer_pool,
                 .conn_mem_pool = conn_mem_pool,
                 .http_conn_pool = http_conn_pool,
-                .retain_allocated_bytes_keepalive = retain_allocated_bytes_keepalive,
                 .timeout_request = config.timeout.request orelse MAX_TIMEOUT,
                 .timeout_keepalive = config.timeout.keepalive orelse MAX_TIMEOUT,
             };
@@ -770,11 +783,8 @@ fn ConnManager(comptime WSH: type) type {
 
         fn keepalive(self: *Self, conn: *Conn(WSH), now: u32) void {
             var http_conn = conn.protocol.http;
-
-            http_conn.keepalive(self.retain_allocated_bytes_keepalive);
-            http_conn.state = .keepalive;
+            // we expect the threadpool to have already called http_conn.keepalive()
             http_conn.timeout = now + self.timeout_keepalive;
-
             self.active_list.remove(conn);
             self.keepalive_list.insert(conn);
         }
