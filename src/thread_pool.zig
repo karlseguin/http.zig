@@ -116,31 +116,41 @@ pub fn ThreadPool(comptime F: anytype) type {
             return self.head == self.tail;
         }
 
-        pub fn spawn(self: *Self, args: Args) void {
+        pub fn spawn(self: *Self, args: []const Args) void {
+            var pending = args;
+            var capacity: usize = 0;
+
             const queue = self.queue;
-            const queue_end = queue.len - 1;
+            const queue_end  = queue.len - 1;
 
-            self.mutex.lock();
-            while (self.isFull(queue_end)) {
-                self.write_cond.wait(&self.mutex);
+            while (true) {
+                self.mutex.lock();
+                var head = self.head;
+                var tail = self.tail;
+                while (true) {
+                    capacity = if (head < tail) tail - head - 1 else queue_end - head + tail;
+                    if (capacity > 0) {
+                        break;
+                    }
+                    self.write_cond.wait(&self.mutex);
+                    head = self.head;
+                    tail = self.tail;
+                }
+
+                const ready = if (capacity >= pending.len) pending else pending[0..capacity];
+                for (ready) |a| {
+                    queue[head] = a;
+                    // std.debug.print("{d}\n", .{head});
+                    head = if (head == queue_end) 0 else head + 1;
+                }
+                self.head = head;
+                self.mutex.unlock();
+                if (ready.len == pending.len) {
+                    break;
+                }
+                pending = pending[ready.len..];
             }
-
-            const head = self.head;
-            queue[head] = args;
-            self.head = if (head == queue_end) 0 else head + 1;
-            self.mutex.unlock();
-
             self.read_cond.signal();
-        }
-
-        // assumed to be called under lock
-        inline fn isFull(self: *Self, queue_end: usize) bool {
-            const tail = self.tail;
-            const head = self.head;
-            if (tail == 0) {
-                return head == queue_end;
-            }
-            return head == tail - 1;
         }
 
         // Having a re-usable buffer per thread is the most efficient way
@@ -188,14 +198,14 @@ test "ThreadPool: small fuzz" {
     testSum = 0; // global defined near the end of this file
     var tp = try ThreadPool(testIncr).init(t.arena.allocator(), .{ .count = 3, .backlog = 3, .buffer_size = 512 });
 
-    for (0..50_000) |_| {
-        tp.spawn(.{1});
+    for (0..25_000) |_| {
+        tp.spawn(&.{.{1}, .{2}, .{3}});
     }
     while (tp.empty() == false) {
         std.time.sleep(std.time.ns_per_ms);
     }
     tp.stop();
-    try t.expectEqual(50_000, testSum);
+    try t.expectEqual(150_000, testSum);
 }
 
 test "ThreadPool: large fuzz" {
@@ -205,13 +215,15 @@ test "ThreadPool: large fuzz" {
     var tp = try ThreadPool(testIncr).init(t.arena.allocator(), .{ .count = 50, .backlog = 1000, .buffer_size = 512 });
 
     for (0..50_000) |_| {
-        tp.spawn(.{1});
+        tp.spawn(&.{.{1}, .{2}});
+        tp.spawn(&.{.{3}});
+        tp.spawn(&.{.{4}, .{5}, .{6}});
     }
     while (tp.empty() == false) {
         std.time.sleep(std.time.ns_per_ms);
     }
     tp.stop();
-    try t.expectEqual(50_000, testSum);
+    try t.expectEqual(1_050_000, testSum);
 }
 
 var testSum: u64 = 0;

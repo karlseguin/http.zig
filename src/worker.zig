@@ -129,7 +129,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 };
                 metrics.connection();
                 // calls handleConnection through the server's thread_pool
-                server._thread_pool.spawn(.{ self, socket, address });
+                server._thread_pool.spawn(&.{.{ self, socket, address }});
             }
         }
 
@@ -331,9 +331,12 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 log.err("Failed to add monitor to signal pipe: {}", .{err});
                 return;
             };
+            const QUEUE_SIZE = 64;
+
+            var queue_batch: [64]struct{*Self, *Conn(WSH)} = undefined;
+            var queue_index: usize = 0;
 
             var thread_pool = self.server._thread_pool;
-
             var now = timestamp();
             while (true) {
                 const timeout = manager.prepareToWait(now);
@@ -373,7 +376,17 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                         }
                         manager.active(conn, now);
                     }
-                    thread_pool.spawn(.{ self, conn });
+                    queue_batch[queue_index] = .{ self, conn };
+                    queue_index += 1;
+                    if (queue_index == QUEUE_SIZE) {
+                        thread_pool.spawn(&queue_batch);
+                        queue_index = 0;
+                    }
+                }
+
+                if (queue_index > 0) {
+                    thread_pool.spawn(queue_batch[0..queue_index]);
+                    queue_index = 0;
                 }
             }
         }
