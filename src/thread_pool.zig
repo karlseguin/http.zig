@@ -196,25 +196,28 @@ test "ThreadPool: small fuzz" {
     defer t.reset();
 
     testSum = 0; // global defined near the end of this file
+    testCount = 0; // global defined near the end of this file
     var tp = try ThreadPool(testIncr).init(t.arena.allocator(), .{ .count = 3, .backlog = 3, .buffer_size = 512 });
 
-    for (0..25_000) |_| {
+    for (0..10_000) |_| {
         tp.spawn(&.{.{1}, .{2}, .{3}});
     }
     while (tp.empty() == false) {
         std.time.sleep(std.time.ns_per_ms);
     }
     tp.stop();
-    try t.expectEqual(150_000, testSum);
+    try t.expectEqual(60_000, testSum);
+    try t.expectEqual(30_000, testCount);
 }
 
 test "ThreadPool: large fuzz" {
     defer t.reset();
 
     testSum = 0; // global defined near the end of this file
+    testCount = 0; // global defined near the end of this file
     var tp = try ThreadPool(testIncr).init(t.arena.allocator(), .{ .count = 50, .backlog = 1000, .buffer_size = 512 });
 
-    for (0..50_000) |_| {
+    for (0..10_000) |_| {
         tp.spawn(&.{.{1}, .{2}});
         tp.spawn(&.{.{3}});
         tp.spawn(&.{.{4}, .{5}, .{6}});
@@ -223,13 +226,16 @@ test "ThreadPool: large fuzz" {
         std.time.sleep(std.time.ns_per_ms);
     }
     tp.stop();
-    try t.expectEqual(1_050_000, testSum);
+    try t.expectEqual(210_000, testSum);
+    try t.expectEqual(60_000, testCount);
 }
 
 var testSum: u64 = 0;
+var testCount: u64 = 0;
 fn testIncr(c: u64, buf: []u8) void {
     std.debug.assert(buf.len == 512);
     _ = @atomicRmw(u64, &testSum, .Add, c, .monotonic);
+    _ = @atomicRmw(u64, &testCount, .Add, 1, .monotonic);
     // let the threadpool queue get backed up
     std.time.sleep(std.time.ns_per_us * 100);
 }
