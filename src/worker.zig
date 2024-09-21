@@ -436,9 +436,14 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 var address_len: posix.socklen_t = @sizeOf(net.Address);
 
                 const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
-                    // When available, we use SO_REUSEPORT_LB or SO_REUSEPORT, so WouldBlock
-                    // should not be possible in those cases, but if it isn't available
-                    // this error should be ignored as it means another thread picked it up.
+                    // On BSD, REUSEPORT_LB means taht only 1 worker should get notified
+                    // of a connetion. On Linux, however, we only have REUSEPORT, which will
+                    // notify all workers. However, we monitor the listener using EPOLLEXCLUSIVE.
+                    // This makes it so that "one or more" workers receive it.
+                    // In other words, no guarantee that there'll just be 1, but Linux will try
+                    // to minimze the count.
+                    // In the end, when we call accept, we might get a WouldBlock because
+                    // Linux can wake up multiple epoll fds for a single connection.
                     return if (err == error.WouldBlock) {} else err;
                 };
                 errdefer posix.close(socket);
@@ -1081,7 +1086,7 @@ const EPoll = struct {
     }
 
     fn monitorAccept(self: *EPoll, fd: posix.fd_t) !void {
-        var event = linux.epoll_event{ .events = linux.EPOLL.IN, .data = .{ .ptr = 0 } };
+        var event = linux.epoll_event{ .events = linux.EPOLL.IN | linux.EPOLL.EXCLUSIVE, .data = .{ .ptr = 0 } };
         return std.posix.epoll_ctl(self.q, linux.EPOLL.CTL_ADD, fd, &event);
     }
 
