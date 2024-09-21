@@ -342,9 +342,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 log.err("Failed to add monitor to signal pipe: {}", .{err});
                 return;
             };
-            const QUEUE_SIZE = 64;
+            const QUEUE_SIZE = 16;
 
-            var queue_batch: [64]struct{*Self, *Conn(WSH)} = undefined;
+            var queue_batch: [QUEUE_SIZE]struct{*Self, *Conn(WSH)} = undefined;
             var queue_index: usize = 0;
 
             var thread_pool = self.server._thread_pool;

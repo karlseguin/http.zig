@@ -255,7 +255,7 @@ pub fn Server(comptime H: type) type {
         _router: Router(H, ActionArg),
         _mut: Thread.Mutex,
         _cond: Thread.Condition,
-        _thread_pool: *TP,
+        _thread_pool: TP,
         _signals: []posix.fd_t,
         _listener: ?posix.socket_t,
         _max_request_per_connection: usize,
@@ -325,6 +325,7 @@ pub fn Server(comptime H: type) type {
 
         pub fn deinit(self: *Self) void {
             self._thread_pool.stop();
+            self._thread_pool.deinit();
             self._websocket_state.deinit();
 
             var node = self._middleware_registry.first;
