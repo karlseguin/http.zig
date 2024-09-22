@@ -854,6 +854,9 @@ pub const State = struct {
             self.pos = len;
             return true;
         }
+        if  (read > cl) {
+            return error.InvalidContentLength;
+        }
 
         // how much of the body are we missing
         const missing = cl - read;
@@ -1199,6 +1202,11 @@ test "request: query & body" {
 
     // results should be cached internally, but let's double check
     try t.expectString("keemun tea", (try r.query()).get("search").?);
+}
+
+test "request: invalid content-length" {
+    defer t.reset();
+    try expectParseError(error.InvalidContentLength, "GET / HTTP/1.0\r\nContent-Length: 1\r\n\r\nabc", .{ });
 }
 
 test "body: json" {
