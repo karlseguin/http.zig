@@ -421,16 +421,13 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             errdefer posix.close(socket);
             metrics.connection();
 
-            {
-                // socket is _probably_ in NONBLOCKING mode (it inherits
-                // the flag from the listening socket).
-                const flags = try posix.fcntl(socket, posix.F.GETFL, 0);
-                const nonblocking = @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
-                if (flags & nonblocking != nonblocking) {
-                    // Yup, it's in nonblocking mode. Disable that flag to
-                    // put it in blocking mode.
-                    _ = try posix.fcntl(socket, posix.F.SETFL, flags & nonblocking);
-                }
+            const flags = try posix.fcntl(socket, posix.F.GETFL, 0);
+            const nonblocking = @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
+            // make sure it's in nonblocking
+            if (flags & nonblocking != nonblocking) {
+                // Yup, it's in nonblocking mode. Disable that flag to
+                // put it in blocking mode.
+                _ = try posix.fcntl(socket, posix.F.SETFL, flags & nonblocking);
             }
 
             const manager = &self.manager;
@@ -440,6 +437,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             var http_conn = conn.protocol.http;
             http_conn.stream = .{ .handle = socket };
             http_conn.address = a.address;
+            http_conn.flags = flags;
 
             try self.loop.monitorRead(conn, false);
 
@@ -466,6 +464,13 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 switch (http_conn.handover) {
                     .keepalive => {
                         self.manager.keepalive(conn, now);
+                        self.loop.monitorRead(conn, true) catch {
+                            metrics.internalError();
+                            manager.close(conn);
+                            continue;
+                        };
+                    },
+                    .need_data => {
                         self.loop.monitorRead(conn, true) catch {
                             metrics.internalError();
                             manager.close(conn);
@@ -520,20 +525,15 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         }
 
         pub fn processHTTPData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, http_conn: *HTTPConn) void {
+            defer self.signal.write(@intFromPtr(conn)) catch @panic("todo");
             const done = http_conn.req_state.parse(http_conn.req_arena.allocator()) catch |err| {
                 requestParseError(http_conn, err) catch {};
                 http_conn.handover = .close;
-                self.signal.write(@intFromPtr(conn)) catch @panic("todo");
                 return;
             };
 
             if (done == false) {
-                // we need to wait for more data
-                self.loop.monitorRead(conn, true) catch |err| {
-                    serverError(http_conn, "unknown event loop error: {}", err) catch {};
-                    http_conn.handover = .close;
-                    self.signal.write(@intFromPtr(conn)) catch @panic("todo");
-                };
+                http_conn.handover = .need_data;
                 return;
             }
 
@@ -548,7 +548,6 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 http_conn.keepalive(self.retain_allocated_bytes_keepalive);
                 http_conn.state = .keepalive;
             }
-            self.signal.write(@intFromPtr(conn)) catch @panic("todo");
         }
 
         pub fn processWebsocketData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, hc: *ws.HandlerConn(WSH)) void {
@@ -1130,6 +1129,7 @@ fn IOUring(comptime WSH: type) type {
                     error.SignalInterrupt => continue,
                     else => return err,
                 };
+
                 return .{
                     .index = 0,
                     .loop = self,
@@ -1426,6 +1426,7 @@ pub const HTTPConn = struct {
         close,
         unknown,
         keepalive,
+        need_data,
         websocket: *anyopaque,
     };
 
@@ -1472,6 +1473,11 @@ pub const HTTPConn = struct {
     // (especially since not everyone cares about websockets).
     ws_worker: *anyopaque,
 
+    // socket flags (used when we have to toggle blocking/nonblocking)
+    flags: usize = 0,
+
+    blocking: bool = false,
+
     fn init(allocator: Allocator, buffer_pool: *BufferPool, ws_worker: *anyopaque, config: *const Config) !HTTPConn {
         const conn_arena = try allocator.create(std.heap.ArenaAllocator);
         errdefer allocator.destroy(conn_arena);
@@ -1514,16 +1520,65 @@ pub const HTTPConn = struct {
         _ = self.req_arena.reset(.{ .retain_with_limit = retain_allocated_bytes });
     }
 
+    pub fn makeBlocking(self: *HTTPConn) !void {
+        std.debug.assert(self.blocking == false);
+        const nonblocking = @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
+        _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.flags & ~nonblocking);
+    }
+
+    pub fn makeNonBlocking(self: *HTTPConn) !void {
+        std.debug.assert(self.blocking == true);
+        const nonblocking = @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
+        _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.flags & nonblocking);
+    }
+
     // getting put back into the pool
     pub fn reset(self: *HTTPConn, retain_allocated_bytes: usize) void {
         self.close = false;
         self.handover = .unknown;
-        self.stream = undefined;
-        self.address = undefined;
         self.request_count = 0;
         self.req_state.reset();
         self.res_state.reset();
         _ = self.req_arena.reset(.{ .retain_with_limit = retain_allocated_bytes });
+    }
+
+
+    pub fn writeAll(self: *HTTPConn, data: []const u8) !void {
+        const stream = self.stream;
+        while (true) {
+            stream.writeAll(data) catch |err| {
+                switch (err) {
+                  error.WouldBlock => try self.makeBlocking(),
+                 else => return err,
+                }
+            };
+            return;
+        }
+    }
+
+    pub fn writeAllIOVec(self: *HTTPConn, vec: []std.posix.iovec_const) !void {
+        const socket = self.stream.handle;
+
+        while (true) {
+            var i: usize = 0;
+            while (true) {
+                var n = std.posix.writev(socket, vec[i..]) catch |err| switch (err) {
+                    error.WouldBlock => {
+                        try self.makeBlocking();
+                        continue;
+                    },
+                    else => return err,
+                };
+
+                while (n >= vec[i].len) {
+                    n -= vec[i].len;
+                    i += 1;
+                    if (i >= vec.len) return;
+                }
+                vec[i].base += n;
+                vec[i].len -= n;
+            }
+        }
     }
 };
 
