@@ -2,8 +2,6 @@ const httpz = @import("httpz.zig");
 const request = @import("request.zig");
 const response = @import("response.zig");
 
-// don't like using CPU detection since hyperthread cores are marketing.
-const DEFAULT_WORKERS = 2;
 
 pub const Config = struct {
     port: ?u16 = null,
@@ -60,7 +58,7 @@ pub const Config = struct {
     };
 
     pub fn threadPoolCount(self: *const Config) u32 {
-        const thread_count = self.thread_pool.count orelse 4;
+        const thread_count = self.thread_pool.count orelse 32;
 
         // In blockingMode, we only have 1 worker (regardless of the
         // config). We want to make blocking and nonblocking modes
@@ -70,7 +68,6 @@ pub const Config = struct {
         // thread pool threads do more, so this re-balancing makes some sense
         // and can always be opted out of by explicitly setting
         // config.workers.count = 1
-
         if (httpz.blockingMode()) {
             const worker_count = self.workerCount();
             if (worker_count > 1) {
@@ -85,6 +82,6 @@ pub const Config = struct {
         if (httpz.blockingMode()) {
             return 1;
         }
-        return self.workers.count orelse DEFAULT_WORKERS;
+        return self.workers.count orelse 1;
     }
 };
