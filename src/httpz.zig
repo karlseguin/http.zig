@@ -33,6 +33,7 @@ const force_blocking: bool = if (@hasDecl(build, "httpz_blocking")) build.httpz_
 
 const MAX_REQUEST_COUNT = std.math.maxInt(usize);
 
+
 pub fn writeMetrics(writer: anytype) !void {
     return @import("metrics.zig").write(writer);
 }
@@ -433,10 +434,10 @@ pub fn Server(comptime H: type) type {
                     signals[i] = pipe[1];
                     errdefer posix.close(pipe[1]);
 
-                    workers[i] = try Worker.init(allocator, pipe, self, &config);
+                    workers[i] = try Worker.init(allocator, listener, pipe, self, &config);
                     errdefer workers[i].deinit();
 
-                    threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], listener });
+                    threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i] });
                     started += 1;
                 }
 
@@ -581,7 +582,9 @@ pub fn Server(comptime H: type) type {
                 conn.handover = if (req.canKeepAlive() and conn.request_count < @atomicLoad(usize, &self._max_request_per_connection, .monotonic)) .keepalive else .close;
             }
 
-            res.write() catch {
+            res.write() catch |err| {
+                // TODO: LOOP
+                std.debug.print("write: {}\n", .{err});
                 conn.handover = .close;
             };
         }

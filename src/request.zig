@@ -576,21 +576,17 @@ pub const State = struct {
     }
 
     // returns true if the header has been fully parsed
-    pub fn parse(self: *State, req_arena: Allocator, stream: anytype) !bool {
+    pub fn parse(self: *State, req_arena: Allocator) !bool {
         if (self.body != null) {
-            // if we have a body, then we've read the header. We want to read into
-            // self.body, not self.buf.
-            return self.readBody(stream);
+            // If we have a body, then we've read the header.
+            // At this point, we just need to make sure that we have the full body
+            // body_pos == how much we've read
+            // body_len == how big the body is (based on the Content-Length)
+            return self.body_pos == self.body_len;
         }
 
-        var len = self.len;
+        const len = self.len;
         const buf = self.buf;
-        const n = try stream.read(buf[len..]);
-        if (n == 0) {
-            return error.ConnectionClosed;
-        }
-        len = len + n;
-        self.len = len;
 
         // When https://github.com/ziglang/zig/issues/8220 lands, we can probably
         // DRY this up.
@@ -880,22 +876,6 @@ pub const State = struct {
             self.body = body_buf;
         }
         self.body_pos = read;
-        return false;
-    }
-
-    fn readBody(self: *State, stream: anytype) !bool {
-        var pos = self.body_pos;
-        const buf = self.body.?.data;
-
-        const n = try stream.read(buf[pos..]);
-        if (n == 0) {
-            return error.ConnectionClosed;
-        }
-        pos += n;
-        if (pos == self.body_len) {
-            return true;
-        }
-        self.body_pos = pos;
         return false;
     }
 };
@@ -1532,9 +1512,9 @@ test "request: fuzz" {
             }
 
             var conn = ctx.conn;
-            var fake_reader = ctx.fakeReader();
+            // var fake_reader = ctx.fakeReader();
             while (true) {
-                const done = try conn.req_state.parse(conn.req_arena.allocator(), &fake_reader);
+                const done = try conn.req_state.parse(conn.req_arena.allocator());
                 if (done) break;
             }
 
@@ -1567,7 +1547,7 @@ fn testParse(input: []const u8, config: Config) !Request {
     var ctx = t.Context.allocInit(t.arena.allocator(), .{ .request = config });
     ctx.write(input);
     while (true) {
-        const done = try ctx.conn.req_state.parse(ctx.conn.req_arena.allocator(), ctx.stream);
+        const done = try ctx.conn.req_state.parse(ctx.conn.req_arena.allocator());
         if (done) break;
     }
     return Request.init(ctx.conn.req_arena.allocator(), ctx.conn);
@@ -1578,7 +1558,7 @@ fn expectParseError(expected: anyerror, input: []const u8, config: Config) !void
     defer ctx.deinit();
 
     ctx.write(input);
-    try t.expectError(expected, ctx.conn.req_state.parse(ctx.conn.req_arena.allocator(), ctx.stream));
+    try t.expectError(expected, ctx.conn.req_state.parse(ctx.conn.req_arena.allocator()));
 }
 
 fn randomMethod(random: std.Random) []const u8 {

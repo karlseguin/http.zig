@@ -16,9 +16,9 @@ pub fn init(config: httpz.Config) Testing {
     // Parse a basic request. This will put our conn.req_state into a valid state
     // for creating a request. Application code can modify the request directly
     // thereafter to change whatever properties they want.
-    var base_request = std.io.fixedBufferStream("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    // var base_request = std.io.fixedBufferStream("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     while (true) {
-        const done = conn.req_state.parse(conn.req_arena.allocator(), &base_request) catch unreachable;
+        const done = conn.req_state.parse(conn.req_arena.allocator()) catch unreachable;
         if (done) {
             break;
         }
