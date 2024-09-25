@@ -367,7 +367,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         const Self = @This();
 
         const Loop = switch (LoopType) {
-            .kqueue => KQueue,
+            .kqueue => KQueue(WSH),
             .iouring => IOUring(WSH),
             else => unreachable,
         };
@@ -549,7 +549,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     },
                     .disown => {
                         closed_bool.* = true;
-                        if (self.loop.remove(http_conn.stream.handle)) {
+                        if (self.loop.remove(conn)) {
                             manager.disown(conn);
                         } else |_| {
                             manager.close(conn);
@@ -990,122 +990,158 @@ pub fn List(comptime T: type) type {
     };
 }
 
-const KQueue = struct {
-    q: i32,
-    change_count: usize,
-    change_buffer: [32]Kevent,
-    event_list: [128]Kevent,
+fn KQueue(comptime WSH: type) type {
+    return struct {
+        q: i32,
+        signal: *Signal,
+        listener: posix.fd_t,
+        change_count: usize,
+        change_buffer: [32]Kevent,
+        event_list: [128]Kevent,
 
-    const Kevent = posix.Kevent;
+        const Kevent = posix.Kevent;
 
-    fn init() !KQueue {
-        return .{
-            .q = try posix.kqueue(),
-            .change_count = 0,
-            .change_buffer = undefined,
-            .event_list = undefined,
-        };
-    }
+        const Self = @This();
 
-    fn deinit(self: KQueue) void {
-        posix.close(self.q);
-    }
+        fn init(signal: *Signal, listener: posix.fd_t) !Self {
+            return .{
+                .signal = signal,
+                .change_count = 0,
+                .listener = listener,
+                .q = try posix.kqueue(),
+                .event_list = undefined,
+                .change_buffer = undefined,
+            };
+        }
 
-    fn monitorAccept(self: *KQueue, fd: posix.fd_t) !void {
-        try self.change(fd, fd, posix.system.EVFILT.READ, posix.system.EV.ENABLE | posix.system.EV.ADD);
-    }
+        fn deinit(self: *Self) void {
+            posix.close(self.q);
+        }
 
-    fn pauseAccept(self: *KQueue, fd: posix.fd_t) !void {
-        try self.change(fd, fd, posix.system.EVFILT.READ, posix.system.EV.DISABLE);
-    }
+        fn monitorAccept(self: *Self) !void {
+            try self.change(self.listener, 0, posix.system.EVFILT.READ, posix.system.EV.ENABLE | posix.system.EV.ADD);
+        }
 
-    fn monitorSignal(self: *KQueue, fd: posix.fd_t) !void {
-        try self.change(fd, fd, posix.system.EVFILT.READ, posix.system.EV.ADD);
-    }
+        fn pauseAccept(self: *Self) !void {
+            try self.change(self.listener, 0, posix.system.EVFILT.READ, posix.system.EV.DISABLE);
+        }
 
-    fn monitorRead(self: *KQueue, fd: posix.socket_t, data: usize, comptime rearm: bool) !void {
-        if (rearm) {
-            // for websocket connections, this is called in a thread-pool thread
-            // so cannot be queued up - it needs to be immediately picked up
-            // since our worker could be in a wait() call.
-            const event = Kevent{
+        fn monitorSignal(self: *Self) !void {
+            try self.change(self.signal.read_fd, 1, posix.system.EVFILT.READ, posix.system.EV.ADD);
+        }
+
+        fn monitorRead(self: *Self, conn: *Conn(WSH), comptime rearm: bool) !void {
+            if (rearm) {
+                // for websocket connections, this is called in a thread-pool thread
+                // so cannot be queued up - it needs to be immediately picked up
+                // since our worker could be in a wait() call.
+                const event = Kevent{
+                    .ident = @intCast(conn.getSocket()),
+                    .filter = posix.system.EVFILT.READ,
+                    .flags = posix.system.EV.ADD | posix.system.EV.ENABLE | posix.system.EV.DISPATCH,
+                    .fflags = 0,
+                    .data = 0,
+                    .udata = @intFromPtr(conn),
+                };
+                _ = try posix.kevent(self.q, &.{event}, &[_]Kevent{}, null);
+            } else {
+                try self.change(conn.getSocket(), @intFromPtr(conn), posix.system.EVFILT.READ, posix.system.EV.ADD | posix.system.EV.ENABLE | posix.system.EV.DISPATCH);
+            }
+        }
+
+        fn remove(self: *Self, conn: *Conn(WSH)) !void {
+            try self.change(conn.getSocket(), 0, posix.system.EVFILT.READ, posix.system.EV.DELETE);
+        }
+
+        fn change(self: *Self, fd: posix.fd_t, data: usize, filter: i16, flags: u16) !void {
+            var change_count = self.change_count;
+            var change_buffer = &self.change_buffer;
+
+            if (change_count == change_buffer.len) {
+                // calling this with an empty event_list will return immediate
+                _ = try posix.kevent(self.q, change_buffer, &[_]Kevent{}, null);
+                change_count = 0;
+            }
+            change_buffer[change_count] = .{
                 .ident = @intCast(fd),
-                .filter = posix.system.EVFILT.READ,
-                .flags = posix.system.EV.ADD | posix.system.EV.ENABLE | posix.system.EV.DISPATCH,
+                .filter = filter,
+                .flags = flags,
                 .fflags = 0,
                 .data = 0,
                 .udata = data,
             };
-            _ = try posix.kevent(self.q, &.{event}, &[_]Kevent{}, null);
-        } else {
-            try self.change(fd, data, posix.system.EVFILT.READ, posix.system.EV.ADD | posix.system.EV.ENABLE | posix.system.EV.DISPATCH);
+            self.change_count = change_count + 1;
         }
-    }
 
-    fn remove(self: *KQueue, fd: posix.fd_t) !void {
-        try self.change(fd, 0, posix.system.EVFILT.READ, posix.system.EV.DELETE);
-    }
+        fn wait(self: *Self, timeout_sec: ?i32) !Iterator {
+            const event_list = &self.event_list;
+            const timeout: ?posix.timespec = if (timeout_sec) |ts| posix.timespec{ .sec = ts, .nsec = 0 } else null;
+            const event_count = try posix.kevent(self.q, self.change_buffer[0..self.change_count], event_list, if (timeout) |ts| &ts else null);
+            self.change_count = 0;
 
-    fn change(self: *KQueue, fd: posix.fd_t, data: usize, filter: i16, flags: u16) !void {
-        var change_count = self.change_count;
-        var change_buffer = &self.change_buffer;
-
-        if (change_count == change_buffer.len) {
-            // calling this with an empty event_list will return immediate
-            _ = try posix.kevent(self.q, change_buffer, &[_]Kevent{}, null);
-            change_count = 0;
-        }
-        change_buffer[change_count] = .{
-            .ident = @intCast(fd),
-            .filter = filter,
-            .flags = flags,
-            .fflags = 0,
-            .data = 0,
-            .udata = data,
-        };
-        self.change_count = change_count + 1;
-    }
-
-    fn wait(self: *KQueue, timeout_sec: ?i32) !Iterator {
-        const event_list = &self.event_list;
-        const timeout: ?posix.timespec = if (timeout_sec) |ts| posix.timespec{ .sec = ts, .nsec = 0 } else null;
-        const event_count = try posix.kevent(self.q, self.change_buffer[0..self.change_count], event_list, if (timeout) |ts| &ts else null);
-        self.change_count = 0;
-
-        return .{
-            .index = 0,
-            .events = event_list[0..event_count],
-        };
-    }
-
-    const Iterator = struct {
-        index: usize,
-        events: []Kevent,
-
-        fn next(self: *Iterator) ?PollEvent {
-            const index = self.index;
-            const events = self.events;
-            if (index == events.len) {
-                return null;
-            }
-            self.index = index + 1;
-            const event = &self.events[index];
             return .{
-                .data = event.udata,
-                .flags = event.flags,
+                .index = 0,
+                .loop = self,
+                .events = event_list[0..event_count],
             };
         }
-    };
 
-    const PollEvent = struct {
-        data: usize,
-        flags: usize,
+        const Iterator = struct {
+            loop: *Self,
+            index: usize,
+            events: []Kevent,
 
-        fn closed(self: PollEvent) bool {
-            return self.flags & posix.system.EV.EOF == posix.system.EV.EOF;
-        }
+            fn next(self: *Iterator) ?Completion(WSH) {
+                const index = self.index;
+                const events = self.events;
+                self.index = index + 1;
+
+                if (index == events.len) {
+                    return null;
+                }
+                const event = &self.events[index];
+
+                const user_data = event.udata;
+
+                switch(user_data) {
+                    0 => {
+                        var address: net.Address = undefined;
+                        var address_len: posix.socklen_t = @sizeOf(net.Address);
+                        const socket = posix.accept(self.loop.listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
+                            log.err("Error accepting: {}", .{err});
+                            return .{.shutdown = {}};
+                        };
+                        return .{.accept = .{.socket = socket, .address = address}};
+                    },
+                    1 => {
+                        const signal = self.loop.signal;
+                        std.debug.assert(signal.pos < signal.buf.len);
+
+                        const n = posix.read(signal.read_fd, signal.buf[signal.pos..]) catch 0;
+                        if (n == 0) {
+                            return .{.shutdown = {}};
+                        }
+                        return .{.signal = signal.iterator(@intCast(n))};
+                    },
+                    else => {
+                        var conn: *Conn(WSH) = @ptrFromInt(user_data);
+
+                        if (event.flags & posix.system.EV.EOF == posix.system.EV.EOF) {
+                            return .{.close = conn};
+                        }
+
+                        const n = posix.read(conn.getSocket(), conn.recvBuf()) catch return .{.close = conn};
+                        if (n == 0) {
+                            return .{.close = conn};
+                        }
+                        conn.received(@intCast(n));
+                        return .{.recv = conn};
+                    }
+                }
+            }
+        };
     };
-};
+}
 
 fn IOUring(comptime WSH: type) type {
     const linux = std.os.linux;
@@ -1144,8 +1180,9 @@ fn IOUring(comptime WSH: type) type {
             sqe.user_data = 0;
         }
 
-        fn pauseAccept(self: *Self) !void {
-            _ = self;
+        fn pauseAccept(_: *Self) !void {
+            // should not be called on IOuring
+            unreachable;
         }
 
         fn monitorSignal(self: *Self) !void {
