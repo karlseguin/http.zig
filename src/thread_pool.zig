@@ -28,7 +28,7 @@ pub fn ThreadPool(comptime F: anytype) type {
         // we queue jobs here before batching them to a worker. We do this
         // to minimze the amount of locking we need to do.
         batch: [BATCH_SIZE]Args,
-        batch_index: usize,
+        batch_size: usize,
 
         const Self = @This();
 
@@ -63,7 +63,7 @@ pub fn ThreadPool(comptime F: anytype) type {
                 .workers = workers,
                 .threads = threads,
                 .batch = undefined,
-                .batch_index = 0,
+                .batch_size = 0,
             };
         }
 
@@ -83,24 +83,23 @@ pub fn ThreadPool(comptime F: anytype) type {
         }
 
         pub fn spawn(self: *Self, args: Args) void {
-            var i = self.batch_index;
+            var i = self.batch_size;
             self.batch[i] = args;
             i += 1;
 
             if (i == BATCH_SIZE) {
-                self.flush();
+                self.flush(i);
                 i = 0;
             }
-            self.batch_index = i;
+            self.batch_size = i;
         }
 
-        pub fn flush(self: *Self) void {
-            const l = self.batch_index;
-            self.batch_index = 0;
+        pub fn flush(self: *Self, batch_size: usize) void {
+            self.batch_size = 0;
 
             const workers = self.workers;
             const next_id = @atomicRmw(u8, &self.next_id, .Add, 1, .monotonic);
-            workers[@mod(next_id, workers.len)].spawn(self.batch[0..l]);
+            workers[@mod(next_id, workers.len)].spawn(self.batch[0..batch_size]);
         }
 
         pub fn empty(self: *Self) bool {

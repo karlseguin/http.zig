@@ -400,8 +400,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                 // thread pool batches spawns (to minimize locking), so we need
                 // to do a final flush since we probably have an incomplete batch
-                if (thread_pool.batch_index > 0) {
-                    thread_pool.flush();
+                const batch_size = thread_pool.batch_size;
+                if (batch_size > 0) {
+                    thread_pool.flush(batch_size);
                 }
 
                 // TODO: LOOP
@@ -456,6 +457,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         fn processSignal(self: *Self, it: Signal.Iterator, now: u32, closed_bool: *bool) !void {
             var it_ = it;
             const manager = &self.manager;
+
             while (it_.next()) |data| {
                 const conn: *Conn(WSH) = @ptrFromInt(data);
 
@@ -519,12 +521,13 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         // when we have data available - there may or may not be a full message ready
         pub fn processData(self: *Self, conn: *Conn(WSH), thread_buf: []u8) void {
             switch (conn.protocol) {
-                .http => |http_conn| self.processHTTPData(conn, thread_buf, http_conn),
-                .websocket => |hc| self.processWebsocketData(conn, thread_buf, hc),
+                .http => self.processHTTPData(conn, thread_buf),
+                .websocket => self.processWebsocketData(conn, thread_buf),
             }
         }
 
-        pub fn processHTTPData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, http_conn: *HTTPConn) void {
+        pub fn processHTTPData(self: *Self, conn: *Conn(WSH), thread_buf: []u8) void {
+            var http_conn = conn.protocol.http;
             defer self.signal.write(@intFromPtr(conn)) catch @panic("todo");
             const done = http_conn.req_state.parse(http_conn.req_arena.allocator()) catch |err| {
                 requestParseError(http_conn, err) catch {};
@@ -550,7 +553,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             }
         }
 
-        pub fn processWebsocketData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, hc: *ws.HandlerConn(WSH)) void {
+        pub fn processWebsocketData(self: *Self, conn: *Conn(WSH), thread_buf: []u8) void {
+            var hc = conn.protocol.websocket;
             var ws_conn = &hc.conn;
             const success = self.websocket.worker.dataAvailable(hc, thread_buf);
             if (success == false) {
@@ -1044,7 +1048,7 @@ fn IOUring(comptime WSH: type) type {
         ring: linux.IoUring,
         signal: *Signal,
         listener: Listener,
-        cqes: [64]linux.io_uring_cqe,
+        cqes: [16]linux.io_uring_cqe,
 
         const Self = @This();
 
@@ -1105,7 +1109,7 @@ fn IOUring(comptime WSH: type) type {
         fn getSqe(self: *Self,) !*linux.io_uring_sqe {
             var ring = &self.ring;
             while (true) {
-                const sqe = ring.get_sqe() catch |err| switch (err) {
+                return ring.get_sqe() catch |err| switch (err) {
                     error.SubmissionQueueFull => {
                         _ = ring.submit() catch |err2| switch (err2) {
                             error.SignalInterrupt => {},
@@ -1114,7 +1118,6 @@ fn IOUring(comptime WSH: type) type {
                         continue;
                     }
                 };
-                return sqe;
             }
         }
 
@@ -1125,13 +1128,13 @@ fn IOUring(comptime WSH: type) type {
                     error.SignalInterrupt => continue,
                     else => return err,
                 };
+
                 const count = self.ring.copy_cqes(&self.cqes, 1) catch |err| switch (err) {
                     error.SignalInterrupt => continue,
                     else => return err,
                 };
 
                 return .{
-                    .index = 0,
                     .loop = self,
                     .cqes = self.cqes[0..count],
                 };
@@ -1139,20 +1142,17 @@ fn IOUring(comptime WSH: type) type {
         }
 
         const Iterator = struct {
-            index: usize,
             loop: *Self,
             cqes: []linux.io_uring_cqe,
 
             fn next(self: *Iterator) ?Completion(WSH) {
                 const cqes = self.cqes;
-                const index = self.index;
-
-                if (index == cqes.len) {
+                if (cqes.len == 0) {
                     return null;
                 }
-                self.index = index + 1;
 
-                const cqe = self.cqes[index];
+                const cqe = cqes[0];
+                self.cqes = cqes[1..];
 
                 const res = cqe.res;
                 const user_data = cqe.user_data;
@@ -1360,7 +1360,7 @@ pub fn Conn(comptime WSH: type) type {
             }
         }
 
-        fn getSocket(self: Self) posix.fd_t {
+        pub fn getSocket(self: Self) posix.fd_t {
             return switch (self.protocol) {
                 .http => |hc| hc.stream.handle,
                 .websocket => |hc| hc.socket,
