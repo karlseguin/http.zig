@@ -325,7 +325,6 @@ pub fn Server(comptime H: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self._thread_pool.stop();
             self._thread_pool.deinit();
             self._websocket_state.deinit();
 
@@ -487,7 +486,9 @@ pub fn Server(comptime H: type) type {
                 }
             }
             @atomicStore(usize, &self._max_request_per_connection, 0, .monotonic);
-            self._thread_pool.stop();
+            if (comptime blockingMode() == false) {
+                self._thread_pool.stop();
+            }
         }
 
         pub fn router(self: *Self, config: RouterConfig) *Router(H, ActionArg) {

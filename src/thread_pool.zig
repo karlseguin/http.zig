@@ -77,8 +77,8 @@ pub fn ThreadPool(comptime F: anytype) type {
             }
 
              for (self.workers, self.threads) |*worker, *thread| {
-                 worker.stop();
-                 thread.join();
+                worker.stop();
+                thread.join();
              }
         }
 

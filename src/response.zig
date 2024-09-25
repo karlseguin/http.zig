@@ -587,7 +587,6 @@ test "response: header" {
 }
 
 test "response: direct writer" {
-    defer t.reset();
     var ctx = t.Context.init(.{});
     defer ctx.deinit();
 
@@ -612,9 +611,9 @@ test "response: direct writer" {
 
 // this used to crash
 test "response: multiple writers" {
-    defer t.reset();
     var ctx = t.Context.init(.{});
     defer ctx.deinit();
+
     var res = ctx.response();
     {
         var w = res.writer();
@@ -629,7 +628,6 @@ test "response: multiple writers" {
 }
 
 test "response: written" {
-    defer t.reset();
     var ctx = t.Context.init(.{});
     defer ctx.deinit();
 
@@ -646,7 +644,6 @@ test "response: written" {
 }
 
 test "response: clearWriter" {
-    defer t.reset();
     var ctx = t.Context.init(.{});
     defer ctx.deinit();
 

@@ -41,6 +41,7 @@ pub const LoopType: _Loop_type = switch (builtin.os.tag) {
 pub fn Blocking(comptime S: type, comptime WSH: type) type {
     return struct {
         server: S,
+        mut: Thread.Mutex,
         config: *const Config,
         allocator: Allocator,
         buffer_pool: *BufferPool,
@@ -50,6 +51,14 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
         timeout_keepalive: ?Timeout,
         timeout_write_error: Timeout,
         retain_allocated_bytes_keepalive: usize,
+        connections: List(ConnNode),
+        conn_node_pool: std.heap.MemoryPool(ConnNode),
+
+        const ConnNode = struct {
+            next: ?*ConnNode,
+            prev: ?*ConnNode,
+            socket: posix.fd_t,
+        };
 
         const Timeout = struct {
             sec: u32,
@@ -101,15 +110,18 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             const retain_allocated_bytes_keepalive = config.workers.retain_allocated_bytes orelse 8192;
 
             return .{
+                .mut = .{},
                 .server = server,
                 .config = config,
+                .connections = .{},
                 .allocator = allocator,
-                .http_conn_pool = http_conn_pool,
                 .websocket = websocket,
                 .buffer_pool = buffer_pool,
+                .http_conn_pool = http_conn_pool,
                 .timeout_request = timeout_request,
                 .timeout_keepalive = timeout_keepalive,
                 .timeout_write_error = Timeout.init(5),
+                .conn_node_pool = std.heap.MemoryPool(ConnNode).init(allocator),
                 .retain_allocated_bytes_keepalive = retain_allocated_bytes_keepalive,
             };
         }
@@ -124,30 +136,68 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
 
             self.buffer_pool.deinit();
             allocator.destroy(self.buffer_pool);
+
+            self.conn_node_pool.deinit();
         }
 
         pub fn listen(self: *Self, listener: posix.socket_t) void {
             var server = self.server;
+            var thread_pool = &server._thread_pool;
             while (true) {
                 var address: net.Address = undefined;
                 var address_len: posix.socklen_t = @sizeOf(net.Address);
                 const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
                     if (err == error.ConnectionAborted or err == error.SocketNotListening) {
                         self.websocket.shutdown();
-                        return;
+                        break;
                     }
                     log.err("Failed to accept socket: {}", .{err});
                     continue;
                 };
                 metrics.connection();
                 // calls handleConnection through the server's thread_pool
-                server._thread_pool.spawn(&.{.{ self, socket, address }});
+                thread_pool.spawn(.{ self, socket, address });
+                thread_pool.flush(1);
             }
+
+            {
+                self.mut.lock();
+                defer self.mut.unlock();
+                var node = self.connections.head;
+                while (node) |n| {
+                    node = n.next;
+                    posix.close(n.socket);
+                }
+            }
+            thread_pool.stop();
         }
 
         // Called in a worker thread. `thread_buf` is a thread-specific buffer that
         // we are free to use as needed.
         pub fn handleConnection(self: *Self, socket: posix.socket_t, address: net.Address, thread_buf: []u8) void {
+            const connection_node = blk: {
+                self.mut.lock();
+                defer self.mut.unlock();
+                const node = self.conn_node_pool.create() catch |err| {
+                    log.err("Failed to initialize connection node: {}", .{err});
+                    return;
+                };
+                node.* = .{
+                    .next = null,
+                    .prev = null,
+                    .socket = socket,
+                };
+                self.connections.insert(node);
+                break :blk node;
+            };
+
+            defer {
+                self.mut.lock();
+                defer self.mut.unlock();
+                self.connections.remove(connection_node);
+                self.conn_node_pool.destroy(connection_node);
+            }
+
             var conn = self.http_conn_pool.acquire() catch |err| {
                 log.err("Failed to initialize connection: {}", .{err});
                 return;
@@ -182,6 +232,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                         self.http_conn_pool.release(conn);
                         return;
                     },
+                    .need_data => unreachable,
                 }
             }
         }
@@ -200,16 +251,31 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             }
 
             var is_first = true;
+            var req_state = &conn.req_state;
             while (true) {
-                const done = conn.req_state.parse(conn.req_arena.allocator(), stream) catch |err| {
-                    if (err == error.WouldBlock) {
+                const bytes = stream.read(conn.recvBuf()) catch |err| switch (err) {
+                    error.WouldBlock => {
                         if (is_keepalive and is_first) {
                             metrics.timeoutKeepalive(1);
                         } else {
                             metrics.timeoutActive(1);
                         }
                         return .close;
-                    }
+                    },
+                    error.NotOpenForReading => {
+                        // This can only happen when we're shutting down and our
+                        // listener has called posix.close(socket) to unblock
+                        // this thread. Using `.disown` is a bit of a hack, but
+                        // disown is handled in handleConnection the way we want
+                        // WE DO NOT WANT to return .close, else that would result
+                        // in posix.close(socket) being called on an already-closed
+                        // socket, which would panic.
+                        return .disown;
+                    },
+                    else => return .close,
+                };
+                conn.received(bytes);
+                const done = req_state.parse(conn.req_arena.allocator()) catch |err| {
                     requestParseError(conn, err) catch {};
                     return .close;
                 };
@@ -375,10 +441,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                 while (it.next()) |completion| {
                     switch (completion) {
-                        .recv => |conn| {
-                            manager.active(conn, now);
-                            thread_pool.spawn(.{self, conn});
-                        },
+                        .recv => |conn| thread_pool.spawn(.{self, conn}),
                         .accept => |*a| self.accept(a, now) catch |err| {
                             log.err("Failed post-process accept: {}", .{err});
                             return;
@@ -465,7 +528,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 const http_conn = conn.protocol.http;
                 switch (http_conn.handover) {
                     .keepalive => {
-                        self.manager.keepalive(conn, now);
+                        manager.keepalive(conn, now);
                         self.loop.monitorRead(conn, true) catch {
                             metrics.internalError();
                             manager.close(conn);
@@ -473,6 +536,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                         };
                     },
                     .need_data => {
+                        manager.active(conn, now);
                         self.loop.monitorRead(conn, true) catch {
                             metrics.internalError();
                             manager.close(conn);
@@ -541,6 +605,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             }
 
             metrics.request();
+            http_conn.request_count += 1;
             self.server.handleRequest(http_conn, thread_buf);
 
             if (http_conn.handover == .keepalive) {
@@ -549,7 +614,6 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 // thread, which impacts all connections. But, we can only do stuff
                 // that's thread-safe here (i.e. we can't manipulate the ConnManager)
                 http_conn.keepalive(self.retain_allocated_bytes_keepalive);
-                http_conn.state = .keepalive;
             }
         }
 
@@ -753,7 +817,6 @@ fn ConnManager(comptime WSH: type) type {
             // state to an active state.
 
             http_conn.state = .active;
-            http_conn.request_count += 1;
             http_conn.timeout = now + self.timeout_request;
 
             self.keepalive_list.remove(conn);
@@ -762,7 +825,10 @@ fn ConnManager(comptime WSH: type) type {
 
         fn keepalive(self: *Self, conn: *Conn(WSH), now: u32) void {
             var http_conn = conn.protocol.http;
+            if (http_conn.state == .keepalive) return;
+
             // we expect the threadpool to have already called http_conn.keepalive()
+            http_conn.state = .keepalive;
             http_conn.timeout = now + self.timeout_keepalive;
             self.active_list.remove(conn);
             self.keepalive_list.insert(conn);
@@ -1369,13 +1435,7 @@ pub fn Conn(comptime WSH: type) type {
 
         fn recvBuf(self: Self) []u8 {
             return switch (self.protocol) {
-                .http => |hc| {
-                    const state = &hc.req_state;
-                    if (state.body) |b| {
-                        return b.data[state.body_pos..];
-                    }
-                    return state.buf[state.len..];
-                },
+                .http => |hc| hc.recvBuf(),
                 .websocket => |_| @panic("TODO"),
             };
         }
@@ -1384,14 +1444,7 @@ pub fn Conn(comptime WSH: type) type {
         fn received(self: Self, bytes: usize) void {
             std.debug.assert(bytes > 0);
             return switch (self.protocol) {
-                .http => |hc| {
-                    const state = &hc.req_state;
-                    if (state.body == null)  {
-                        state.len += bytes;
-                    } else {
-                        state.body_pos += bytes;
-                    }
-                },
+                .http => |hc| hc.received(bytes),
                 .websocket => |_| @panic("TODO"),
             };
         }
@@ -1542,6 +1595,22 @@ pub const HTTPConn = struct {
         _ = self.req_arena.reset(.{ .retain_with_limit = retain_allocated_bytes });
     }
 
+    pub fn recvBuf(self: *const HTTPConn) []u8 {
+        const state = &self.req_state;
+        if (state.body) |b| {
+            return b.data[state.body_pos..];
+        }
+        return state.buf[state.len..];
+    }
+
+    pub fn received(self: *HTTPConn, bytes: usize) void {
+        const state = &self.req_state;
+        if (state.body == null)  {
+            state.len += bytes;
+        } else {
+            state.body_pos += bytes;
+        }
+    }
 
     pub fn writeAll(self: *HTTPConn, data: []const u8) !void {
         const stream = self.stream;

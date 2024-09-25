@@ -10,16 +10,19 @@ const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 
 pub fn init(config: httpz.Config) Testing {
-    const ctx = t.Context.init(config);
+    var ctx = t.Context.init(config);
     var conn = ctx.conn;
 
     // Parse a basic request. This will put our conn.req_state into a valid state
     // for creating a request. Application code can modify the request directly
     // thereafter to change whatever properties they want.
-    // var base_request = std.io.fixedBufferStream("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    ctx.write("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    var reader = ctx.reader();
+    var state = &conn.req_state;
     while (true) {
-        const done = conn.req_state.parse(conn.req_arena.allocator()) catch unreachable;
-        if (done) {
+        const n = reader.read(conn.recvBuf()) catch unreachable;
+        conn.received(n);
+        if ((state.parse(conn.req_arena.allocator()) catch unreachable) == true) {
             break;
         }
     }

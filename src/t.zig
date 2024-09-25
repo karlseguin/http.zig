@@ -41,14 +41,14 @@ pub const Context = struct {
 
     conn: *Conn,
 
-    arena: *std.heap.ArenaAllocator,
+    _arena: *std.heap.ArenaAllocator,
 
-    fake: bool,
     to_read_pos: usize,
     to_read: std.ArrayList(u8),
+    fragment_reads: bool = true,
     _random: ?std.Random.DefaultPrng = null,
 
-    pub fn allocInit(ctx_allocator: Allocator, config_: httpz.Config) Context {
+    pub fn init(config_: httpz.Config) Context {
         var pair: [2]c_int = undefined;
         const rc = std.c.socketpair(std.posix.AF.LOCAL, std.posix.SOCK.STREAM, 0, &pair);
         if (rc != 0) {
@@ -56,10 +56,7 @@ pub const Context = struct {
         }
 
         {
-            const timeout = std.mem.toBytes(std.posix.timeval{
-                .sec = 0,
-                .usec = 20_000,
-            });
+            const timeout = std.mem.toBytes(std.posix.timeval{.sec = 0, .usec = 20_000});
             std.posix.setsockopt(pair[0], std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &timeout) catch unreachable;
             std.posix.setsockopt(pair[0], std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, &timeout) catch unreachable;
             std.posix.setsockopt(pair[1], std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &timeout) catch unreachable;
@@ -73,9 +70,8 @@ pub const Context = struct {
         const server = std.net.Stream{ .handle = pair[0] };
         const client = std.net.Stream{ .handle = pair[1] };
 
-        var ctx_arena = ctx_allocator.create(std.heap.ArenaAllocator) catch unreachable;
-        ctx_arena.* = std.heap.ArenaAllocator.init(ctx_allocator);
-
+        const ctx_arena = allocator.create(std.heap.ArenaAllocator) catch unreachable;
+        ctx_arena.* = std.heap.ArenaAllocator.init(allocator);
         const aa = ctx_arena.allocator();
 
         const bp = aa.create(BufferPool) catch unreachable;
@@ -91,6 +87,11 @@ pub const Context = struct {
             if (cw.min_conn == null) config.workers.min_conn = 1;
             if (cw.large_buffer_count == null) config.workers.large_buffer_count = 1;
             if (cw.large_buffer_size == null) config.workers.large_buffer_size = 256;
+
+            const cr = config.request;
+            if (cr.max_header_count == null) config.request.max_header_count = 5;
+            if (cr.max_param_count == null) config.request.max_param_count = 5;
+            if (cr.max_query_count == null) config.request.max_query_count = 5;
         }
 
         const req_state = httpz.Request.State.init(aa, bp, &config.request) catch unreachable;
@@ -98,16 +99,16 @@ pub const Context = struct {
 
         const conn = aa.create(Conn) catch unreachable;
         conn.* = .{
+            .flags = 0,
+            .timeout = 0,
+            .close = false,
             .state = .active,
             .handover = .close,
             .stream = server,
             .address = std.net.Address.initIp4([_]u8{ 127, 0, 0, 200 }, 0),
             .req_state = req_state,
             .res_state = res_state,
-            .timeout = 0,
-            .flags = 0,
             .request_count = 0,
-            .close = false,
             .ws_worker = undefined,
             .conn_arena = ctx_arena,
             .req_arena = std.heap.ArenaAllocator.init(aa),
@@ -115,17 +116,12 @@ pub const Context = struct {
 
         return .{
             .conn = conn,
-            .arena = ctx_arena,
             .stream = server,
             .client = client,
-            .fake = false,
             .to_read_pos = 0,
+            ._arena = ctx_arena,
             .to_read = std.ArrayList(u8).init(aa),
         };
-    }
-
-    pub fn init(config: httpz.Config) Context {
-        return allocInit(allocator, config);
     }
 
     pub fn deinit(self: *Context) void {
@@ -134,10 +130,8 @@ pub const Context = struct {
             self.stream.close();
         }
         self.client.close();
-
-        const ctx_allocator = arena.child_allocator;
-        self.arena.deinit();
-        ctx_allocator.destroy(self.arena);
+        self._arena.deinit();
+        allocator.destroy(self._arena);
     }
 
     // force the server side socket to be closed, which helps our reading-test
@@ -150,11 +144,7 @@ pub const Context = struct {
     }
 
     pub fn write(self: *Context, data: []const u8) void {
-        if (self.fake) {
-            self.to_read.appendSlice(data) catch unreachable;
-        } else {
-            self.client.writeAll(data) catch unreachable;
-        }
+        self.to_read.appendSlice(data) catch unreachable;
     }
 
     pub fn read(self: Context, a: Allocator) !std.ArrayList(u8) {
@@ -214,13 +204,12 @@ pub const Context = struct {
         return self._random.?.random();
     }
 
-    pub fn fakeReader(self: *Context) FakeReader {
-        std.debug.assert(self.fake);
-
+    pub fn reader(self: *Context) FakeReader {
         const fr = .{
             .pos = self.to_read_pos,
             .buf = self.to_read.items,
             .random = self.random(),
+            .fragment_reads = self.fragment_reads,
         };
 
         self.to_read_pos = 0;
@@ -250,19 +239,17 @@ pub const Context = struct {
         pos: usize,
         buf: []const u8,
         random: std.Random,
+        fragment_reads: bool,
 
-        pub fn read(
-            self: *FakeReader,
-            buf: []u8,
-        ) !usize {
+        pub fn read(self: *FakeReader, buf: []u8,) !usize {
             const data = self.buf[self.pos..];
 
             if (data.len == 0 or buf.len == 0) {
                 return 0;
             }
 
-            // randomly fragment the data
-            const to_read = self.random.intRangeAtMost(usize, 1, @min(data.len, buf.len));
+            const min_read = @min(data.len, buf.len);
+            const to_read = if (self.fragment_reads) self.random.intRangeAtMost(usize, 1, min_read) else min_read;
             @memcpy(buf[0..to_read], data[0..to_read]);
             self.pos += to_read;
             return to_read;
