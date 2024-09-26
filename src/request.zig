@@ -750,7 +750,7 @@ pub const State = struct {
                         const value_start = i + 1; // skip the colon
                         var value, const skip_len = trimLeadingSpaceCount(buf[value_start..]);
                         for (value, 0..) |bv, j| {
-                            if (allowedHeaderValueByte[bv] == true) {
+                            if (bv < 129 and allowedHeaderValueByte[bv] == true) {
                                 continue;
                             }
 
@@ -881,7 +881,7 @@ pub const State = struct {
 };
 
 const allowedHeaderValueByte = blk: {
-    var v = [_]bool{false} ** 256;
+    var v = [_]bool{false} ** 128;
     for ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_ :;.,/\"'?!(){}[]@<>=-+*#$&`|~^%\t\\") |b| {
         v[b] = true;
     }

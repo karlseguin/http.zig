@@ -188,9 +188,6 @@ pub const Response = struct {
             .{ .len = body.len, .base = body.ptr },
         };
         try conn.writeAllIOVec(&vec);
-        if (conn.blocking) {
-           try conn.makeNonBlocking();
-        }
     }
 
     fn prepareHeader(self: *Response) ![]const u8 {

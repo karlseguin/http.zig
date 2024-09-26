@@ -5,7 +5,7 @@ const m = @import("metrics");
 var metrics = Metrics{
     .connections = m.Counter(usize).Impl.init("httpz_connections", .{}),
     .requests = m.Counter(usize).Impl.init("httpz_requests", .{}),
-    .timeout_active = m.Counter(usize).Impl.init("httpz_timeout_active", .{}),
+    .timeout_request = m.Counter(usize).Impl.init("httpz_timeout_request", .{}),
     .timeout_keepalive = m.Counter(usize).Impl.init("httpz_timeout_keepalive", .{}),
     .alloc_buffer_empty = m.Counter(usize).Impl.init("httpz_alloc_buffer_empty", .{}),
     .alloc_buffer_large = m.Counter(usize).Impl.init("httpz_alloc_buffer_large", .{}),
@@ -25,7 +25,7 @@ const Metrics = struct {
     requests: m.Counter(usize).Impl,
 
     // number of connections that were timed out while service a request
-    timeout_active: m.Counter(usize).Impl,
+    timeout_request: m.Counter(usize).Impl,
 
     // number of connections that were timed out while in keepalive
     timeout_keepalive: m.Counter(usize).Impl,
@@ -58,7 +58,7 @@ const Metrics = struct {
 pub fn write(writer: anytype) !void {
     try metrics.connections.write(writer);
     try metrics.requests.write(writer);
-    try metrics.timeout_active.write(writer);
+    try metrics.timeout_request.write(writer);
     try metrics.timeout_keepalive.write(writer);
     try metrics.alloc_buffer_empty.write(writer);
     try metrics.alloc_buffer_large.write(writer);
@@ -89,8 +89,8 @@ pub fn request() void {
     metrics.requests.incr();
 }
 
-pub fn timeoutActive(count: usize) void {
-    metrics.timeout_active.incrBy(count);
+pub fn timeoutRequest(count: usize) void {
+    metrics.timeout_request.incrBy(count);
 }
 
 pub fn timeoutKeepalive(count: usize) void {

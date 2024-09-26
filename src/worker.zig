@@ -258,7 +258,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                         if (is_keepalive and is_first) {
                             metrics.timeoutKeepalive(1);
                         } else {
-                            metrics.timeoutActive(1);
+                            metrics.timeoutRequest(1);
                         }
                         return .close;
                     },
@@ -300,7 +300,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                     }
                 } else if (deadline) |dl| {
                     if (timestamp() > dl) {
-                        metrics.timeoutActive(1);
+                        metrics.timeoutRequest(1);
                         return .close;
                     }
                 }
@@ -536,7 +536,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                         };
                     },
                     .need_data => {
-                        manager.active(conn, now);
+                        manager.request(conn, now);
                         self.loop.monitorRead(conn, true) catch {
                             metrics.internalError();
                             manager.close(conn);
@@ -652,7 +652,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 // run in the NonBlocking worker's thread, to `serveHTTPRequest` which is run
 // in the thread-pool thread. But this adds a lot of complexity and a lot of
 // locking overhead. The entire ConnManager has to become thread-safe - synchronizing
-// access to the active/keepalive lists, the memory and conn pools...
+// access to the request/keepalive lists, the memory and conn pools...
 const Signal = struct {
     const BUF_LEN = 4096;
 
@@ -721,16 +721,22 @@ const Signal = struct {
 
 fn ConnManager(comptime WSH: type) type {
     return struct {
-        // Double linked list of Conn a worker is actively servicing. An "active"
-        // connection is one where we've at least received 1 byte of the request and
-        // continues to be "active" until the response is sent.
-        active_list: List(Conn(WSH)),
+        // Double linked list of Conn which we're waiting on for more data to
+        // complete a request.
+        request_list: List(Conn(WSH)),
 
-        // Double linked list of Conn a worker is monitoring. Unlike "active" connections
-        // these connections are between requests (which is possible due to keepalive).
+        // Double linked list of Conn a worker is monitoring. This includes
+        // connections which are between requests, or connections which are currently
+        // being processed.
+        // Most connections will be in here.
+        // We have two lists to enforce two timeouts: request and keepalive.
+        // The "request" timeout only comes into play when part of the request
+        // data was received and we're waiting for the rest. Thus, when the full
+        // request data comes into the first recv() the connection never has to
+        // transition to the request_list.
         keepalive_list: List(Conn(WSH)),
 
-        // # of active connections we're managing. This is the length of our list.
+        // # of connections we're managing. This is the length of our two list.
         len: usize,
 
         // A pool of HTTPConn objects. The pool maintains a configured min # of these.
@@ -765,7 +771,7 @@ fn ConnManager(comptime WSH: type) type {
 
             return .{
                 .len = 0,
-                .active_list = .{},
+                .request_list = .{},
                 .keepalive_list = .{},
                 .allocator = allocator,
                 .buffer_pool = buffer_pool,
@@ -777,7 +783,7 @@ fn ConnManager(comptime WSH: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self.shutdownList(&self.active_list);
+            self.shutdownList(&self.request_list);
             self.shutdownList(&self.keepalive_list);
 
             const allocator = self.allocator;
@@ -792,7 +798,7 @@ fn ConnManager(comptime WSH: type) type {
             errdefer self.conn_mem_pool.destroy(conn);
 
             const http_conn = try self.http_conn_pool.acquire();
-            http_conn.state = .active;
+            http_conn.state = .request;
             http_conn.request_count = 1;
             http_conn.timeout = now + self.timeout_request;
 
@@ -801,7 +807,7 @@ fn ConnManager(comptime WSH: type) type {
                 .prev = null,
                 .protocol = .{ .http = http_conn },
             };
-            self.active_list.insert(conn);
+            self.request_list.insert(conn);
 
             const len = self.len + 1;
             self.len = len;
@@ -809,28 +815,33 @@ fn ConnManager(comptime WSH: type) type {
             return .{conn, len};
         }
 
-        fn active(self: *Self, conn: *Conn(WSH), now: u32) void {
+        fn request(self: *Self, conn: *Conn(WSH), now: u32) void {
             var http_conn = conn.protocol.http;
-            if (http_conn.state == .active) return;
+            if (http_conn.state == .request) return;
 
             // If we're here, it means the connection is going from a keepalive
-            // state to an active state.
+            // state to an request state.
 
-            http_conn.state = .active;
+            http_conn.state = .request;
             http_conn.timeout = now + self.timeout_request;
 
             self.keepalive_list.remove(conn);
-            self.active_list.insert(conn);
+            self.request_list.insert(conn);
         }
 
         fn keepalive(self: *Self, conn: *Conn(WSH), now: u32) void {
             var http_conn = conn.protocol.http;
-            if (http_conn.state == .keepalive) return;
+            if (http_conn.state == .keepalive) {
+                // move to the end of the list, since it's the most recent connection
+                // put in "keepalive" making it hthe last one to timeout;
+                self.keepalive_list.moveToTail(conn);
+                return;
+            }
 
             // we expect the threadpool to have already called http_conn.keepalive()
             http_conn.state = .keepalive;
             http_conn.timeout = now + self.timeout_keepalive;
-            self.active_list.remove(conn);
+            self.request_list.remove(conn);
             self.keepalive_list.insert(conn);
         }
 
@@ -843,7 +854,7 @@ fn ConnManager(comptime WSH: type) type {
             switch (conn.protocol) {
                 .http => |http_conn| {
                     switch (http_conn.state) {
-                        .active => self.active_list.remove(conn),
+                        .request => self.request_list.remove(conn),
                         // a connection in "keepalive" can't be disowned, but
                         // it can be closed (by timeout), and close calls disown.
                         .keepalive => self.keepalive_list.remove(conn),
@@ -858,8 +869,10 @@ fn ConnManager(comptime WSH: type) type {
         }
 
         fn upgrade(self: *Self, conn: *Conn(WSH), hc: *ws.HandlerConn(WSH)) void {
-            std.debug.assert(conn.protocol.http.state == .active);
-            self.active_list.remove(conn);
+            switch (conn.protocol.http.state) {
+                .request => self.request_list.remove(conn),
+                .keepalive => self.keepalive_list.remove(conn),
+            }
             self.http_conn_pool.release(conn.protocol.http);
             conn.protocol = .{ .websocket = hc };
         }
@@ -878,27 +891,27 @@ fn ConnManager(comptime WSH: type) type {
 
         // Enforces timeouts, and returns when the next timeout should be checked.
         fn prepareToWait(self: *Self, now: u32) ?i32 {
-            const next_active = self.enforceTimeout(&self.active_list, now);
+            const next_request = self.enforceTimeout(&self.request_list, now);
             const next_keepalive = self.enforceTimeout(&self.keepalive_list, now);
 
             {
-                const next_active_count = next_active.count;
-                if (next_active_count > 0) {
-                    metrics.timeoutActive(next_active_count);
+                const next_request_count = next_request.count;
+                if (next_request_count > 0) {
+                    metrics.timeoutRequest(next_request_count);
                 }
                 const next_keepalive_count = next_keepalive.count;
                 if (next_keepalive_count > 0) {
-                    metrics.timeoutKeepalive(next_active_count);
+                    metrics.timeoutKeepalive(next_request_count);
                 }
             }
 
-            const next_active_timeout = next_active.timeout;
+            const next_request_timeout = next_request.timeout;
             const next_keepalive_timeout = next_keepalive.timeout;
-            if (next_active_timeout == null and next_keepalive_timeout == null) {
+            if (next_request_timeout == null and next_keepalive_timeout == null) {
                 return null;
             }
 
-            const next = @min(next_active_timeout orelse MAX_TIMEOUT, next_keepalive_timeout orelse MAX_TIMEOUT);
+            const next = @min(next_request_timeout orelse MAX_TIMEOUT, next_keepalive_timeout orelse MAX_TIMEOUT);
             if (next < now) {
                 // can happen if a socket was just about to time out when enforceTimeout
                 // was called
@@ -916,7 +929,7 @@ fn ConnManager(comptime WSH: type) type {
         // lists are ordered from soonest to timeout to last, as soon as we find
         // a connection that isn't timed out, we can break;
         // This returns the next timeout.
-        // Only called on the active and keepalive lists, which only handle
+        // Only called on the request and keepalive lists, which only handle
         // http connections.
         fn enforceTimeout(self: *Self, list: *List(Conn(WSH)), now: u32) TimeoutResult {
             var conn = list.head;
@@ -1204,9 +1217,9 @@ fn IOUring(comptime WSH: type) type {
             sqe.user_data = @intFromPtr(conn);
         }
 
-        fn remove(self: *Self, fd: posix.fd_t) !void {
+        fn remove(self: *Self, conn: *Conn(WSH)) !void {
             _ = self;
-            _ = fd;
+            _ = conn;
         }
 
         fn getSqe(self: *Self,) !*linux.io_uring_sqe {
@@ -1500,14 +1513,14 @@ pub fn Conn(comptime WSH: type) type {
 // in nonblocking mode. A pointer to the conn is the userdata passed to epoll/kqueue.
 // Should only be created through the worker's HTTPConnPool
 pub const HTTPConn = struct {
-    // A connection can be in one of two states: active or keepalive. It begins
-    // and stays in "active" until the response is sent. Then, assuming the
-    // connection isn't closed, it transitions to "keepalive" until the first
-    // byte of a new request is received.
-    // The main purpose of the two different states is to support a different
-    // keepalive_timeout and request_timeout.
+    // A connection can be in one of two states: request or keepalive. It begins
+    // and stays in "request" until the response is sent. Then, assuming the
+    // connection isn't closed, it transitions to "keepalive". It stays in keepalive
+    // as long as we don't need to issue multiple recvs to get a full request.
+    // We have two states because we have to linked lists, and we have to linked lists
+    // because we have two timeouts.
     const State = enum {
-        active,
+        request,
         keepalive,
     };
 
@@ -1583,7 +1596,7 @@ pub const HTTPConn = struct {
 
         return .{
             .close = false,
-            .state = .active,
+            .state = .request,
             .handover = .unknown,
             .stream = undefined,
             .address = undefined,
@@ -1663,6 +1676,7 @@ pub const HTTPConn = struct {
     }
 
     pub fn writeAllIOVec(self: *HTTPConn, vec: []std.posix.iovec_const) !void {
+        var blocking = false;
         const socket = self.stream.handle;
 
         while (true) {
@@ -1671,6 +1685,7 @@ pub const HTTPConn = struct {
                 var n = std.posix.writev(socket, vec[i..]) catch |err| switch (err) {
                     error.WouldBlock => {
                         try self.makeBlocking();
+                        blocking = true;
                         continue;
                     },
                     else => return err,
@@ -1679,7 +1694,12 @@ pub const HTTPConn = struct {
                 while (n >= vec[i].len) {
                     n -= vec[i].len;
                     i += 1;
-                    if (i >= vec.len) return;
+                    if (i >= vec.len) {
+                        if (blocking) {
+                            return self.makeNonBlocking();
+                        }
+                        return;
+                    }
                 }
                 vec[i].base += n;
                 vec[i].len -= n;
