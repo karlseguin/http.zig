@@ -30,6 +30,7 @@ const MAX_TIMEOUT = 2_147_483_647;
 pub fn Blocking(comptime S: type, comptime WSH: type) type {
     return struct {
         server: S,
+        mut: Thread.Mutex,
         config: *const Config,
         allocator: Allocator,
         buffer_pool: *BufferPool,
@@ -39,7 +40,15 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
         timeout_keepalive: ?Timeout,
         timeout_write_error: Timeout,
         retain_allocated_bytes_keepalive: usize,
+        connections: List(ConnNode),
+        conn_node_pool: std.heap.MemoryPool(ConnNode),
         thread_pool: ThreadPool(Self.handleConnection),
+
+       const ConnNode = struct {
+            next: ?*ConnNode,
+            prev: ?*ConnNode,
+            socket: posix.fd_t,
+        };
 
         const Timeout = struct {
             sec: u32,
@@ -101,16 +110,19 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             }
 
             return .{
+                .mut = .{},
                 .server = server,
                 .config = config,
+                .connections = .{},
                 .allocator = allocator,
-                .http_conn_pool = http_conn_pool,
                 .websocket = websocket,
                 .buffer_pool = buffer_pool,
                 .thread_pool = thread_pool,
+                .http_conn_pool = http_conn_pool,
                 .timeout_request = timeout_request,
                 .timeout_keepalive = timeout_keepalive,
                 .timeout_write_error = Timeout.init(5),
+                .conn_node_pool = std.heap.MemoryPool(ConnNode).init(allocator),
                 .retain_allocated_bytes_keepalive = retain_allocated_bytes_keepalive,
             };
         }
@@ -123,6 +135,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             allocator.destroy(self.websocket);
 
             self.http_conn_pool.deinit();
+            self.conn_node_pool.deinit();
 
             self.buffer_pool.deinit();
             allocator.destroy(self.buffer_pool);
@@ -135,9 +148,8 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 var address_len: posix.socklen_t = @sizeOf(net.Address);
                 const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
                     if (err == error.ConnectionAborted or err == error.SocketNotListening) {
-                        thread_pool.stop();
                         self.websocket.shutdown();
-                        return;
+                        break;
                     }
                     log.err("Failed to accept socket: {}", .{err});
                     continue;
@@ -146,11 +158,45 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 // calls handleConnection through the server's thread_pool
                 thread_pool.spawnOne(.{ self, socket, address });
             }
+
+            {
+                self.mut.lock();
+                defer self.mut.unlock();
+                var node = self.connections.head;
+                while (node) |n| {
+                    node = n.next;
+                    posix.close(n.socket);
+                }
+            }
+            thread_pool.stop();
         }
 
         // Called in a worker thread. `thread_buf` is a thread-specific buffer that
         // we are free to use as needed.
         pub fn handleConnection(self: *Self, socket: posix.socket_t, address: net.Address, thread_buf: []u8) void {
+            const connection_node = blk: {
+                self.mut.lock();
+                defer self.mut.unlock();
+                const node = self.conn_node_pool.create() catch |err| {
+                    log.err("Failed to initialize connection node: {}", .{err});
+                    return;
+                };
+                node.* = .{
+                    .next = null,
+                    .prev = null,
+                    .socket = socket,
+                };
+                self.connections.insert(node);
+                break :blk node;
+            };
+
+            defer {
+                self.mut.lock();
+                defer self.mut.unlock();
+                self.connections.remove(connection_node);
+                self.conn_node_pool.destroy(connection_node);
+            }
+
             var conn = self.http_conn_pool.acquire() catch |err| {
                 log.err("Failed to initialize connection: {}", .{err});
                 return;
@@ -204,18 +250,31 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
 
             var is_first = true;
             while (true) {
-                const done = conn.req_state.parse(conn.req_arena.allocator(), stream) catch |err| {
-                    if (err == error.WouldBlock) {
+                const done = conn.req_state.parse(conn.req_arena.allocator(), stream) catch |err| switch(err) {
+                    error.WouldBlock => {
                         if (is_keepalive and is_first) {
                             metrics.timeoutKeepalive(1);
                         } else {
                             metrics.timeoutActive(1);
                         }
                         return .close;
-                    }
-                    requestParseError(conn, err) catch {};
-                    return .close;
+                    },
+                    error.NotOpenForReading => {
+                        // This can only happen when we're shutting down and our
+                        // listener has called posix.close(socket) to unblock
+                        // this thread. Using `.disown` is a bit of a hack, but
+                        // disown is handled in handleConnection the way we want
+                        // WE DO NOT WANT to return .close, else that would result
+                        // in posix.close(socket) being called on an already-closed
+                        // socket, which would panic.
+                        return .disown;
+                    },
+                    else => {
+                        requestParseError(conn, err) catch {};
+                        return .close;
+                    },
                 };
+
                 if (done) {
                     // we have a complete request, time to process it
                     break;
