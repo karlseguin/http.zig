@@ -58,24 +58,7 @@ pub const Config = struct {
     };
 
     pub fn threadPoolCount(self: *const Config) u32 {
-        const thread_count = self.thread_pool.count orelse 32;
-
-        // In blockingMode, we only have 1 worker (regardless of the
-        // config). We want to make blocking and nonblocking modes
-        // use the same number of threads, so we'll convert extra workers
-        // into thread pool threads.
-        // In blockingMode, the worker does relatively little work, and the
-        // thread pool threads do more, so this re-balancing makes some sense
-        // and can always be opted out of by explicitly setting
-        // config.workers.count = 1
-        if (httpz.blockingMode()) {
-            const worker_count = self.workerCount();
-            if (worker_count > 1) {
-                return thread_count + worker_count - 1;
-            }
-        }
-
-        return thread_count;
+        return self.thread_pool.count orelse 32;
     }
 
     pub fn workerCount(self: *const Config) u32 {

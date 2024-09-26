@@ -9,9 +9,9 @@ pub const Opts = struct {
     buffer_size: usize,
 };
 
-threadlocal var worker_index: usize = 0;
-
 pub fn ThreadPool(comptime F: anytype) type {
+    const BATCH_SIZE = 16;
+
     // When the worker thread calls F, it'll inject its static buffer.
     // So F would be: handle(server: *Server, conn: *Conn, buf: []u8)
     // and FullArgs would be our 3 args....
@@ -21,8 +21,14 @@ pub fn ThreadPool(comptime F: anytype) type {
     return struct {
         stopped: bool,
         threads: []Thread,
+        worker_index: usize,
         workers: []Worker(F),
         arena: std.heap.ArenaAllocator,
+
+        // we queue jobs here before batching them to a worker. We do this
+        // to minimze the amount of locking we need to do.
+        batch: [BATCH_SIZE]Args,
+        batch_size: usize,
 
         const Self = @This();
 
@@ -52,32 +58,57 @@ pub fn ThreadPool(comptime F: anytype) type {
 
             return .{
                 .arena = arena,
+                .worker_index = 0,
                 .stopped = false,
                 .workers = workers,
                 .threads = threads,
+                .batch = undefined,
+                .batch_size = 0,
             };
         }
 
         pub fn deinit(self: *Self) void {
-             self.arena.deinit();
-         }
+            self.arena.deinit();
+        }
 
-         pub fn stop(self: *Self) void {
+        pub fn stop(self: *Self) void {
             if (@atomicRmw(bool, &self.stopped, .Xchg, true, .monotonic) == true) {
                 return;
             }
 
              for (self.workers, self.threads) |*worker, *thread| {
-                 worker.stop();
-                 thread.join();
+                worker.stop();
+                thread.join();
              }
-         }
+        }
 
-         pub fn spawn(self: *Self, args: []const Args) void {
-             const workers = self.workers;
-             worker_index += 1;
-             workers[@mod(worker_index, workers.len)].spawn(args);
-         }
+        pub fn spawn(self: *Self, args: Args) void {
+            var i = self.batch_size;
+            self.batch[i] = args;
+            i += 1;
+
+            if (i == BATCH_SIZE) {
+                self.flush(i);
+                i = 0;
+            }
+            self.batch_size = i;
+        }
+
+        pub fn spawnOne(self: *Self, args: Args) void {
+            const worker_index = self.worker_index +% 1;
+            self.worker_index = worker_index;
+            const workers = self.workers;
+            workers[@mod(worker_index, workers.len)].spawn(&.{args});
+        }
+
+        pub fn flush(self: *Self, batch_size: usize) void {
+            self.batch_size = 0;
+
+            const worker_index = self.worker_index +% 1;
+            self.worker_index = worker_index;
+            const workers = self.workers;
+            workers[@mod(worker_index, workers.len)].spawn(self.batch[0..batch_size]);
+        }
 
         pub fn empty(self: *Self) bool {
             for (self.workers) |*w| {
@@ -294,7 +325,10 @@ test "ThreadPool: batch add" {
             defer tp.deinit();
 
             for (0..1_000) |_| {
-                tp.spawn(&.{.{1}, .{2}, .{3}, .{4}});
+                tp.spawn(.{1});
+                tp.spawn(.{2});
+                tp.spawn(.{3});
+                tp.spawn(.{4});
             }
             while (tp.empty() == false) {
                 std.time.sleep(std.time.ns_per_ms);
@@ -328,7 +362,9 @@ test "ThreadPool: small fuzz" {
     defer tp.deinit();
 
     for (0..10_000) |_| {
-        tp.spawn(&.{.{1}, .{2}, .{3}});
+        tp.spawn(.{1});
+        tp.spawn(.{2});
+        tp.spawn(.{3});
     }
     while (tp.empty() == false) {
         std.time.sleep(std.time.ns_per_ms);
@@ -359,9 +395,12 @@ test "ThreadPool: large fuzz" {
     defer tp.deinit();
 
     for (0..10_000) |_| {
-        tp.spawn(&.{.{1}, .{2}});
-        tp.spawn(&.{.{3}});
-        tp.spawn(&.{.{4}, .{5}, .{6}});
+        tp.spawn(.{1});
+        tp.spawn(.{2});
+        tp.spawn(.{3});
+        tp.spawn(.{4});
+        tp.spawn(.{5});
+        tp.spawn(.{6});
     }
     while (tp.empty() == false) {
         std.time.sleep(std.time.ns_per_ms);

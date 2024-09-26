@@ -10,6 +10,7 @@ const Request = httpz.Request;
 const Response = httpz.Response;
 
 const BufferPool = @import("buffer.zig").Pool;
+const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
 const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
@@ -38,6 +39,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
         timeout_keepalive: ?Timeout,
         timeout_write_error: Timeout,
         retain_allocated_bytes_keepalive: usize,
+        thread_pool: ThreadPool(Self.handleConnection),
 
         const Timeout = struct {
             sec: u32,
@@ -83,10 +85,20 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             websocket.* = try ws.Worker(WSH).init(allocator, &server._websocket_state);
             errdefer websocket.deinit();
 
-            const http_conn_pool = try HTTPConnPool.init(allocator, buffer_pool, websocket, config);
+            var http_conn_pool = try HTTPConnPool.init(allocator, buffer_pool, websocket, config);
             errdefer http_conn_pool.deinit();
 
             const retain_allocated_bytes_keepalive = config.workers.retain_allocated_bytes orelse 8192;
+
+            var thread_pool = try ThreadPool(Self.handleConnection).init(allocator, .{
+                .count = config.threadPoolCount(),
+                .backlog = config.thread_pool.backlog orelse 500,
+                .buffer_size = config.thread_pool.buffer_size orelse 32_768,
+            });
+            errdefer {
+                thread_pool.stop();
+                thread_pool.deinit();
+            }
 
             return .{
                 .server = server,
@@ -95,6 +107,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 .http_conn_pool = http_conn_pool,
                 .websocket = websocket,
                 .buffer_pool = buffer_pool,
+                .thread_pool = thread_pool,
                 .timeout_request = timeout_request,
                 .timeout_keepalive = timeout_keepalive,
                 .timeout_write_error = Timeout.init(5),
@@ -106,6 +119,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             const allocator = self.allocator;
 
             self.websocket.deinit();
+            self.thread_pool.deinit();
             allocator.destroy(self.websocket);
 
             self.http_conn_pool.deinit();
@@ -115,12 +129,13 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
         }
 
         pub fn listen(self: *Self, listener: posix.socket_t) void {
-            var server = self.server;
+            var thread_pool = &self.thread_pool;
             while (true) {
                 var address: net.Address = undefined;
                 var address_len: posix.socklen_t = @sizeOf(net.Address);
                 const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
                     if (err == error.ConnectionAborted or err == error.SocketNotListening) {
+                        thread_pool.stop();
                         self.websocket.shutdown();
                         return;
                     }
@@ -129,7 +144,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 };
                 metrics.connection();
                 // calls handleConnection through the server's thread_pool
-                server._thread_pool.spawn(&.{.{ self, socket, address }});
+                thread_pool.spawnOne(.{ self, socket, address });
             }
         }
 
@@ -286,6 +301,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         // how many bytes should we retain in our arena allocator between keepalive usage
         retain_allocated_bytes_keepalive: usize,
 
+        thread_pool: ThreadPool(Self.processData),
+
+
         const Self = @This();
 
         const Loop = switch (builtin.os.tag) {
@@ -303,11 +321,21 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             websocket.* = try ws.Worker(WSH).init(allocator, &server._websocket_state);
             errdefer websocket.deinit();
 
-            const manager = try ConnManager(WSH).init(allocator, websocket, config);
+            var manager = try ConnManager(WSH).init(allocator, websocket, config);
             errdefer manager.deinit();
 
             const retain_allocated_bytes = config.workers.retain_allocated_bytes orelse 4096;
             const retain_allocated_bytes_keepalive = @max(retain_allocated_bytes, 8192);
+
+            const thread_pool = try ThreadPool(Self.processData).init(allocator, .{
+                .count = config.threadPoolCount(),
+                .backlog = config.thread_pool.backlog orelse 500,
+                .buffer_size = config.thread_pool.buffer_size orelse 32_768,
+            });
+            errdefer {
+                thread_pool.stop();
+                thread_pool.deinit();
+            }
 
             return .{
                 .full = false,
@@ -315,8 +343,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 .config = config,
                 .server = server,
                 .manager = manager,
-                .websocket = websocket,
                 .allocator = allocator,
+                .websocket = websocket,
+                .thread_pool = thread_pool,
                 .max_conn = config.workers.max_conn orelse 8_192,
                 .signal = .{ .read_fd = signals[0], .write_fd = signals[1] },
                 .retain_allocated_bytes_keepalive = retain_allocated_bytes_keepalive,
@@ -325,6 +354,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
         pub fn deinit(self: *Self) void {
             self.websocket.deinit();
+            self.thread_pool.deinit();
             self.allocator.destroy(self.websocket);
             self.manager.deinit();
             self.loop.deinit();
@@ -332,6 +362,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
         pub fn run(self: *Self, listener: posix.fd_t) void {
             const manager = &self.manager;
+            var thread_pool = &self.thread_pool;
 
             self.loop.monitorAccept(listener) catch |err| {
                 log.err("Failed to add monitor to listening socket: {}", .{err});
@@ -342,12 +373,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 log.err("Failed to add monitor to signal pipe: {}", .{err});
                 return;
             };
-            const QUEUE_SIZE = 16;
 
-            var queue_batch: [QUEUE_SIZE]struct{*Self, *Conn(WSH)} = undefined;
-            var queue_index: usize = 0;
-
-            var thread_pool = self.server._thread_pool;
             var now = timestamp();
             while (true) {
                 const timeout = manager.prepareToWait(now);
@@ -389,17 +415,11 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                         }
                         manager.active(conn, now);
                     }
-                    queue_batch[queue_index] = .{ self, conn };
-                    queue_index += 1;
-                    if (queue_index == QUEUE_SIZE) {
-                        thread_pool.spawn(&queue_batch);
-                        queue_index = 0;
-                    }
+                    thread_pool.spawn(.{self, conn});
                 }
-
-                if (queue_index > 0) {
-                    thread_pool.spawn(queue_batch[0..queue_index]);
-                    queue_index = 0;
+                const batch_size = thread_pool.batch_size;
+                if (batch_size > 0) {
+                    thread_pool.flush(batch_size);
                 }
 
                 if (self.full and closed_conn) {

@@ -26,7 +26,6 @@ const log = std.log.scoped(.httpz);
 
 const worker = @import("worker.zig");
 const HTTPConn = worker.HTTPConn;
-const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
 const build = @import("build");
 const force_blocking: bool = if (@hasDecl(build, "httpz_blocking")) build.httpz_blocking else false;
@@ -246,8 +245,6 @@ pub fn Server(comptime H: type) type {
     };
 
     return struct {
-        const TP = if (blockingMode()) ThreadPool(worker.Blocking(*Self, WebsocketHandler).handleConnection) else ThreadPool(worker.NonBlocking(*Self, WebsocketHandler).processData);
-
         handler: H,
         config: Config,
         arena: Allocator,
@@ -255,7 +252,6 @@ pub fn Server(comptime H: type) type {
         _router: Router(H, ActionArg),
         _mut: Thread.Mutex,
         _cond: Thread.Condition,
-        _thread_pool: TP,
         _signals: []posix.fd_t,
         _listener: ?posix.socket_t,
         _max_request_per_connection: usize,
@@ -274,12 +270,6 @@ pub fn Server(comptime H: type) type {
             errdefer allocator.destroy(arena);
             arena.* = std.heap.ArenaAllocator.init(allocator);
             errdefer arena.deinit();
-
-            const thread_pool = try TP.init(arena.allocator(), .{
-                .count = config.threadPoolCount(),
-                .backlog = config.thread_pool.backlog orelse 500,
-                .buffer_size = config.thread_pool.buffer_size orelse 32_768,
-            });
 
             const signals: []posix.fd_t = if (blockingMode()) &.{} else try arena.allocator().alloc(posix.fd_t, config.workerCount());
 
@@ -316,7 +306,6 @@ pub fn Server(comptime H: type) type {
                 ._signals = signals,
                 ._middlewares = &.{},
                 ._middleware_registry = .{},
-                ._thread_pool = thread_pool,
                 ._websocket_state = websocket_state,
                 ._router = try Router(H, ActionArg).init(arena.allocator(), default_dispatcher, handler),
                 ._max_request_per_connection = config.timeout.request_count orelse MAX_REQUEST_COUNT,
@@ -324,8 +313,6 @@ pub fn Server(comptime H: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self._thread_pool.stop();
-            self._thread_pool.deinit();
             self._websocket_state.deinit();
 
             var node = self._middleware_registry.first;
@@ -462,11 +449,6 @@ pub fn Server(comptime H: type) type {
         }
 
         pub fn stop(self: *Self) void {
-            // Order matters. When thread_pool.stop() is called, pending requests
-            // will continue to be processed. Only once the thread-pool queue is
-            // empty, does the thread-pool really stop.
-            // So we need to close the signal, which tells the worker to stop
-            // accepting / processing new requests.
             {
                 self._mut.lock();
                 defer self._mut.unlock();
@@ -485,8 +467,6 @@ pub fn Server(comptime H: type) type {
                     posix.close(l);
                 }
             }
-            @atomicStore(usize, &self._max_request_per_connection, 0, .monotonic);
-            self._thread_pool.stop();
         }
 
         pub fn router(self: *Self, config: RouterConfig) *Router(H, ActionArg) {
@@ -578,7 +558,7 @@ pub fn Server(comptime H: type) type {
 
             if (conn.handover == .unknown) {
                 // close is the default
-                conn.handover = if (req.canKeepAlive() and conn.request_count < @atomicLoad(usize, &self._max_request_per_connection, .monotonic)) .keepalive else .close;
+                conn.handover = if (req.canKeepAlive() and conn.request_count < self._max_request_per_connection) .keepalive else .close;
             }
 
             res.write() catch {
