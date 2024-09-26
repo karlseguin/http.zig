@@ -9,6 +9,8 @@ pub const Opts = struct {
     buffer_size: usize,
 };
 
+threadlocal var worker_index: usize = 0;
+
 pub fn ThreadPool(comptime F: anytype) type {
     // When the worker thread calls F, it'll inject its static buffer.
     // So F would be: handle(server: *Server, conn: *Conn, buf: []u8)
@@ -17,7 +19,6 @@ pub fn ThreadPool(comptime F: anytype) type {
     const Args = SpawnArgs(FullArgs);
 
     return struct {
-        next_id: u8,
         stopped: bool,
         threads: []Thread,
         workers: []Worker(F),
@@ -50,7 +51,6 @@ pub fn ThreadPool(comptime F: anytype) type {
             }
 
             return .{
-                .next_id = 0,
                 .arena = arena,
                 .stopped = false,
                 .workers = workers,
@@ -75,8 +75,8 @@ pub fn ThreadPool(comptime F: anytype) type {
 
          pub fn spawn(self: *Self, args: []const Args) void {
              const workers = self.workers;
-             const next_id = @atomicRmw(u8, &self.next_id, .Add, 1, .monotonic);
-             workers[@mod(next_id, workers.len)].spawn(args);
+             worker_index += 1;
+             workers[@mod(worker_index, workers.len)].spawn(args);
          }
 
         pub fn empty(self: *Self) bool {
