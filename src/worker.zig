@@ -231,6 +231,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                         self.http_conn_pool.release(conn);
                         return;
                     },
+                    .need_data => unreachable, // for nonblocking only
                 }
             }
         }
@@ -255,7 +256,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                         if (is_keepalive and is_first) {
                             metrics.timeoutKeepalive(1);
                         } else {
-                            metrics.timeoutActive(1);
+                            metrics.timeoutRequest(1);
                         }
                         return .close;
                     },
@@ -296,7 +297,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                     }
                 } else if (deadline) |dl| {
                     if (timestamp() > dl) {
-                        metrics.timeoutActive(1);
+                        metrics.timeoutRequest(1);
                         return .close;
                     }
                 }
@@ -472,7 +473,6 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                             closed_conn = true;
                             continue;
                         }
-                        manager.active(conn, now);
                     }
                     thread_pool.spawn(.{self, conn});
                 }
@@ -555,53 +555,57 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             // if there's no iterator (not even an empty one), then it means
             // the signal was closed, indicating a shutdown
             var it = self.signal.iterator() orelse return false;
+
+            const loop = &self.loop;
+            const manager = &self.manager;
             while (it.next()) |data| {
                 const conn: *Conn(WSH) = @ptrFromInt(data);
-                switch (conn.protocol) {
-                    .http => |http_conn| {
-                        switch (http_conn.handover) {
-                            .keepalive => {
-                                self.manager.keepalive(conn, now);
-                                self.loop.monitorRead(http_conn.stream.handle, @intFromPtr(conn), true) catch {
-                                    metrics.internalError();
-                                    self.manager.close(conn);
-                                    continue;
-                                };
-                            },
-                            .close, .unknown => {
-                                closed_bool.* = true;
-                                self.manager.close(conn);
-                            },
-                            .disown => {
-                                closed_bool.* = true;
-                                if (self.loop.remove(http_conn.stream.handle)) {
-                                    self.manager.disown(conn);
-                                } else |_| {
-                                    self.manager.close(conn);
-                                }
-                            },
-                            .websocket => |ptr| {
-                                closed_bool.* = true;
-                                if (comptime WSH == httpz.DummyWebsocketHandler) {
-                                    std.debug.print("Your httpz handler must have a `WebsocketHandler` declaration. This must be the same type passed to `httpz.upgradeWebsocket`. Closing the connection.\n", .{});
-                                    self.manager.close(conn);
-                                    continue;
-                                }
-                                const hc: *ws.HandlerConn(WSH) = @ptrCast(@alignCast(ptr));
-                                self.manager.upgrade(conn, hc);
-                                self.loop.monitorRead(hc.socket, @intFromPtr(conn), true) catch {
-                                    metrics.internalError();
-                                    self.manager.close(conn);
-                                    continue;
-                                };
-                            },
+
+                // signal isn't used for websocket
+                const http_conn = conn.protocol.http;
+                switch (http_conn.handover) {
+                    .keepalive => {
+                        manager.keepalive(conn, now);
+                        loop.monitorRead(http_conn.stream.handle, @intFromPtr(conn), true) catch {
+                            metrics.internalError();
+                            manager.close(conn);
+                            continue;
+                        };
+                    },
+                    .close, .unknown => {
+                        closed_bool.* = true;
+                        manager.close(conn);
+                    },
+                    .need_data => {
+                        manager.request(conn, now);
+                        loop.monitorRead(http_conn.stream.handle, @intFromPtr(conn), true) catch {
+                            metrics.internalError();
+                            manager.close(conn);
+                            continue;
+                        };
+                    },
+                    .disown => {
+                        closed_bool.* = true;
+                        if (loop.remove(http_conn.stream.handle)) {
+                            manager.disown(conn);
+                        } else |_| {
+                            manager.close(conn);
                         }
                     },
-                    .websocket => {
-                        // websocket doesn't use the signaling mechanism to get
-                        // the socket back into the event loop after processing
-                        // a message.
-                        unreachable;
+                    .websocket => |ptr| {
+                        closed_bool.* = true;
+                        if (comptime WSH == httpz.DummyWebsocketHandler) {
+                            std.debug.print("Your httpz handler must have a `WebsocketHandler` declaration. This must be the same type passed to `httpz.upgradeWebsocket`. Closing the connection.\n", .{});
+                            manager.close(conn);
+                            continue;
+                        }
+                        const hc: *ws.HandlerConn(WSH) = @ptrCast(@alignCast(ptr));
+                        manager.upgrade(conn, hc);
+                        loop.monitorRead(hc.socket, @intFromPtr(conn), true) catch {
+                            metrics.internalError();
+                            manager.close(conn);
+                            continue;
+                        };
                     },
                 }
             }
@@ -622,21 +626,16 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
         pub fn processHTTPData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, http_conn: *HTTPConn) void {
             const stream = http_conn.stream;
+            defer self.signal.write(@intFromPtr(conn)) catch @panic("todo");
 
             const done = http_conn.req_state.parse(http_conn.req_arena.allocator(), stream) catch |err| {
                 requestParseError(http_conn, err) catch {};
                 http_conn.handover = .close;
-                self.signal.write(@intFromPtr(conn)) catch @panic("todo");
                 return;
             };
 
             if (done == false) {
-                // we need to wait for more data
-                self.loop.monitorRead(stream.handle, @intFromPtr(conn), true) catch |err| {
-                    serverError(http_conn, "unknown event loop error: {}", err) catch {};
-                    http_conn.handover = .close;
-                    self.signal.write(@intFromPtr(conn)) catch @panic("todo");
-                };
+                http_conn.handover = .need_data;
                 return;
             }
 
@@ -649,9 +648,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 // thread, which impacts all connections. But, we can only do stuff
                 // that's thread-safe here (i.e. we can't manipulate the ConnManager)
                 http_conn.keepalive(self.retain_allocated_bytes_keepalive);
-                http_conn.state = .keepalive;
             }
-            self.signal.write(@intFromPtr(conn)) catch @panic("todo");
         }
 
         pub fn processWebsocketData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, hc: *ws.HandlerConn(WSH)) void {
@@ -765,13 +762,19 @@ const Signal = struct {
 
 fn ConnManager(comptime WSH: type) type {
     return struct {
-        // Double linked list of Conn a worker is actively servicing. An "active"
-        // connection is one where we've at least received 1 byte of the request and
-        // continues to be "active" until the response is sent.
-        active_list: List(Conn(WSH)),
+        // Double linked list of Conn which we're waiting on for more data to
+        // complete a request.
+        request_list: List(Conn(WSH)),
 
-        // Double linked list of Conn a worker is monitoring. Unlike "active" connections
-        // these connections are between requests (which is possible due to keepalive).
+        // Double linked list of Conn a worker is monitoring. This includes
+        // connections which are between requests, or connections which are currently
+        // being processed.
+        // Most connections will be in here.
+        // We have two lists to enforce two timeouts: request and keepalive.
+        // The "request" timeout only comes into play when part of the request
+        // data was received and we're waiting for the rest. Thus, when the full
+        // request data comes into the first recv() the connection never has to
+        // transition to the request_list.
         keepalive_list: List(Conn(WSH)),
 
         // # of active connections we're managing. This is the length of our list.
@@ -809,7 +812,7 @@ fn ConnManager(comptime WSH: type) type {
 
             return .{
                 .len = 0,
-                .active_list = .{},
+                .request_list = .{},
                 .keepalive_list = .{},
                 .allocator = allocator,
                 .buffer_pool = buffer_pool,
@@ -821,7 +824,7 @@ fn ConnManager(comptime WSH: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self.shutdownList(&self.active_list);
+            self.shutdownList(&self.request_list);
             self.shutdownList(&self.keepalive_list);
 
             const allocator = self.allocator;
@@ -836,7 +839,7 @@ fn ConnManager(comptime WSH: type) type {
             errdefer self.conn_mem_pool.destroy(conn);
 
             const http_conn = try self.http_conn_pool.acquire();
-            http_conn.state = .active;
+            http_conn.state = .request;
             http_conn.request_count = 1;
             http_conn.timeout = now + self.timeout_request;
 
@@ -846,30 +849,36 @@ fn ConnManager(comptime WSH: type) type {
                 .prev = null,
                 .protocol = .{ .http = http_conn },
             };
-            self.active_list.insert(conn);
+            self.request_list.insert(conn);
             return conn;
         }
 
-        fn active(self: *Self, conn: *Conn(WSH), now: u32) void {
+        fn request(self: *Self, conn: *Conn(WSH), now: u32) void {
             var http_conn = conn.protocol.http;
-            if (http_conn.state == .active) return;
+            if (http_conn.state == .request) return;
 
-            // If we're here, it means the connection is going from a keepalive
-            // state to an active state.
-
-            http_conn.state = .active;
+            http_conn.state = .request;
             http_conn.request_count += 1;
             http_conn.timeout = now + self.timeout_request;
 
             self.keepalive_list.remove(conn);
-            self.active_list.insert(conn);
+            self.request_list.insert(conn);
         }
 
         fn keepalive(self: *Self, conn: *Conn(WSH), now: u32) void {
             var http_conn = conn.protocol.http;
-            // we expect the threadpool to have already called http_conn.keepalive()
             http_conn.timeout = now + self.timeout_keepalive;
-            self.active_list.remove(conn);
+
+            if (http_conn.state == .keepalive) {
+                // move to the end of the list, since it's the most recent connection
+                // put in "keepalive" making it hthe last one to timeout;
+                self.keepalive_list.moveToTail(conn);
+                return;
+            }
+            http_conn.state = .keepalive;
+
+            // we expect the threadpool to have already called http_conn.keepalive()
+            self.request_list.remove(conn);
             self.keepalive_list.insert(conn);
         }
 
@@ -882,9 +891,7 @@ fn ConnManager(comptime WSH: type) type {
             switch (conn.protocol) {
                 .http => |http_conn| {
                     switch (http_conn.state) {
-                        .active => self.active_list.remove(conn),
-                        // a connection in "keepalive" can't be disowned, but
-                        // it can be closed (by timeout), and close calls disown.
+                        .request => self.request_list.remove(conn),
                         .keepalive => self.keepalive_list.remove(conn),
                     }
                     self.http_conn_pool.release(http_conn);
@@ -897,9 +904,12 @@ fn ConnManager(comptime WSH: type) type {
         }
 
         fn upgrade(self: *Self, conn: *Conn(WSH), hc: *ws.HandlerConn(WSH)) void {
-            std.debug.assert(conn.protocol.http.state == .active);
-            self.active_list.remove(conn);
-            self.http_conn_pool.release(conn.protocol.http);
+            const http_conn = conn.protocol.http;
+            switch (http_conn.state) {
+                .request => self.request_list.remove(conn),
+                .keepalive => self.keepalive_list.remove(conn),
+            }
+            self.http_conn_pool.release(http_conn);
             conn.protocol = .{ .websocket = hc };
         }
 
@@ -917,27 +927,27 @@ fn ConnManager(comptime WSH: type) type {
 
         // Enforces timeouts, and returns when the next timeout should be checked.
         fn prepareToWait(self: *Self, now: u32) ?i32 {
-            const next_active = self.enforceTimeout(&self.active_list, now);
+            const next_request = self.enforceTimeout(&self.request_list, now);
             const next_keepalive = self.enforceTimeout(&self.keepalive_list, now);
 
             {
-                const next_active_count = next_active.count;
-                if (next_active_count > 0) {
-                    metrics.timeoutActive(next_active_count);
+                const next_request_count = next_request.count;
+                if (next_request_count > 0) {
+                    metrics.timeoutRequest(next_request_count);
                 }
                 const next_keepalive_count = next_keepalive.count;
                 if (next_keepalive_count > 0) {
-                    metrics.timeoutKeepalive(next_active_count);
+                    metrics.timeoutKeepalive(next_request_count);
                 }
             }
 
-            const next_active_timeout = next_active.timeout;
+            const next_request_timeout = next_request.timeout;
             const next_keepalive_timeout = next_keepalive.timeout;
-            if (next_active_timeout == null and next_keepalive_timeout == null) {
+            if (next_request_timeout == null and next_keepalive_timeout == null) {
                 return null;
             }
 
-            const next = @min(next_active_timeout orelse MAX_TIMEOUT, next_keepalive_timeout orelse MAX_TIMEOUT);
+            const next = @min(next_request_timeout orelse MAX_TIMEOUT, next_keepalive_timeout orelse MAX_TIMEOUT);
             if (next < now) {
                 // can happen if a socket was just about to time out when enforceTimeout
                 // was called
@@ -955,7 +965,7 @@ fn ConnManager(comptime WSH: type) type {
         // lists are ordered from soonest to timeout to last, as soon as we find
         // a connection that isn't timed out, we can break;
         // This returns the next timeout.
-        // Only called on the active and keepalive lists, which only handle
+        // Only called on the request and keepalive lists, which only handle
         // http connections.
         fn enforceTimeout(self: *Self, list: *List(Conn(WSH)), now: u32) TimeoutResult {
             var conn = list.head;
@@ -1402,14 +1412,14 @@ pub fn Conn(comptime WSH: type) type {
 // in nonblocking mode. A pointer to the conn is the userdata passed to epoll/kqueue.
 // Should only be created through the worker's HTTPConnPool
 pub const HTTPConn = struct {
-    // A connection can be in one of two states: active or keepalive. It begins
-    // and stays in "active" until the response is sent. Then, assuming the
-    // connection isn't closed, it transitions to "keepalive" until the first
-    // byte of a new request is received.
-    // The main purpose of the two different states is to support a different
-    // keepalive_timeout and request_timeout.
+    // A connection can be in one of two states: request or keepalive. It begins
+    // and stays in "request" until the response is sent. Then, assuming the
+    // connection isn't closed, it transitions to "keepalive". It stays in keepalive
+    // as long as we don't need to issue multiple recvs to get a full request.
+    // We have two states because we have to linked lists, and we have to linked lists
+    // because we have two timeouts.
     const State = enum {
-        active,
+        request,
         keepalive,
     };
 
@@ -1418,6 +1428,7 @@ pub const HTTPConn = struct {
         close,
         unknown,
         keepalive,
+        need_data,
         websocket: *anyopaque,
     };
 
@@ -1479,7 +1490,7 @@ pub const HTTPConn = struct {
 
         return .{
             .close = false,
-            .state = .active,
+            .state = .request,
             .handover = .unknown,
             .stream = undefined,
             .address = undefined,
