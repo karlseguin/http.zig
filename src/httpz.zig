@@ -251,8 +251,8 @@ pub fn Server(comptime H: type) type {
         allocator: Allocator,
         _router: Router(H, ActionArg),
         _mut: Thread.Mutex,
+        _workers: []Worker,
         _cond: Thread.Condition,
-        _signals: []posix.fd_t,
         _listener: ?posix.socket_t,
         _max_request_per_connection: usize,
         _middlewares: []const Middleware(H),
@@ -260,6 +260,7 @@ pub fn Server(comptime H: type) type {
         _middleware_registry: std.SinglyLinkedList(Middleware(H)),
 
         const Self = @This();
+        const Worker = if (blockingMode()) worker.Blocking(*Self, WebsocketHandler) else worker.NonBlocking(*Self, WebsocketHandler);
 
         pub fn init(allocator: Allocator, config: Config, handler: H) !Self {
             // Be mindful about where we pass this arena. Most things are able to
@@ -270,8 +271,6 @@ pub fn Server(comptime H: type) type {
             errdefer allocator.destroy(arena);
             arena.* = std.heap.ArenaAllocator.init(allocator);
             errdefer arena.deinit();
-
-            const signals: []posix.fd_t = if (blockingMode()) &.{} else try arena.allocator().alloc(posix.fd_t, config.workerCount());
 
             const default_dispatcher = if (comptime Handler == void) defaultDispatcher else defaultDispatcherWithHandler;
 
@@ -295,6 +294,8 @@ pub fn Server(comptime H: type) type {
             });
             errdefer websocket_state.deinit();
 
+            const workers = try arena.allocator().alloc(Worker, config.workerCount());
+
             return .{
                 .config = config,
                 .handler = handler,
@@ -302,8 +303,8 @@ pub fn Server(comptime H: type) type {
                 .arena = arena.allocator(),
                 ._mut = .{},
                 ._cond = .{},
+                ._workers = workers,
                 ._listener = null,
-                ._signals = signals,
                 ._middlewares = &.{},
                 ._middleware_registry = .{},
                 ._websocket_state = websocket_state,
@@ -381,13 +382,15 @@ pub fn Server(comptime H: type) type {
             }
 
             self._listener = listener;
+
+            var workers = self._workers;
             const allocator = self.allocator;
 
             if (comptime blockingMode()) {
-                var w = try worker.Blocking(*Self, WebsocketHandler).init(allocator, self, &config);
-                defer w.deinit();
+                workers[0] = try worker.Blocking(*Self, WebsocketHandler).init(allocator, self, &config);
+                defer workers[0].deinit();
 
-                const thrd = try Thread.spawn(.{}, worker.Blocking(*Self, WebsocketHandler).listen, .{ &w, listener });
+                const thrd = try Thread.spawn(.{}, worker.Blocking(*Self, WebsocketHandler).listen, .{ &workers[0], listener });
 
                 // incase listenInNewThread was used and is waiting for us to start
                 self._cond.signal();
@@ -397,32 +400,22 @@ pub fn Server(comptime H: type) type {
                 // socket is closed.
                 thrd.join();
             } else {
-                const Worker = worker.NonBlocking(*Self, WebsocketHandler);
-                var signals = self._signals;
-                const worker_count = signals.len;
-                const workers = try self.arena.alloc(Worker, worker_count);
-                const threads = try self.arena.alloc(Thread, worker_count);
-
                 var started: usize = 0;
-                errdefer for (0..started) |i| {
-                    // on success, these will be closed by a call to stop();
-                    posix.close(signals[i]);
+                defer for (0..started) |i| {
+                    workers[i].deinit();
                 };
 
-                defer {
-                    for (0..started) |i| {
+                errdefer for (0..started) |i| {
+                    workers[i].stop();
+                };
+
+                const threads = try self.arena.alloc(Thread, workers.len);
+                for (0..workers.len) |i| {
+                    workers[i] = try Worker.init(allocator, self, &config);
+                    errdefer {
+                        workers[i].stop();
                         workers[i].deinit();
                     }
-                }
-
-                for (0..workers.len) |i| {
-                    const pipe = try posix.pipe2(.{ .NONBLOCK = true });
-                    signals[i] = pipe[1];
-                    errdefer posix.close(pipe[1]);
-
-                    workers[i] = try Worker.init(allocator, pipe, self, &config);
-                    errdefer workers[i].deinit();
-
                     threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], listener });
                     started += 1;
                 }
@@ -449,23 +442,21 @@ pub fn Server(comptime H: type) type {
         }
 
         pub fn stop(self: *Self) void {
-            {
-                self._mut.lock();
-                defer self._mut.unlock();
+            self._mut.lock();
+            defer self._mut.unlock();
 
-                for (self._signals) |s| {
-                    posix.close(s);
-                }
+            for (self._workers) |*w| {
+                w.stop();
+            }
 
-                if (self._listener) |l| {
-                    if (comptime blockingMode()) {
-                        // necessary to unblock accept on linux
-                        // (which might not be that necessary since, on Linux,
-                        // NonBlocking should be used)
-                        posix.shutdown(l, .recv) catch {};
-                    }
-                    posix.close(l);
+            if (self._listener) |l| {
+                if (comptime blockingMode()) {
+                    // necessary to unblock accept on linux
+                    // (which might not be that necessary since, on Linux,
+                    // NonBlocking should be used)
+                    posix.shutdown(l, .recv) catch {};
                 }
+                posix.close(l);
             }
         }
 
