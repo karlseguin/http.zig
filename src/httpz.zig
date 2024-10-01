@@ -510,7 +510,6 @@ pub fn Server(comptime H: type) type {
             var req = Request.init(allocator, conn);
             var res = Response.init(allocator, conn);
 
-
             if (comptime std.meta.hasFn(Handler, "handle")) {
                 if (comptime @typeInfo(@TypeOf(Handler.handle)).@"fn".return_type != void) {
                     @compileError(@typeName(Handler) ++ ".handle must return 'void'");

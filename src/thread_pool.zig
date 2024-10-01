@@ -76,10 +76,10 @@ pub fn ThreadPool(comptime F: anytype) type {
                 return;
             }
 
-             for (self.workers, self.threads) |*worker, *thread| {
+            for (self.workers, self.threads) |*worker, *thread| {
                 worker.stop();
                 thread.join();
-             }
+            }
         }
 
         pub fn spawn(self: *Self, args: Args) void {
@@ -191,7 +191,7 @@ fn Worker(comptime F: anytype) type {
             var capacity: usize = 0;
 
             const queue = self.queue;
-            const queue_end  = queue.len - 1;
+            const queue_end = queue.len - 1;
 
             while (true) {
                 self.mutex.lock();
@@ -309,8 +309,8 @@ const t = @import("t.zig");
 test "ThreadPool: batch add" {
     defer t.reset();
 
-    const counts = [_]u32{1, 2, 3, 4, 5, 6};
-    const backlogs = [_]u32{1, 2, 3, 4, 5, 6};
+    const counts = [_]u32{ 1, 2, 3, 4, 5, 6 };
+    const backlogs = [_]u32{ 1, 2, 3, 4, 5, 6 };
     for (counts) |count| {
         for (backlogs) |backlog| {
             testSum = 0; // global defined near the end of this file
@@ -414,7 +414,6 @@ test "ThreadPool: large fuzz" {
     try t.expectEqual(10_000, testC4);
     try t.expectEqual(10_000, testC5);
     try t.expectEqual(10_000, testC6);
-
 }
 
 var testSum: u64 = 0;

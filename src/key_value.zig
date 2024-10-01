@@ -4,7 +4,7 @@ const mem = std.mem;
 const ascii = std.ascii;
 const Allocator = std.mem.Allocator;
 
-fn KeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) callconv(.Inline) bool,  hashFn: fn (key: K) callconv(.Inline) u8) type {
+fn KeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) callconv(.Inline) bool, hashFn: fn (key: K) callconv(.Inline) u8) type {
     return struct {
         len: usize,
         keys: []K,

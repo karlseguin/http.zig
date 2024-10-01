@@ -44,7 +44,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
         conn_node_pool: std.heap.MemoryPool(ConnNode),
         thread_pool: ThreadPool(Self.handleConnection),
 
-       const ConnNode = struct {
+        const ConnNode = struct {
             next: ?*ConnNode,
             prev: ?*ConnNode,
             socket: posix.fd_t,
@@ -256,7 +256,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
 
             var is_first = true;
             while (true) {
-                const done = conn.req_state.parse(conn.req_arena.allocator(), stream) catch |err| switch(err) {
+                const done = conn.req_state.parse(conn.req_arena.allocator(), stream) catch |err| switch (err) {
                     error.WouldBlock => {
                         if (is_keepalive and is_first) {
                             metrics.timeoutKeepalive(1);
@@ -409,7 +409,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         // the fancier management of something like HTTPConnPool for the HTTPConns
         conn_mem_pool: std.heap.MemoryPool(Conn(WSH)),
 
-         // Request and response processing may require larger buffers than the static
+        // Request and response processing may require larger buffers than the static
         // buffered of our req/res states. The BufferPool has larger pre-allocated
         // buffers that can be used and, when empty or when a larger buffer is needed,
         // will do dynamic allocation
@@ -562,13 +562,13 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                                 },
                                 .websocket => {},
                             }
-                            thread_pool.spawn(.{self, conn});
+                            thread_pool.spawn(.{ self, conn });
                         },
                         .close => |conn| {
                             closed_conn = true;
                             switch (conn.protocol) {
                                 .http => self.closeConn(conn),
-                                .websocket => thread_pool.spawn(.{self, conn}), // TODO: could probably optimize this
+                                .websocket => thread_pool.spawn(.{ self, conn }), // TODO: could probably optimize this
                             }
                         },
                         .shutdown => return,
@@ -862,7 +862,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         // lists are ordered from soonest to timeout to last, as soon as we find
         // a connection that isn't timed out, we can break;
         // This returns the next timeout.
-        fn enforceTimeout(self: *Self, list: *List(Conn(WSH)), now: u32) struct {usize, ?u32} {
+        fn enforceTimeout(self: *Self, list: *List(Conn(WSH)), now: u32) struct { usize, ?u32 } {
             var conn = list.head;
             var count: usize = 0;
             while (conn) |c| {
@@ -895,114 +895,6 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         }
     };
 }
-
-// fn ConnManager(comptime WSH: type) type {
-//     return struct {
-
-
-
-
-//         // request is about to be handed to the thread pool
-//         fn active(self: *Self, conn: *Conn(WSH)) void {
-
-//         }
-
-//         // thread-pool is done with the request and wants to transfer control
-//         // back to the worker
-//         fn handover(self: *Self, conn: *Conn(WSH)) void {
-//             var http_conn = conn.protocol.http;
-//             std.debug.assert(http_conn.state == .active);
-
-//             self.active_list.remove(conn);
-
-//             // Ordering is important! Once we put this in handover_list,
-//             // it can be accessed by the worker thread (even if the signal hasn't
-//             // been sent, since another thread can send it). So any mutation
-//             // we want to make to httpp_conn (like setting the state), has to
-//             // happen before we insert this into handover_list.
-//             http_conn.state = .handover;
-//             self.handover_list.insert(conn);
-//         }
-
-//         // We need more dat to complete the request
-//         fn request(self: *Self, conn: *Conn(WSH), now: u32) void {
-
-//         }
-
-//         fn keepalive(self: *Self, conn: *Conn(WSH), now: u32) void {
-
-//         }
-
-//         fn close(self: *Self, conn: *Conn(WSH)) void {
-
-//         }
-
-
-
-//         fn upgrade(self: *Self, conn: *Conn(WSH), hc: *ws.HandlerConn(WSH)) void {
-
-//         }
-
-//
-
-//         // Enforces timeouts, and returns when the next timeout should be checked.
-//         fn prepareToWait(self: *Self, now: u32) ?i32 {
-//             const next_request = self.enforceTimeout(&self.request_list, now);
-//             const next_keepalive = self.enforceTimeout(&self.keepalive_list, now);
-
-//             {
-//                 const next_request_count = next_request.count;
-//                 if (next_request_count > 0) {
-//                     metrics.timeoutRequest(next_request_count);
-//                 }
-//                 const next_keepalive_count = next_keepalive.count;
-//                 if (next_keepalive_count > 0) {
-//                     metrics.timeoutKeepalive(next_request_count);
-//                 }
-//             }
-
-//             const next_request_timeout = next_request.timeout;
-//             const next_keepalive_timeout = next_keepalive.timeout;
-//             if (next_request_timeout == null and next_keepalive_timeout == null) {
-//                 return null;
-//             }
-
-//             const next = @min(next_request_timeout orelse MAX_TIMEOUT, next_keepalive_timeout orelse MAX_TIMEOUT);
-//             if (next < now) {
-//                 // can happen if a socket was just about to time out when enforceTimeout
-//                 // was called
-//                 return 1;
-//             }
-
-//             return @intCast(next - now);
-//         }
-
-//         const TimeoutResult = struct {
-//             count: usize,
-//             timeout: ?u32,
-//         };
-
-//         // lists are ordered from soonest to timeout to last, as soon as we find
-//         // a connection that isn't timed out, we can break;
-//         // This returns the next timeout.
-//         // Only called on the request and keepalive lists, which only handle
-//         // http connections.
-//         fn enforceTimeout(self: *Self, list: *List(Conn(WSH)), now: u32) TimeoutResult {
-//             var conn = list.head;
-//             var count: usize = 0;
-//             while (conn) |c| {
-//                 const timeout = c.protocol.http.timeout;
-//                 if (timeout > now) {
-//                     return .{ .count = count, .timeout = timeout };
-//                 }
-//                 count += 1;
-//                 conn = c.next;
-//                 self.close(c);
-//             }
-//             return .{ .count = count, .timeout = null };
-//         }
-//     };
-// }
 
 pub fn List(comptime T: type) type {
     return struct {
@@ -1199,21 +1091,21 @@ fn KQueue(comptime WSH: type) type {
                 self.index = index + 1;
 
                 switch (event.udata) {
-                    0 => return .{.accept = {}},
+                    0 => return .{ .accept = {} },
                     1 => {
                         // rearm it
                         self.loop.change(1, 1, posix.system.EVFILT.USER, posix.system.EV.ENABLE, posix.system.NOTE.FFNOP) catch |err| {
                             log.err("failed to rearm signal: {}", .{err});
                         };
-                        return .{.signal = {}};
+                        return .{ .signal = {} };
                     },
-                    2 => return .{.shutdown = {}},
+                    2 => return .{ .shutdown = {} },
                     else => |nptr| {
                         const conn: *Conn(WSH) = @ptrFromInt(nptr);
                         if (event.flags & posix.system.EV.EOF == posix.system.EV.EOF) {
-                            return .{.close = conn};
+                            return .{ .close = conn };
                         }
-                        return .{.recv = conn};
+                        return .{ .recv = conn };
                     },
                 }
             }
@@ -1256,14 +1148,14 @@ fn EPoll(comptime WSH: type) type {
         fn start(self: *Self) !void {
             {
                 var event = linux.epoll_event{
-                    .data = .{ .ptr = 2 } ,
+                    .data = .{ .ptr = 2 },
                     .events = linux.EPOLL.IN,
                 };
                 try std.posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, self.close_fd, &event);
             }
             {
                 var event = linux.epoll_event{
-                    .data = .{ .ptr = 1 } ,
+                    .data = .{ .ptr = 1 },
                     .events = linux.EPOLL.IN,
                 };
                 try std.posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, self.event_fd, &event);
@@ -1338,24 +1230,24 @@ fn EPoll(comptime WSH: type) type {
                 self.index = index + 1;
                 const event = &self.events[index];
                 switch (event.data.ptr) {
-                    0 => return .{.accept = {}},
+                    0 => return .{ .accept = {} },
                     1 => {
                         // clearn the eventfd
                         var buf: [8]u8 = undefined;
                         const n = posix.read(self.event_fd, &buf) catch |err| {
                             log.err("failed to read from eventfd: {}", .{err});
-                            return .{.signal = {}};
+                            return .{ .signal = {} };
                         };
                         std.debug.assert(n == 8);
-                        return .{.signal = {}};
+                        return .{ .signal = {} };
                     },
-                    2 => return .{.shutdown = {}},
+                    2 => return .{ .shutdown = {} },
                     else => |nptr| {
                         const conn: *Conn(WSH) = @ptrFromInt(nptr);
                         if (event.events & linux.EPOLL.RDHUP == linux.EPOLL.RDHUP) {
-                            return .{.close = conn};
+                            return .{ .close = conn };
                         }
-                        return .{.recv = conn};
+                        return .{ .recv = conn };
                     },
                 }
             }
