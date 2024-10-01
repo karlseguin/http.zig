@@ -190,13 +190,13 @@ pub const Response = struct {
         const names = headers.keys[0..headers.len];
         const values = headers.values[0..headers.len];
 
-        // 200 gives us enough space to fit:
+        // 220 gives us enough space to fit:
         // 1 - The status/first line
         // 2 - The Content-Length header or the Transfer-Encoding header.
         // 3 - Our longest supported built-in content type (for a custom content
         //     type, it would have been set via the res.header(...) call, so would
         //     be included in `len)
-        var len: usize = 200;
+        var len: usize = 220;
         for (names, values) |name, value| {
             // +4 for the colon, space and trailer
             len += name.len + value.len + 4;
@@ -220,29 +220,29 @@ pub const Response = struct {
         if (self.content_type) |ct| {
             const content_type: ?[]const u8 = switch (ct) {
                 .BINARY => "Content-Type: application/octet-stream\r\n",
-                .CSS => "Content-Type: text/css\r\n",
-                .CSV => "Content-Type: text/csv\r\n",
+                .CSS => "Content-Type: text/css; charset=UTF-8\r\n",
+                .CSV => "Content-Type: text/csv; charset=UTF-8\r\n",
                 .EOT => "Content-Type: application/vnd.ms-fontobject\r\n",
-                .EVENTS => "Content-Type: text/event-stream\r\n",
+                .EVENTS => "Content-Type: text/event-stream; charset=UTF-8\r\n",
                 .GIF => "Content-Type: image/gif\r\n",
                 .GZ => "Content-Type: application/gzip\r\n",
-                .HTML => "Content-Type: text/html\r\n",
+                .HTML => "Content-Type: text/html; charset=UTF-8\r\n",
                 .ICO => "Content-Type: image/vnd.microsoft.icon\r\n",
                 .JPG => "Content-Type: image/jpeg\r\n",
-                .JS => "Content-Type: application/javascript\r\n",
+                .JS => "Content-Type: text/javascript; charset=UTF-8\r\n",
                 .JSON => "Content-Type: application/json\r\n",
                 .OTF => "Content-Type: font/otf\r\n",
                 .PDF => "Content-Type: application/pdf\r\n",
                 .PNG => "Content-Type: image/png\r\n",
                 .SVG => "Content-Type: image/svg+xml\r\n",
                 .TAR => "Content-Type: application/x-tar\r\n",
-                .TEXT => "Content-Type: text/plain\r\n",
+                .TEXT => "Content-Type: text/plain; charset=UTF-8\r\n",
                 .TTF => "Content-Type: font/ttf\r\n",
                 .WASM => "Content-Type: application/wasm\r\n",
                 .WEBP => "Content-Type: image/webp\r\n",
                 .WOFF => "Content-Type: font/woff\r\n",
                 .WOFF2 => "Content-Type: font/woff2\r\n",
-                .XML => "Content-Type: application/xml\r\n",
+                .XML => "Content-Type: text/xml; charset=UTF-8\r\n",
                 .UNKNOWN => null,
             };
             if (content_type) |value| {
