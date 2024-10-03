@@ -86,7 +86,7 @@ exe.root_module.addImport("httpz", httpz.module("httpz"));
 The library tracks Zig master. If you're using a specific version of Zig, use the appropriate branch.
 
 # Alternatives
-If you're looking for a higher level web framework with more included functionality, consider [JetZig](https://www.jetzig.dev/) which is built on top of httpz.
+If you're looking for a higher level web framework with more included functionality, consider [JetZig](https://www.jetzig.dev/) or [Tokamak](https://github.com/cztomsik/tokamak) which are built on top of httpz.
 
 ## Why not std.http.Server
 `std.http.Server` is very slow and assumes well-behaved clients.
