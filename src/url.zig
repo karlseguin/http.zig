@@ -162,7 +162,7 @@ pub fn asUint(comptime string: anytype) @Type(std.builtin.Type{
 }
 
 const HEX_CHAR = blk: {
-    var all = std.mem.zeroes([255]bool);
+    var all = std.mem.zeroes([256]bool);
     for ('a'..('f' + 1)) |b| all[b] = true;
     for ('A'..('F' + 1)) |b| all[b] = true;
     for ('0'..('9' + 1)) |b| all[b] = true;
@@ -170,7 +170,7 @@ const HEX_CHAR = blk: {
 };
 
 const HEX_DECODE = blk: {
-    var all = std.mem.zeroes([255]u8);
+    var all = std.mem.zeroes([256]u8);
     for ('a'..('z' + 1)) |b| all[b] = b - 'a' + 10;
     for ('A'..('Z' + 1)) |b| all[b] = b - 'A' + 10;
     for ('0'..('9' + 1)) |b| all[b] = b - '0';
@@ -232,6 +232,7 @@ test "url: unescape" {
     try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, &buffer, "%1"));
     try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, &buffer, "123%45%6"));
     try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, &buffer, "%zzzzz"));
+    try t.expectError(error.InvalidEscapeSequence, Url.unescape(t.allocator, &buffer, "%0\xff"));
 
     var res = try Url.unescape(allocator, &buffer, "a+b");
     try t.expectString("a b", res.value);
