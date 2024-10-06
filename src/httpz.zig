@@ -1159,7 +1159,7 @@ test "httpz: event stream" {
 
     try t.expectEqual(818, res.status);
     try t.expectEqual(true, res.headers.get("Content-Length") == null);
-    try t.expectString("text/event-stream", res.headers.get("Content-Type").?);
+    try t.expectString("text/event-stream; charset=UTF-8", res.headers.get("Content-Type").?);
     try t.expectString("no-cache", res.headers.get("Cache-Control").?);
     try t.expectString("keep-alive", res.headers.get("Connection").?);
     try t.expectString("helloa message", res.body);
