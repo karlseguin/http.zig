@@ -26,7 +26,6 @@ const log = std.log.scoped(.httpz);
 
 const worker = @import("worker.zig");
 const HTTPConn = worker.HTTPConn;
-const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
 const build = @import("build");
 const force_blocking: bool = if (@hasDecl(build, "httpz_blocking")) build.httpz_blocking else false;
@@ -246,17 +245,14 @@ pub fn Server(comptime H: type) type {
     };
 
     return struct {
-        const TP = if (blockingMode()) ThreadPool(worker.Blocking(*Self, WebsocketHandler).handleConnection) else ThreadPool(worker.NonBlocking(*Self, WebsocketHandler).processData);
-
         handler: H,
         config: Config,
         arena: Allocator,
         allocator: Allocator,
         _router: Router(H, ActionArg),
         _mut: Thread.Mutex,
+        _workers: []Worker,
         _cond: Thread.Condition,
-        _thread_pool: *TP,
-        _signals: []posix.fd_t,
         _listener: ?posix.socket_t,
         _max_request_per_connection: usize,
         _middlewares: []const Middleware(H),
@@ -264,6 +260,7 @@ pub fn Server(comptime H: type) type {
         _middleware_registry: std.SinglyLinkedList(Middleware(H)),
 
         const Self = @This();
+        const Worker = if (blockingMode()) worker.Blocking(*Self, WebsocketHandler) else worker.NonBlocking(*Self, WebsocketHandler);
 
         pub fn init(allocator: Allocator, config: Config, handler: H) !Self {
             // Be mindful about where we pass this arena. Most things are able to
@@ -274,14 +271,6 @@ pub fn Server(comptime H: type) type {
             errdefer allocator.destroy(arena);
             arena.* = std.heap.ArenaAllocator.init(allocator);
             errdefer arena.deinit();
-
-            const thread_pool = try TP.init(arena.allocator(), .{
-                .count = config.threadPoolCount(),
-                .backlog = config.thread_pool.backlog orelse 500,
-                .buffer_size = config.thread_pool.buffer_size orelse 32_768,
-            });
-
-            const signals: []posix.fd_t = if (blockingMode()) &.{} else try arena.allocator().alloc(posix.fd_t, config.workerCount());
 
             const default_dispatcher = if (comptime Handler == void) defaultDispatcher else defaultDispatcherWithHandler;
 
@@ -305,6 +294,8 @@ pub fn Server(comptime H: type) type {
             });
             errdefer websocket_state.deinit();
 
+            const workers = try arena.allocator().alloc(Worker, config.workerCount());
+
             return .{
                 .config = config,
                 .handler = handler,
@@ -312,11 +303,10 @@ pub fn Server(comptime H: type) type {
                 .arena = arena.allocator(),
                 ._mut = .{},
                 ._cond = .{},
+                ._workers = workers,
                 ._listener = null,
-                ._signals = signals,
                 ._middlewares = &.{},
                 ._middleware_registry = .{},
-                ._thread_pool = thread_pool,
                 ._websocket_state = websocket_state,
                 ._router = try Router(H, ActionArg).init(arena.allocator(), default_dispatcher, handler),
                 ._max_request_per_connection = config.timeout.request_count orelse MAX_REQUEST_COUNT,
@@ -324,7 +314,6 @@ pub fn Server(comptime H: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self._thread_pool.stop();
             self._websocket_state.deinit();
 
             var node = self._middleware_registry.first;
@@ -393,13 +382,15 @@ pub fn Server(comptime H: type) type {
             }
 
             self._listener = listener;
+
+            var workers = self._workers;
             const allocator = self.allocator;
 
             if (comptime blockingMode()) {
-                var w = try worker.Blocking(*Self, WebsocketHandler).init(allocator, self, &config);
-                defer w.deinit();
+                workers[0] = try worker.Blocking(*Self, WebsocketHandler).init(allocator, self, &config);
+                defer workers[0].deinit();
 
-                const thrd = try Thread.spawn(.{}, worker.Blocking(*Self, WebsocketHandler).listen, .{ &w, listener });
+                const thrd = try Thread.spawn(.{}, worker.Blocking(*Self, WebsocketHandler).listen, .{ &workers[0], listener });
 
                 // incase listenInNewThread was used and is waiting for us to start
                 self._cond.signal();
@@ -409,32 +400,22 @@ pub fn Server(comptime H: type) type {
                 // socket is closed.
                 thrd.join();
             } else {
-                const Worker = worker.NonBlocking(*Self, WebsocketHandler);
-                var signals = self._signals;
-                const worker_count = signals.len;
-                const workers = try self.arena.alloc(Worker, worker_count);
-                const threads = try self.arena.alloc(Thread, worker_count);
-
                 var started: usize = 0;
-                errdefer for (0..started) |i| {
-                    // on success, these will be closed by a call to stop();
-                    posix.close(signals[i]);
+                defer for (0..started) |i| {
+                    workers[i].deinit();
                 };
 
-                defer {
-                    for (0..started) |i| {
+                errdefer for (0..started) |i| {
+                    workers[i].stop();
+                };
+
+                const threads = try self.arena.alloc(Thread, workers.len);
+                for (0..workers.len) |i| {
+                    workers[i] = try Worker.init(allocator, self, &config);
+                    errdefer {
+                        workers[i].stop();
                         workers[i].deinit();
                     }
-                }
-
-                for (0..workers.len) |i| {
-                    const pipe = try posix.pipe2(.{ .NONBLOCK = true });
-                    signals[i] = pipe[1];
-                    errdefer posix.close(pipe[1]);
-
-                    workers[i] = try Worker.init(allocator, pipe, self, &config);
-                    errdefer workers[i].deinit();
-
                     threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], listener });
                     started += 1;
                 }
@@ -461,31 +442,22 @@ pub fn Server(comptime H: type) type {
         }
 
         pub fn stop(self: *Self) void {
-            // Order matters. When thread_pool.stop() is called, pending requests
-            // will continue to be processed. Only once the thread-pool queue is
-            // empty, does the thread-pool really stop.
-            // So we need to close the signal, which tells the worker to stop
-            // accepting / processing new requests.
-            {
-                self._mut.lock();
-                defer self._mut.unlock();
+            self._mut.lock();
+            defer self._mut.unlock();
 
-                for (self._signals) |s| {
-                    posix.close(s);
-                }
-
-                if (self._listener) |l| {
-                    if (comptime blockingMode()) {
-                        // necessary to unblock accept on linux
-                        // (which might not be that necessary since, on Linux,
-                        // NonBlocking should be used)
-                        posix.shutdown(l, .recv) catch {};
-                    }
-                    posix.close(l);
-                }
+            for (self._workers) |*w| {
+                w.stop();
             }
-            @atomicStore(usize, &self._max_request_per_connection, 0, .monotonic);
-            self._thread_pool.stop();
+
+            if (self._listener) |l| {
+                if (comptime blockingMode()) {
+                    // necessary to unblock accept on linux
+                    // (which might not be that necessary since, on Linux,
+                    // NonBlocking should be used)
+                    posix.shutdown(l, .recv) catch {};
+                }
+                posix.close(l);
+            }
         }
 
         pub fn router(self: *Self, config: RouterConfig) *Router(H, ActionArg) {
@@ -538,7 +510,6 @@ pub fn Server(comptime H: type) type {
             var req = Request.init(allocator, conn);
             var res = Response.init(allocator, conn);
 
-
             if (comptime std.meta.hasFn(Handler, "handle")) {
                 if (comptime @typeInfo(@TypeOf(Handler.handle)).@"fn".return_type != void) {
                     @compileError(@typeName(Handler) ++ ".handle must return 'void'");
@@ -577,7 +548,7 @@ pub fn Server(comptime H: type) type {
 
             if (conn.handover == .unknown) {
                 // close is the default
-                conn.handover = if (req.canKeepAlive() and conn.request_count < @atomicLoad(usize, &self._max_request_per_connection, .monotonic)) .keepalive else .close;
+                conn.handover = if (req.canKeepAlive() and conn.request_count < self._max_request_per_connection) .keepalive else .close;
             }
 
             res.write() catch {
@@ -1188,7 +1159,7 @@ test "httpz: event stream" {
 
     try t.expectEqual(818, res.status);
     try t.expectEqual(true, res.headers.get("Content-Length") == null);
-    try t.expectString("text/event-stream", res.headers.get("Content-Type").?);
+    try t.expectString("text/event-stream; charset=UTF-8", res.headers.get("Content-Type").?);
     try t.expectString("no-cache", res.headers.get("Cache-Control").?);
     try t.expectString("keep-alive", res.headers.get("Connection").?);
     try t.expectString("helloa message", res.body);

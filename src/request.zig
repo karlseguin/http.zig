@@ -754,7 +754,7 @@ pub const State = struct {
                         const value_start = i + 1; // skip the colon
                         var value, const skip_len = trimLeadingSpaceCount(buf[value_start..]);
                         for (value, 0..) |bv, j| {
-                            if (allowedHeaderValueByte(bv) == true) {
+                            if (allowedHeaderValueByte[bv] == true) {
                                 continue;
                             }
 
@@ -854,7 +854,8 @@ pub const State = struct {
             self.pos = len;
             return true;
         }
-        if  (read > cl) {
+
+        if (read > cl) {
             return error.InvalidContentLength;
         }
 
@@ -900,15 +901,13 @@ pub const State = struct {
     }
 };
 
-inline fn allowedHeaderValueByte(c: u8) bool {
-    const mask = 0 | ((1 << (0x7f - 0x21)) - 1) << 0x21 | 1 << 0x20 | 1 << 0x09;
-
-    const mask1 = ~@as(u64, (mask & ((1 << 64) - 1)));
-    const mask2 = ~@as(u64, mask >> 64);
-
-    const shl = std.math.shl;
-    return ((shl(u64, 1, c) & mask1) | (shl(u64, 1, c -| 64) & mask2)) == 0;
-}
+const allowedHeaderValueByte = blk: {
+    var v = [_]bool{false} ** 256;
+    for ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_ :;.,/\"'?!(){}[]@<>=-+*#$&`|~^%\t\\") |b| {
+        v[b] = true;
+    }
+    break :blk v;
+};
 
 inline fn trimLeadingSpaceCount(in: []const u8) struct { []const u8, usize } {
     if (in.len > 1 and in[0] == ' ') {
@@ -968,10 +967,10 @@ test "allowedHeaderValueByte" {
     for ([_]u8{ '_', ' ', ',', ':', ';', '.', ',', '\\', '/', '"', '\'', '?', '!', '(', ')', '{', '}', '[', ']', '@', '<', '>', '=', '-', '+', '*', '#', '$', '&', '`', '|', '~', '^', '%', '\t' }) |b| {
         all[b] = true;
     }
-    for (128..255) |b| all[b] = true;
+    for (128..255) |b| all[b] = false;
 
     for (all, 0..) |allowed, b| {
-        try t.expectEqual(allowed, allowedHeaderValueByte(@intCast(b)));
+        try t.expectEqual(allowed, allowedHeaderValueByte[@intCast(b)]);
     }
 }
 
@@ -1208,7 +1207,7 @@ test "request: query & body" {
 
 test "request: invalid content-length" {
     defer t.reset();
-    try expectParseError(error.InvalidContentLength, "GET / HTTP/1.0\r\nContent-Length: 1\r\n\r\nabc", .{ });
+    try expectParseError(error.InvalidContentLength, "GET / HTTP/1.0\r\nContent-Length: 1\r\n\r\nabc", .{});
 }
 
 test "body: json" {

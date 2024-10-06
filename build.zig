@@ -50,24 +50,24 @@ pub fn build(b: *std.Build) !void {
         test_step.dependOn(&run_test.step);
     }
 
-    const examples = [_]struct{
+    const examples = [_]struct {
         file: []const u8,
         name: []const u8,
         libc: bool = false,
-    } {
-        .{.file = "examples/01_basic.zig", .name = "example_1"},
-        .{.file = "examples/02_handler.zig", .name = "example_2"},
-        .{.file = "examples/03_dispatch.zig", .name = "example_3"},
-        .{.file = "examples/04_action_context.zig", .name = "example_4"},
-        .{.file = "examples/05_request_takeover.zig", .name = "example_5"},
-        .{.file = "examples/06_middleware.zig", .name = "example_6"},
-        .{.file = "examples/07_advanced_routing.zig", .name = "example_7"},
-        .{.file = "examples/08_websocket.zig", .name = "example_8"},
-        .{.file = "examples/09_shutdown.zig", .name = "example_9", .libc = true},
+    }{
+        .{ .file = "examples/01_basic.zig", .name = "example_1" },
+        .{ .file = "examples/02_handler.zig", .name = "example_2" },
+        .{ .file = "examples/03_dispatch.zig", .name = "example_3" },
+        .{ .file = "examples/04_action_context.zig", .name = "example_4" },
+        .{ .file = "examples/05_request_takeover.zig", .name = "example_5" },
+        .{ .file = "examples/06_middleware.zig", .name = "example_6" },
+        .{ .file = "examples/07_advanced_routing.zig", .name = "example_7" },
+        .{ .file = "examples/08_websocket.zig", .name = "example_8" },
+        .{ .file = "examples/09_shutdown.zig", .name = "example_9", .libc = true },
     };
 
     {
-       for (examples) |ex| {
+        for (examples) |ex| {
             const exe = b.addExecutable(.{
                 .name = ex.name,
                 .target = target,
