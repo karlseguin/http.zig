@@ -40,6 +40,8 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
         _trace: P,
         _delete: P,
         _options: P,
+        _connect: P,
+        _other_methods: P,
         _allocator: Allocator,
         handler: Handler,
         dispatcher: Dispatcher,
@@ -62,6 +64,8 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
                 ._trace = try P.init(allocator),
                 ._delete = try P.init(allocator),
                 ._options = try P.init(allocator),
+                ._connect = try P.init(allocator),
+                ._other_methods = try P.init(allocator),
             };
         }
 
@@ -78,6 +82,8 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
                 httpz.Method.PATCH => getRoute(DispatchableAction, &self._patch, url, params),
                 httpz.Method.HEAD => getRoute(DispatchableAction, &self._head, url, params),
                 httpz.Method.OPTIONS => getRoute(DispatchableAction, &self._options, url, params),
+                httpz.Method.TRACE => getRoute(DispatchableAction, &self._trace, url, params),
+                else => getRoute(DispatchableAction, &self._other_methods, url, params),
             };
         }
 
@@ -137,6 +143,13 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
             return self.addRoute(&self._options, path, action, config);
         }
 
+        pub fn otherMethods(self: *Self, path: []const u8, action: Action, config: RC) void {
+            self.tryOtherMethods(path, action, config) catch @panic("failed to create route");
+        }
+        pub fn tryOtherMethods(self: *Self, path: []const u8, action: Action, config: RC) !void {
+            return self.addRoute(&self._other_methods, path, action, config);
+        }
+
         pub fn all(self: *Self, path: []const u8, action: Action, config: RC) void {
             self.tryAll(path, action, config) catch @panic("failed to create route");
         }
@@ -149,6 +162,7 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
             try self.tryTrace(path, action, config);
             try self.tryDelete(path, action, config);
             try self.tryOptions(path, action, config);
+            try self.tryOtherMethods(path, action, config);
         }
 
         fn addRoute(self: *Self, root: *P, path: []const u8, action: Action, config: RC) !void {
@@ -325,6 +339,13 @@ pub fn Group(comptime Handler: type, comptime Action: type) type {
         }
         pub fn tryOptions(self: *Self, path: []const u8, action: Action, override: RC) !void {
             return self._router.tryOptions(self.tryCreatePath(path), action, self.tryMergeConfig(override));
+        }
+
+        pub fn otherMethods(self: *Self, path: []const u8, action: Action, override: RC) void {
+            self._router.otherMethods(self.createPath(path), action, self.mergeConfig(override));
+        }
+        pub fn tryOtherMethods(self: *Self, path: []const u8, action: Action, override: RC) !void {
+            return self._router.tryOtherMethods(self.tryCreatePath(path), action, self.tryMergeConfig(override));
         }
 
         pub fn all(self: *Self, path: []const u8, action: Action, override: RC) void {
@@ -788,6 +809,20 @@ fn fakeMiddleware(impl: *const FakeMiddlewareImpl) httpz.Middleware(void) {
 const FakeMiddlewareImpl = struct {
     id: u32,
 };
+
+test "route: methods" {
+    defer t.reset();
+
+    var params = try Params.init(t.arena.allocator(), 5);
+    var router = try Router(void, httpz.Action(void)).init(t.arena.allocator(), testDispatcher1, {});
+
+    try router.tryGet("/foo", testRoute1, .{});
+    try router.tryOtherMethods("/foo", testRoute2, .{});
+
+    try t.expectEqual(&testRoute1, router.route(httpz.Method.GET, "/foo", &params).?.action);
+    try t.expectEqual(&testRoute2, router.route(@enumFromInt(httpz.Method.parse("PROPFIND")), "/foo", &params).?.action);
+    try t.expectEqual(null, router.route(httpz.Method.PUT, "/foo", &params));
+}
 
 // TODO: this functionality isn't implemented because I can't think of a way
 // to do it which isn't relatively expensive (e.g. recursively or keeping a

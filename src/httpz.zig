@@ -41,15 +41,7 @@ pub const Protocol = enum {
     HTTP11,
 };
 
-pub const Method = enum {
-    GET,
-    HEAD,
-    POST,
-    PUT,
-    PATCH,
-    DELETE,
-    OPTIONS,
-};
+pub const Method = std.http.Method;
 
 pub const ContentType = enum {
     BINARY,
