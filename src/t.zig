@@ -270,7 +270,10 @@ pub const Context = struct {
 };
 
 pub fn randomString(random: std.Random, a: Allocator, max: usize) []u8 {
-    var buf = a.alloc(u8, random.uintAtMost(usize, max) + 1) catch unreachable;
+    return randomStringLengthRange(random, a, 0, max);
+}
+pub fn randomStringLengthRange(random: std.Random, a: Allocator, min: usize, max: usize) []u8 {
+    var buf = a.alloc(u8, random.intRangeAtMost(usize, min, max)) catch unreachable;
     const valid = "abcdefghijklmnopqrstuvwxyz0123456789-_";
     for (0..buf.len) |i| {
         buf[i] = valid[random.uintAtMost(usize, valid.len - 1)];

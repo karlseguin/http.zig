@@ -33,7 +33,7 @@ pub fn main() !void {
 
     // Register routes. The last parameter is a Route Config. For these basic
     // examples, we aren't using it.
-    // Other support methods: post, put, delete, head, trace, options and all
+    // Other support methods: post, put, delete, head, trace, options, and custom methods
     router.get("/", index, .{});
     router.get("/hello", hello, .{});
     router.get("/json/hello/:name", json, .{});
@@ -42,6 +42,7 @@ pub fn main() !void {
     router.get("/form_data", formShow, .{});
     router.post("/form_data", formPost, .{});
     router.get("/explicit_write", explicitWrite, .{});
+    router.all("/method", method, .{});
 
     std.debug.print("listening http://localhost:{d}/\n", .{PORT});
 
@@ -122,4 +123,16 @@ fn explicitWrite(_: *httpz.Request, res: *httpz.Response) !void {
         \\ the issue, you can always call `res.write()` explicitly
     ;
     return res.write();
+}
+
+fn method(req: *httpz.Request, res: *httpz.Response) !void {
+    // handler will respond to any method <= 8 characters in length
+    const wtr = res.writer();
+    try wtr.writeAll(
+        \\ <html><body>You requested method: 
+    );
+    try req.method.write(wtr);
+    try wtr.writeAll(
+        \\ </body></html>
+    );
 }

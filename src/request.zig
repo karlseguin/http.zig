@@ -638,57 +638,16 @@ pub const State = struct {
         return false;
     }
 
+    // Method can be a maximum of 8 characters
     fn parseMethod(self: *State, buf: []u8) !bool {
-        const buf_len = buf.len;
-
-        // Shortest method is only 3 characters (+1 trailing space), so
-        // this seems like it should be: if (buf_len < 4)
-        // But the longest method, OPTIONS, is 7 characters (+1 trailing space).
-        // Now even if we have a short method, like "GET ", we'll eventually expect
-        // a URL + protocol. The shorter valid line is: e.g. GET / HTTP/1.1
-        // If buf_len < 8, we _might_ have a method, but we still need more data
-        // and might as well break early.
-        // If buf_len > = 8, then we can safely parse any (valid) method without
-        // having to do any other bound-checking.
-        if (buf_len < 8) return false;
-
-        // this approach to matching method name comes from zhp
-        switch (@as(u32, @bitCast(buf[0..4].*))) {
-            asUint("GET ") => {
-                self.pos = 4;
-                self.method = .GET;
-            },
-            asUint("PUT ") => {
-                self.pos = 4;
-                self.method = .PUT;
-            },
-            asUint("POST") => {
-                if (buf[4] != ' ') return error.UnknownMethod;
-                self.pos = 5;
-                self.method = .POST;
-            },
-            asUint("HEAD") => {
-                if (buf[4] != ' ') return error.UnknownMethod;
-                self.pos = 5;
-                self.method = .HEAD;
-            },
-            asUint("PATC") => {
-                if (buf[4] != 'H' or buf[5] != ' ') return error.UnknownMethod;
-                self.pos = 6;
-                self.method = .PATCH;
-            },
-            asUint("DELE") => {
-                if (@as(u32, @bitCast(buf[3..7].*)) != asUint("ETE ")) return error.UnknownMethod;
-                self.pos = 7;
-                self.method = .DELETE;
-            },
-            asUint("OPTI") => {
-                if (@as(u32, @bitCast(buf[4..8].*)) != asUint("ONS ")) return error.UnknownMethod;
-                self.pos = 8;
-                self.method = .OPTIONS;
-            },
-            else => return error.UnknownMethod,
-        }
+        // Look for a space in the first 9 characters
+        const maybe_sp = std.mem.indexOfScalar(u8, buf[0..(@min(buf.len, 9))], ' ');
+        // maybe we need to read more characters, could still be valid
+        if (maybe_sp == null and buf.len < 9) return false;
+        // if we have at least 9 characters and still no space, the method is invalid
+        const sp = maybe_sp orelse return error.UnknownMethod;
+        self.method = @enumFromInt(http.Method.parse(buf[0..sp]));
+        self.pos = sp + 1;
         return true;
     }
 
@@ -981,10 +940,6 @@ test "request: header too big" {
 
 test "request: parse method" {
     defer t.reset();
-    {
-        try expectParseError(error.UnknownMethod, "GETT / HTTP/1.1 ", .{});
-        try expectParseError(error.UnknownMethod, " PUT / HTTP/1.1", .{});
-    }
 
     {
         const r = try testParse("GET / HTTP/1.1\r\n\r\n", .{});
@@ -1019,6 +974,15 @@ test "request: parse method" {
     {
         const r = try testParse("OPTIONS / HTTP/1.1\r\n\r\n", .{});
         try t.expectEqual(http.Method.OPTIONS, r.method);
+    }
+
+    {
+        const r = try testParse("PROPFIND / HTTP/1.0\r\n\r\n", .{});
+        try t.expectEqual(@as(http.Method, @enumFromInt(http.Method.parse("PROPFIND"))), r.method);
+    }
+
+    {
+        try expectParseError(error.UnknownMethod, "123456789 / HTTP/1.0\r\n\r\n", .{});
     }
 }
 
@@ -1475,7 +1439,7 @@ test "request: fuzz" {
 
         for (0..number_of_requests) |_| {
             defer ctx.conn.keepalive(4096);
-            const method = randomMethod(random);
+            const method = t.randomStringLengthRange(random, aa, 1, 8);
             const url = t.randomString(random, aa, 20);
 
             ctx.write(method);
@@ -1580,19 +1544,6 @@ fn expectParseError(expected: anyerror, input: []const u8, config: Config) !void
 
     ctx.write(input);
     try t.expectError(expected, ctx.conn.req_state.parse(ctx.conn.req_arena.allocator(), ctx.stream));
-}
-
-fn randomMethod(random: std.Random) []const u8 {
-    return switch (random.uintAtMost(usize, 6)) {
-        0 => "GET",
-        1 => "PUT",
-        2 => "POST",
-        3 => "PATCH",
-        4 => "DELETE",
-        5 => "OPTIONS",
-        6 => "HEAD",
-        else => unreachable,
-    };
 }
 
 fn buildRequest(header: []const []const u8, body: []const []const u8) []const u8 {
