@@ -323,7 +323,8 @@ Alternatively, you can explicitly call `res.write()`. Once `res.write()` returns
 # httpz.Request
 The following fields are the most useful:
 
-* `method` - an httpz.Method enum
+* `method` - httpz.Method enum
+* `method_string` - Only set if `method == .OTHER`, else empty. Used when using custom methods.
 * `arena` - A fast thread-local buffer that fallsback to an ArenaAllocator, same as `res.arena`.
 * `url.path` - the path of the request (`[]const u8`)
 * `address` - the std.net.Address of the client
@@ -559,7 +560,7 @@ You get an instance of the router by calling `server.route(.{})`. Currently, the
 
 * `middlewares` - A list of middlewares to apply to each request. These middleware will be executed even for requests with no matching route (i.e. not found). An individual route can opt-out of these middleware, see the `middleware_strategy` route configuration.
 
-You can use the `get`, `put`, `post`, `head`, `patch`, `trace`, `delete` or `options` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
+You can use the `get`, `put`, `post`, `head`, `patch`, `trace`, `delete`, `options` or 'connect' method of the router to define a router. You can also use the special `all` method to add a route for all methods.
 
 These functions can all `@panic` as they allocate memory. Each function has an equivalent `tryXYZ` variant which will return an error rather than panicking:
 
@@ -654,6 +655,17 @@ router.get("/info/*", any_info, .{})
 
 A request for "/info/debug/all" will be routed to `any_info`, whereas a request for "/over/9000" will be routed to `not_found`.
 
+## Custom Methods
+You can use the `method` function to route a custom method:
+
+```zig
+router.method("TEA", "/", teaList, .{});
+```
+
+In such cases, `request.method` will be `.OTHER` and you can use the `reqeust.method_string` for the string value. The method name, `TEA` above, is cloned by the router and does not need to exist beyond the function call. The method name should only be uppercase ASCII letters.
+
+The `router.all` method **does not** route to custom methods.
+ 
 ## Limitations
 The router has several limitations which might not get fixed. These specifically resolve around the interaction of globs, parameters and static path segments.
 

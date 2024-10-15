@@ -35,6 +35,9 @@ pub const Request = struct {
     // The request method.
     method: http.Method,
 
+    // The method as a string, only set when method == .OTHER, else emtpy
+    method_string: []const u8,
+
     // The request protocol.
     protocol: http.Protocol,
 
@@ -83,6 +86,7 @@ pub const Request = struct {
             .fd = &state.fd,
             .mfd = &state.mfd,
             .method = state.method.?,
+            .method_string = state.method_string orelse "",
             .protocol = state.protocol.?,
             .url = Url.parse(state.url.?),
             .address = conn.address,
@@ -498,6 +502,9 @@ pub const State = struct {
     // Method, if we've parsed it
     method: ?http.Method,
 
+    // Only set when method == .OTHER
+    method_string: ?[]const u8,
+
     // Protocol, if we've parsed it
     protocol: ?http.Protocol,
 
@@ -532,6 +539,7 @@ pub const State = struct {
             .body_pos = 0,
             .body_len = 0,
             .method = null,
+            .method_string = "",
             .protocol = null,
             .buffer_pool = buffer_pool,
             .max_body_size = config.max_body_size orelse 1_048_576,
@@ -558,6 +566,7 @@ pub const State = struct {
         self.len = 0;
         self.url = null;
         self.method = null;
+        self.method_string = null;
         self.protocol = null;
 
         self.body_pos = 0;
@@ -687,7 +696,29 @@ pub const State = struct {
                 self.pos = 8;
                 self.method = .OPTIONS;
             },
-            else => return error.UnknownMethod,
+            asUint("CONN") => {
+                if (@as(u32, @bitCast(buf[4..8].*)) != asUint("ECT ")) return error.UnknownMethod;
+                self.pos = 8;
+                self.method = .CONNECT;
+            },
+            else => {
+                const space = std.mem.indexOfScalarPos(u8, buf, 0, ' ') orelse return error.UnknownMethod;
+                if (space == 0) {
+                    return error.UnknownMethod;
+                }
+
+                const candidate = buf[0..space];
+                for (candidate) |c| {
+                    if (c < 'A' or c > 'Z') {
+                        return error.UnknownMethod;
+                    }
+                }
+
+                // + 1 to skip the space
+                self.pos = space + 1;
+                self.method = .OTHER;
+                self.method_string = candidate;
+            }
         }
         return true;
     }
@@ -982,43 +1013,60 @@ test "request: header too big" {
 test "request: parse method" {
     defer t.reset();
     {
-        try expectParseError(error.UnknownMethod, "GETT / HTTP/1.1 ", .{});
         try expectParseError(error.UnknownMethod, " PUT / HTTP/1.1", .{});
+        try expectParseError(error.UnknownMethod, "GET/HTTP/1.1", .{});
+        try expectParseError(error.UnknownMethod, "PUT/HTTP/1.1", .{});
+
+        try expectParseError(error.UnknownMethod, "get / HTTP/1.1", .{}); // lowecase
+        try expectParseError(error.UnknownMethod, "Other / HTTP/1.1", .{}); // lowercase
     }
 
     {
         const r = try testParse("GET / HTTP/1.1\r\n\r\n", .{});
         try t.expectEqual(http.Method.GET, r.method);
+        try t.expectString("", r.method_string);
     }
 
     {
         const r = try testParse("PUT / HTTP/1.1\r\n\r\n", .{});
         try t.expectEqual(http.Method.PUT, r.method);
+        try t.expectString("", r.method_string);
     }
 
     {
         const r = try testParse("POST / HTTP/1.1\r\n\r\n", .{});
         try t.expectEqual(http.Method.POST, r.method);
+        try t.expectString("", r.method_string);
     }
 
     {
         const r = try testParse("HEAD / HTTP/1.1\r\n\r\n", .{});
         try t.expectEqual(http.Method.HEAD, r.method);
+        try t.expectString("", r.method_string);
     }
 
     {
         const r = try testParse("PATCH / HTTP/1.1\r\n\r\n", .{});
         try t.expectEqual(http.Method.PATCH, r.method);
+        try t.expectString("", r.method_string);
     }
 
     {
         const r = try testParse("DELETE / HTTP/1.1\r\n\r\n", .{});
         try t.expectEqual(http.Method.DELETE, r.method);
+        try t.expectString("", r.method_string);
     }
 
     {
         const r = try testParse("OPTIONS / HTTP/1.1\r\n\r\n", .{});
         try t.expectEqual(http.Method.OPTIONS, r.method);
+        try t.expectString("", r.method_string);
+    }
+
+    {
+        const r = try testParse("TEA / HTTP/1.1\r\n\r\n", .{});
+        try t.expectEqual(http.Method.OTHER, r.method);
+        try t.expectString("TEA", r.method_string);
     }
 }
 

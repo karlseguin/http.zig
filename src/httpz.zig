@@ -49,6 +49,8 @@ pub const Method = enum {
     PATCH,
     DELETE,
     OPTIONS,
+    CONNECT,
+    OTHER,
 };
 
 pub const ContentType = enum {
@@ -516,7 +518,7 @@ pub fn Server(comptime H: type) type {
                 }
                 self.handler.handle(&req, &res);
             } else {
-                const dispatchable_action = self._router.route(req.method, req.url.path, req.params);
+                const dispatchable_action = self._router.route(req.method, req.method_string, req.url.path, req.params);
 
                 var executor = Executor{
                     .index = 0,
@@ -764,6 +766,10 @@ test "tests:beforeAll" {
         // router.get("/test/ws", testWS);
         router.get("/fail", TestDummyHandler.fail, .{});
         router.get("/test/json", TestDummyHandler.jsonRes, .{});
+        router.get("/test/method", TestDummyHandler.method, .{});
+        router.put("/test/method", TestDummyHandler.method, .{});
+        router.method("TEA", "/test/method", TestDummyHandler.method, .{});
+        router.method("PING", "/test/method", TestDummyHandler.method, .{});
         router.get("/test/query", TestDummyHandler.reqQuery, .{});
         router.get("/test/stream", TestDummyHandler.eventStream, .{});
         router.get("/test/chunked", TestDummyHandler.chunked, .{});
@@ -869,7 +875,7 @@ test "httpz: quick shutdown" {
 test "httpz: invalid request" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("TEA / HTTP/1.1\r\n\r\n");
+    try stream.writeAll("TEA HTTP/1.1\r\n\r\n");
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
@@ -960,6 +966,45 @@ test "httpz: unhandled exception with custom error handler" {
 
     var buf: [150]u8 = undefined;
     try t.expectString("HTTP/1.1 500 \r\nstate: 3\r\nerr: TestUnhandledError\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", testReadAll(stream, &buf));
+}
+
+test "httpz: custom methods" {
+    const stream = testStream(5992);
+    defer stream.close();
+
+    {
+        try stream.writeAll("GET /test/method HTTP/1.1\r\n\r\n");
+        var res = testReadParsed(stream);
+        defer res.deinit();
+        try res.expectJson(.{ .method = "GET", .string = "" });
+    }
+
+    {
+        try stream.writeAll("PUT /test/method HTTP/1.1\r\n\r\n");
+        var res = testReadParsed(stream);
+        defer res.deinit();
+        try res.expectJson(.{ .method = "PUT", .string = "" });
+    }
+
+    {
+        try stream.writeAll("TEA /test/method HTTP/1.1\r\n\r\n");
+        var res = testReadParsed(stream);
+        defer res.deinit();
+        try res.expectJson(.{ .method = "OTHER", .string = "TEA" });
+    }
+
+    {
+        try stream.writeAll("PING /test/method HTTP/1.1\r\n\r\n");
+        var res = testReadParsed(stream);
+        defer res.deinit();
+        try res.expectJson(.{ .method = "OTHER", .string = "PING" });
+    }
+
+    {
+        try stream.writeAll("TEA /test/other HTTP/1.1\r\n\r\n");
+        var buf: [100]u8 = undefined;
+        try t.expectString("HTTP/1.1 404 \r\nContent-Length: 9\r\n\r\nNot Found", testReadAll(stream, &buf));
+    }
 }
 
 test "httpz: route params" {
@@ -1428,16 +1473,22 @@ const TestDummyHandler = struct {
         res.body = query.get("fav").?;
     }
 
+    fn method(req: *Request, res: *Response) !void {
+        try res.json(.{ .method = req.method, .string = req.method_string }, .{});
+    }
+
     fn chunked(_: *Request, res: *Response) !void {
         res.header("Over", "9000!");
         res.status = 200;
         try res.chunk("Chunk 1");
         try res.chunk("and another chunk");
     }
+
     fn jsonRes(_: *Request, res: *Response) !void {
         res.status = 201;
         try res.json(.{ .over = 9000, .teg = "soup" }, .{});
     }
+
     fn routeData(req: *Request, res: *Response) !void {
         const rd: *const RouteData = @ptrCast(@alignCast(req.route_data.?));
         try res.json(.{ .power = rd.power }, .{});
