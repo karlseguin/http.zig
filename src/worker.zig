@@ -604,16 +604,6 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                             },
                             .websocket => thread_pool.spawn(.{ self, now, conn }),
                         },
-                        .close => |conn| {
-                            closed_conn = true;
-                            switch (conn.protocol) {
-                                .http => |http_conn| {
-                                    http_conn.requestDone(self.retain_allocated_bytes);
-                                    self.closeConn(conn);
-                                },
-                                .websocket => thread_pool.spawn(.{ self, now, conn }), // TODO: could probably optimize this
-                            }
-                        },
                         .shutdown => return,
                     }
                 }
@@ -1123,13 +1113,7 @@ fn KQueue(comptime WSH: type) type {
                         return .{ .signal = {} };
                     },
                     2 => return .{ .shutdown = {} },
-                    else => |nptr| {
-                        const conn: *Conn(WSH) = @ptrFromInt(nptr);
-                        if (event.flags & posix.system.EV.EOF == posix.system.EV.EOF) {
-                            return .{ .close = conn };
-                        }
-                        return .{ .recv = conn };
-                    },
+                    else => |nptr| return .{ .recv = @ptrFromInt(nptr) },
                 }
             }
         };
@@ -1276,13 +1260,7 @@ fn EPoll(comptime WSH: type) type {
                         return .{ .signal = {} };
                     },
                     2 => return .{ .shutdown = {} },
-                    else => |nptr| {
-                        const conn: *Conn(WSH) = @ptrFromInt(nptr);
-                        if (event.events & linux.EPOLL.RDHUP == linux.EPOLL.RDHUP) {
-                            return .{ .close = conn };
-                        }
-                        return .{ .recv = conn };
-                    },
+                    else => |nptr| return .{ .recv = @ptrFromInt(nptr) },
                 }
             }
         };
@@ -1294,7 +1272,6 @@ fn Event(comptime WSH: type) type {
         accept: void,
         signal: void,
         shutdown: void,
-        close: *Conn(WSH),
         recv: *Conn(WSH),
     };
 }
