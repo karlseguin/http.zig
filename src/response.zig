@@ -181,7 +181,6 @@ pub const Response = struct {
             .{ .len = header_buf.len, .base = header_buf.ptr },
             .{ .len = body.len, .base = body.ptr },
         };
-
         try writeAllIOVec(stream.handle, &vec);
     }
 

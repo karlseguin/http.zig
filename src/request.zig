@@ -1522,7 +1522,7 @@ test "request: fuzz" {
         const number_of_requests = random.uintAtMost(u8, 10) + 1;
 
         for (0..number_of_requests) |_| {
-            defer ctx.conn.keepalive(4096);
+            defer ctx.conn.requestDone(4096);
             const method = randomMethod(random);
             const url = t.randomString(random, aa, 20);
 
