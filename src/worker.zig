@@ -1632,11 +1632,11 @@ fn requestError(conn: *HTTPConn, err: anyerror) !void {
     return err;
 }
 
-fn writeError(socket: posix.fd_t, comptime status: u16, comptime msg: []const u8) !void {
+fn writeError(socket: posix.socket_t, comptime status: u16, comptime msg: []const u8) !void {
     const response = std.fmt.comptimePrint("HTTP/1.1 {d} \r\nConnection: Close\r\nContent-Length: {d}\r\n\r\n{s}", .{ status, msg.len, msg });
 
     // Zig doesn't have the BSD/Darwin values for this.
-    const DONTWAIT = if (posix.MSG != void) posix.MSG.DONTWAIT else 0x00080;
+    const DONTWAIT = if (posix.MSG != void and @hasDecl(posix.MSG, "DONTWAIT")) posix.MSG.DONTWAIT else 0x00080;
     var i: usize = 0;
     while (i < response.len) {
         const n = try posix.sendto(socket, response[i..], DONTWAIT, null, 0);
