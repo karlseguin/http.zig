@@ -107,6 +107,7 @@ pub const Context = struct {
             .timeout = 0,
             .request_count = 0,
             .close = false,
+            .socket_flags = 0,
             .ws_worker = undefined,
             .conn_arena = ctx_arena,
             .req_arena = std.heap.ArenaAllocator.init(aa),
