@@ -98,6 +98,7 @@ pub const Context = struct {
 
         const conn = aa.create(Conn) catch unreachable;
         conn.* = .{
+            ._mut = .{},
             ._state = .request,
             .handover = .close,
             .stream = server,
