@@ -560,7 +560,7 @@ You get an instance of the router by calling `server.route(.{})`. Currently, the
 
 * `middlewares` - A list of middlewares to apply to each request. These middleware will be executed even for requests with no matching route (i.e. not found). An individual route can opt-out of these middleware, see the `middleware_strategy` route configuration.
 
-You can use the `get`, `put`, `post`, `head`, `patch`, `trace`, `delete`, `options` or 'connect' method of the router to define a router. You can also use the special `all` method to add a route for all methods.
+You can use the `get`, `put`, `post`, `head`, `patch`, `trace`, `delete`, `options` or `connect` method of the router to define a router. You can also use the special `all` method to add a route for all methods.
 
 These functions can all `@panic` as they allocate memory. Each function has an equivalent `tryXYZ` variant which will return an error rather than panicking:
 
