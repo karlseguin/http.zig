@@ -760,7 +760,7 @@ try httpz.listen(allocator, &router, .{
     .workers = .{
         // Number of worker threads
         // (blocking mode: handled differently)
-        .count = 2,
+        .count = 1,
 
         // Maximum number of concurrent connection each worker can handle
         // (blocking mode: currently ignored)
@@ -790,7 +790,7 @@ try httpz.listen(allocator, &router, .{
         // Number threads. If you're handlers are doing a lot of i/o, a higher
         // number might provide better throughput
         // (blocking mode: handled differently)
-        .count = 4,
+        .count = 32,
 
         // The maximum number of pending requests that the thread pool will accept
         // This applies back pressure to the above workers and ensures that, under load
