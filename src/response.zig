@@ -113,6 +113,8 @@ pub const Response = struct {
         const conn = self.conn;
         const stream = conn.stream;
 
+        // caller probably expects this to be in blocking mode
+        try conn.blockingMode();
         const header_buf = try self.prepareHeader();
         try stream.writeAll(header_buf);
 
@@ -123,11 +125,11 @@ pub const Response = struct {
     }
 
     pub fn chunk(self: *Response, data: []const u8) !void {
-        const stream = self.conn.stream;
+        const conn = self.conn;
         if (!self.chunked) {
             self.chunked = true;
             const header_buf = try self.prepareHeader();
-            try stream.writeAll(header_buf);
+            try conn.writeAll(header_buf);
         }
 
         // enough for a 1TB chunk
@@ -143,7 +145,7 @@ pub const Response = struct {
             .{ .len = len + 2, .base = &buf },
             .{ .len = data.len, .base = data.ptr },
         };
-        try writeAllIOVec(stream.handle, &vec);
+        try conn.writeAllIOVec(&vec);
     }
 
     pub fn clearWriter(self: *Response) void {
@@ -164,12 +166,12 @@ pub const Response = struct {
         }
         self.written = true;
 
-        const stream = self.conn.stream;
+        const conn = self.conn;
         if (self.chunked) {
             // If the response was chunked, then we've already written the header
             // the connection is already in blocking mode, but the trailing chunk
             // hasn't bene written yet. We'll write that now, and that's it.
-            return stream.writeAll("\r\n0\r\n\r\n");
+            return conn.writeAll("\r\n0\r\n\r\n");
         }
 
         const header_buf = try self.prepareHeader();
@@ -181,8 +183,7 @@ pub const Response = struct {
             .{ .len = header_buf.len, .base = header_buf.ptr },
             .{ .len = body.len, .base = body.ptr },
         };
-
-        try writeAllIOVec(stream.handle, &vec);
+        return conn.writeAllIOVec(&vec);
     }
 
     fn prepareHeader(self: *Response) ![]const u8 {
@@ -406,19 +407,6 @@ pub const Response = struct {
     };
 };
 
-fn writeAllIOVec(socket: std.posix.socket_t, vec: []std.posix.iovec_const) !void {
-    var i: usize = 0;
-    while (true) {
-        var n = try std.posix.writev(socket, vec[i..]);
-        while (n >= vec[i].len) {
-            n -= vec[i].len;
-            i += 1;
-            if (i >= vec.len) return;
-        }
-        vec[i].base += n;
-        vec[i].len -= n;
-    }
-}
 
 // All the upfront memory allocation that we can do. Gets re-used from request
 // to request.

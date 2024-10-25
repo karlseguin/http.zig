@@ -512,6 +512,8 @@ pub fn Server(comptime H: type) type {
             var req = Request.init(allocator, conn);
             var res = Response.init(allocator, conn);
 
+            defer std.debug.assert(res.written == true);
+
             if (comptime std.meta.hasFn(Handler, "handle")) {
                 if (comptime @typeInfo(@TypeOf(Handler.handle)).@"fn".return_type != void) {
                     @compileError(@typeName(Handler) ++ ".handle must return 'void'");
@@ -667,13 +669,6 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: an
     http_conn.handover = .{ .websocket = hc };
     return true;
 }
-
-// fn websocketHandler(comptime H: type, server: *websocket.Server, stream: std.net.Stream, context: anytype) void {
-//     errdefer stream.close();
-//     var conn = server.newConn(stream);
-//     var handler = H.init(&conn, context) catch return;
-//     server.handle(H, &handler, &conn);
-// }
 
 // std.heap.StackFallbackAllocator is very specific. It's really _stack_ as it
 // requires a comptime size. Also, it uses non-public calls from the FixedBufferAllocator.
