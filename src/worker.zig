@@ -1168,7 +1168,7 @@ fn EPoll(comptime WSH: type) type {
             {
                 var event = linux.epoll_event{
                     .data = .{ .ptr = 1 },
-                    .events = linux.EPOLL.IN,
+                    .events = linux.EPOLL.IN | linux.EPOLL.ET,
                 };
                 try std.posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, self.event_fd, &event);
             }
@@ -1254,16 +1254,7 @@ fn EPoll(comptime WSH: type) type {
                 const event = &self.events[index];
                 switch (event.data.ptr) {
                     0 => return .{ .accept = {} },
-                    1 => {
-                        // clearn the eventfd
-                        var buf: [8]u8 = undefined;
-                        const n = posix.read(self.event_fd, &buf) catch |err| {
-                            log.err("failed to read from eventfd: {}", .{err});
-                            return .{ .signal = {} };
-                        };
-                        std.debug.assert(n == 8);
-                        return .{ .signal = {} };
-                    },
+                    1 => return .{ .signal = {} },
                     2 => return .{ .shutdown = {} },
                     else => |nptr| return .{ .recv = @ptrFromInt(nptr) },
                 }
