@@ -992,8 +992,8 @@ fn KQueue(comptime WSH: type) type {
         }
 
         fn start(self: *Self) !void {
-            try self.change(1, 1, posix.system.EVFILT.USER, posix.system.EV.ADD | posix.system.EV.CLEAR, posix.system.NOTE.FFNOP);
-            return self.change(2, 2, posix.system.EVFILT.USER, posix.system.EV.ADD | posix.system.EV.CLEAR, posix.system.NOTE.FFNOP);
+            _ = self;
+            return;
         }
 
         fn stop(self: *Self) void {
@@ -1002,7 +1002,7 @@ fn KQueue(comptime WSH: type) type {
                 .{
                     .ident = 2,
                     .filter = posix.system.EVFILT.USER,
-                    .flags = posix.system.EV.ADD,
+                    .flags = posix.system.EV.ADD | posix.system.EV.ONESHOT,
                     .fflags = posix.system.NOTE.TRIGGER,
                     .data = 0,
                     .udata = 2,
@@ -1017,7 +1017,7 @@ fn KQueue(comptime WSH: type) type {
             _ = try posix.kevent(self.fd, &.{.{
                 .ident = 1,
                 .filter = posix.system.EVFILT.USER,
-                .flags = posix.system.EV.ADD,
+                .flags = posix.system.EV.ADD | posix.system.EV.CLEAR,
                 .fflags = posix.system.NOTE.TRIGGER,
                 .data = 0,
                 .udata = 1,
@@ -1165,6 +1165,7 @@ fn EPoll(comptime WSH: type) type {
                 };
                 try std.posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, self.close_fd, &event);
             }
+
             {
                 var event = linux.epoll_event{
                     .data = .{ .ptr = 1 },
