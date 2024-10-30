@@ -1252,8 +1252,8 @@ fn EPoll(comptime WSH: type) type {
                     return null;
                 }
                 self.index = index + 1;
-                const event = &self.events[index];
-                switch (event.data.ptr) {
+
+                switch (events[index].data.ptr) {
                     0 => return .{ .accept = {} },
                     1 => return .{ .signal = {} },
                     2 => return .{ .shutdown = {} },

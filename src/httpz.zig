@@ -374,7 +374,6 @@ pub fn Server(comptime H: type) type {
                 try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEPORT_LB, &std.mem.toBytes(@as(c_int, 1)));
             } else if (@hasDecl(posix.SO, "REUSEPORT")) {
                 try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEPORT, &std.mem.toBytes(@as(c_int, 1)));
-            } else {
             }
 
             {
