@@ -536,6 +536,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     }
                     last_timeout = now;
                 }
+
                 var it = self.loop.wait(timeout) catch |err| {
                     log.err("Failed to wait on events: {}", .{err});
                     std.time.sleep(std.time.ns_per_s);
@@ -573,7 +574,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                                 const done = http_conn.req_state.parse(http_conn.req_arena.allocator(), stream) catch |err| {
                                     requestError(http_conn, err) catch {};
                                     http_conn.requestDone(self.retain_allocated_bytes);
-                                    self.closeConn(conn);
+                                    conn.close();
+                                    self.disown(conn);
                                     continue;
                                 };
 
@@ -681,7 +683,10 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     .protocol = .{ .http = http_conn },
                 };
                 self.request_list.insert(conn);
-                errdefer self.closeConn(conn);
+                errdefer {
+                    conn.close();
+                    self.disown(conn);
+                }
 
                 try self.loop.monitorRead(conn);
                 len += 1;
@@ -715,21 +720,20 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 switch (http_conn.handover) {
                     .close, .unknown => {
                         closed_bool.* = true;
-                        self.closeConn(conn);
+                        // http handler already closed the socket
+                        self.disown(conn);
                     },
                     .disown => {
                         closed_bool.* = true;
-                        if (loop.remove(conn)) {
-                            self.disown(conn);
-                        } else |_| {
-                            self.closeConn(conn);
-                        }
+                        loop.remove(conn) catch {};
+                        self.disown(conn);
                     },
                     .websocket => |ptr| {
                         if (comptime WSH == httpz.DummyWebsocketHandler) {
                             std.debug.print("Your httpz handler must have a `WebsocketHandler` declaration. This must be the same type passed to `httpz.upgradeWebsocket`. Closing the connection.\n", .{});
                             closed_bool.* = true;
-                            self.closeConn(conn);
+                            conn.close();
+                            self.disown(conn);
                             continue;
                         }
 
@@ -741,7 +745,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                         loop.switchToOneShot(conn) catch {
                             metrics.internalError();
                             closed_bool.* = true;
-                            self.closeConn(conn);
+                            conn.close();
+                            self.disown(conn);
                             continue;
                         };
                     },
@@ -772,12 +777,23 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 .keepalive => {
                     http_conn.timeout = now + self.timeout_keepalive;
                     self.swapList(conn, .keepalive);
+                    return;
                 },
-                .close, .unknown, .websocket, .disown => {
-                    self.swapList(conn, .handover);
-                    self.loop.signal() catch |err| log.err("failed to signal worker: {}", .{err});
-                }
+                .close, .unknown => {
+                    // We _have_ to close the connection here in order to avoid
+                    // a bad race condition. By closing it here, we [automatically]
+                    // remove the connection from epoll/kqueue, which ensures that
+                    // in a single loop through ready-event we won't process both
+                    // a signal and a recv message.
+                    // If we don't do this here, then you'd get a segfault if
+                    // the signal cleared the connetion, and then in recv we'd
+                    // try to call conn.getState() after the signal.
+                    posix.close(http_conn.stream.handle);
+                },
+                .websocket, .disown => {},
             }
+            self.swapList(conn, .handover);
+            self.loop.signal() catch |err| log.err("failed to signal worker: {}", .{err});
         }
 
         pub fn processWebsocketData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, hc: *ws.HandlerConn(WSH)) void {
@@ -795,11 +811,6 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     self.websocket.cleanupConn(hc);
                 };
             }
-        }
-
-        fn closeConn(self: *Self, conn: *Conn(WSH)) void {
-            conn.close();
-            self.disown(conn);
         }
 
         fn disown(self: *Self, conn: *Conn(WSH)) void {
@@ -879,7 +890,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             var conn = list.head;
             while (conn) |c| {
                 conn = c.next;
-                self.closeConn(c);
+                c.close();
+                self.disown(c);
             }
         }
 
@@ -904,7 +916,6 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             self.full = false;
             self.loop.monitorAccept(listener) catch |err| log.err("Failed to enable monitor to listening socket: {}", .{err});
         }
-
     };
 }
 
@@ -1485,9 +1496,6 @@ pub const HTTPConn = struct {
     // number of requests made on this connection (within a keepalive session)
     request_count: u64,
 
-    // whether or not to close the connection after the response is sent
-    close: bool,
-
     stream: net.Stream,
     address: net.Address,
     socket_flags: usize,
@@ -1534,7 +1542,6 @@ pub const HTTPConn = struct {
 
         return .{
             .timeout = 0,
-            .close = false,
             ._mut = .{},
             ._state = .request,
             .handover = .unknown,
@@ -1569,7 +1576,6 @@ pub const HTTPConn = struct {
 
     // getting put back into the pool
     pub fn reset(self: *HTTPConn) void {
-        self.close = false;
         self.handover = .unknown;
         self.stream = undefined;
         self.address = undefined;
@@ -1633,7 +1639,6 @@ pub const HTTPConn = struct {
             vec[i].base += n;
             vec[i].len -= n;
         }
-
     }
 
     pub fn blockingMode(self: *const HTTPConn) !void {

@@ -1401,6 +1401,7 @@ fn testReadAll(stream: std.net.Stream, buf: []u8) []u8 {
                 std.time.sleep(std.time.ns_per_ms);
                 continue;
             },
+            error.ConnectionResetByPeer => return buf[0..pos],
             else => @panic(@errorName(err)),
         };
         if (n == 0) {
