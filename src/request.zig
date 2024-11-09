@@ -22,6 +22,9 @@ pub const Request = struct {
     // The URL of the request
     url: Url,
 
+    // httpz's wrapper around a stream, the brave can access the underlying .stream
+    conn: *HTTPConn,
+
     // the address of the client
     address: Address,
 
@@ -44,6 +47,11 @@ pub const Request = struct {
     // The body of the request, if any.
     body_buffer: ?buffer.Buffer = null,
     body_len: usize = 0,
+
+    // True if we haven't read the [full] body yet. This can only happen when
+    // lazy_read_size is configured and the request is larger that this value.
+    // There can still be _part_ of the body in body_buffer.
+    lazy_body: bool,
 
     // cannot use an optional on qs, because it's pre-allocated so always exists
     qs_read: bool = false,
@@ -81,11 +89,13 @@ pub const Request = struct {
     pub fn init(arena: Allocator, conn: *HTTPConn) Request {
         const state = &conn.req_state;
         return .{
+            .conn = conn,
             .arena = arena,
             .qs = &state.qs,
             .fd = &state.fd,
             .mfd = &state.mfd,
             .method = state.method.?,
+            .lazy_body = state.lazy_body,
             .method_string = state.method_string orelse "",
             .protocol = state.protocol.?,
             .url = Url.parse(state.url.?),
@@ -163,6 +173,26 @@ pub const Request = struct {
             return self.mfd;
         }
         return self.parseMultiFormData();
+    }
+
+    pub fn streamBody(self: *Request) !Stream {
+        var buf: []const u8 = &.{};
+        if (self.body_buffer) |bb| {
+            std.debug.assert(bb.type == .static);
+            buf = bb.data;
+        }
+
+        const conn = self.conn;
+        if (self.lazy_body == true) {
+            try conn.blockingMode();
+        }
+
+        return .{
+            .req = self,
+            .buffer = buf,
+            .remaining = self.body_len,
+            .socket = conn.stream.handle,
+        };
     }
 
     // OK, this is a bit complicated.
@@ -462,6 +492,42 @@ pub const Request = struct {
             .filename = filename,
         };
     }
+
+    pub const Stream = struct {
+        req: *Request,
+        remaining: usize,
+        buffer: []const u8,
+        socket: std.posix.socket_t,
+
+        pub fn deinit(self: *Stream) void {
+            self.req.conn.nonblockingMode() catch {};
+        }
+
+        pub fn read(self: *Stream, into: []u8) !?[]u8 {
+            const b = self.buffer;
+            const remaining = self.remaining;
+            if (b.len != 0) {
+                const l = @min(b.len, into.len);
+
+                const buf = into[0..l];
+                @memcpy(buf, b[0..l]);
+
+                self.buffer = b[l..];
+                self.remaining = remaining - l;
+
+                return buf;
+            }
+
+            if (remaining == 0) {
+                return null;
+            }
+
+            var buf = if (into.len > remaining) into[0..remaining] else into;
+            const n = try std.posix.read(self.socket, buf);
+            self.remaining = remaining - n;
+            return if (n == 0) null else buf[0..n];
+        }
+    };
 };
 
 // All the upfront memory allocation that we can do. Each worker keeps a pool
@@ -490,8 +556,11 @@ pub const State = struct {
     // to a route.
     params: Params,
 
-    // constant config, but it's the only field we need,
+    // constant config
     max_body_size: usize,
+
+    // constant config
+    lazy_read_size: ?usize,
 
     // For reading the body, we might need more than `buf`.
     buffer_pool: *buffer.Pool,
@@ -526,6 +595,10 @@ pub const State = struct {
     // know what it is from the content-length header
     body_len: usize,
 
+    // True if we aren't reading the body. Happens when lazy_read_size is enabled
+    // and we get a large body. It'll be up to the app to read it!
+    lazy_body: bool,
+
     middlewares: std.StringHashMap(*anyopaque),
 
     const asUint = @import("url.zig").asUint;
@@ -541,7 +614,9 @@ pub const State = struct {
             .method = null,
             .method_string = "",
             .protocol = null,
+            .lazy_body = false,
             .buffer_pool = buffer_pool,
+            .lazy_read_size = config.lazy_read_size,
             .max_body_size = config.max_body_size orelse 1_048_576,
             .middlewares = std.StringHashMap(*anyopaque).init(arena),
             .qs = try StringKeyValue.init(arena, config.max_query_count orelse 32),
@@ -566,6 +641,7 @@ pub const State = struct {
         self.len = 0;
         self.url = null;
         self.method = null;
+        self.lazy_body = false;
         self.method_string = null;
         self.protocol = null;
 
@@ -877,12 +953,20 @@ pub const State = struct {
         const buf = self.buf;
 
         // how much (if any) of the body we've already read
-        const read = len - pos;
+        if (self.lazy_read_size) |lazy_read| {
+            if (cl >= lazy_read) {
+                self.pos = len;
+                self.lazy_body = true;
+                self.body = .{ .type = .static, .data = buf[pos..len] };
+                return true;
+            }
+        }
 
+        const read = len - pos;
         if (read == cl) {
             // we've read the entire body into buf, point to that.
-            self.body = .{ .type = .static, .data = buf[pos..len] };
             self.pos = len;
+            self.body = .{ .type = .static, .data = buf[pos..len] };
             return true;
         }
 

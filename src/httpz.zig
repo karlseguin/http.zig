@@ -739,7 +739,13 @@ test "tests:beforeAll" {
     const ga = global_test_allocator.allocator();
 
     {
-        default_server = try Server(void).init(ga, .{ .port = 5992 }, {});
+        default_server = try Server(void).init(ga, .{
+            .port = 5992,
+            .request = .{
+                .lazy_read_size = 4_096,
+                .max_body_size = 1_048_576,
+            }
+        }, {});
 
         // only need to do this because we're using listenInNewThread instead
         // of blocking here. So the array to hold the middleware needs to outlive
@@ -766,6 +772,7 @@ test "tests:beforeAll" {
         router.method("PING", "/test/method", TestDummyHandler.method, .{});
         router.get("/test/query", TestDummyHandler.reqQuery, .{});
         router.get("/test/stream", TestDummyHandler.eventStream, .{});
+        router.get("/test/req_stream", TestDummyHandler.reqStream, .{});
         router.get("/test/chunked", TestDummyHandler.chunked, .{});
         router.get("/test/route_data", TestDummyHandler.routeData, .{ .data = &TestDummyHandler.RouteData{ .power = 12345 } });
         router.all("/test/cors", TestDummyHandler.jsonRes, .{ .middlewares = cors });
@@ -1299,6 +1306,54 @@ test "httpz: custom handle" {
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 9\r\n\r\nhello teg", testReadAll(stream, &buf));
 }
 
+test "httpz: request body streaming" {
+    {
+        // no body
+        const stream = testStream(5992);
+        defer stream.close();
+        try stream.writeAll("GET /test/req_stream HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+        var res = testReadParsed(stream);
+        defer res.deinit();
+        try res.expectJson(.{ .length = 0 });
+    }
+
+    {
+        // small body
+        const stream = testStream(5992);
+        defer stream.close();
+        try stream.writeAll("GET /test/req_stream HTTP/1.1\r\nContent-Length: 4\r\n\r\n123z");
+
+        var res = testReadParsed(stream);
+        defer res.deinit();
+        try res.expectJson(.{ .length = 4 });
+    }
+
+    var r = t.getRandom();
+    const random = r.random();
+
+    // a bit of fuzzing
+    for (0..10) |_| {
+        const stream = testStream(5992);
+        defer stream.close();
+        var req: []const u8 = "GET /test/req_stream HTTP/1.1\r\nContent-Length: 20000\r\n\r\n" ++ ("a" ** 20_000);
+        while (req.len > 0) {
+            const len = random.uintAtMost(usize, req.len - 1) + 1;
+            const n = stream.write(req[0..len]) catch |err| switch (err) {
+                error.WouldBlock => 0,
+                else => return err,
+            };
+            std.time.sleep(std.time.ns_per_ms * 2);
+            req = req[n..];
+        }
+
+        var res = testReadParsed(stream);
+        defer res.deinit();
+        try res.expectJson(.{ .length = 20_000 });
+    }
+
+}
+
 test "websocket: invalid request" {
     const stream = testStream(5998);
     defer stream.close();
@@ -1492,6 +1547,18 @@ const TestDummyHandler = struct {
     fn eventStream(_: *Request, res: *Response) !void {
         res.status = 818;
         try res.startEventStream(StreamContext{ .data = "hello" }, StreamContext.handle);
+    }
+
+    fn reqStream(req: *Request, res: *Response) !void {
+        var stream = try req.streamBody();
+        defer stream.deinit();
+
+        var l: usize = 0;
+        var buf: [1024]u8 = undefined;
+        while (try stream.read(&buf)) |data| {
+            l += data.len;
+        }
+        return res.json(.{.length = l}, .{});
     }
 
     const StreamContext = struct {

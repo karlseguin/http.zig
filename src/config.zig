@@ -29,6 +29,7 @@ pub const Config = struct {
     };
 
     pub const Request = struct {
+        lazy_read_size: ?usize = null,
         max_body_size: ?usize = null,
         buffer_size: ?usize = null,
         max_header_count: ?usize = null,
