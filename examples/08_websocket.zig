@@ -8,7 +8,7 @@ const Allocator = std.mem.Allocator;
 const PORT = 8808;
 
 // websocket.zig is verbose, let's limit it to err messages
-pub const std_options = .{ .log_scope_levels = &[_]std.log.ScopeLevel{
+pub const std_options = std.Options{ .log_scope_levels = &[_]std.log.ScopeLevel{
     .{ .scope = .websocket, .level = .err },
 } };
 
