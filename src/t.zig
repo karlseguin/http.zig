@@ -217,7 +217,7 @@ pub const Context = struct {
     pub fn fakeReader(self: *Context) FakeReader {
         std.debug.assert(self.fake);
 
-        const fr = .{
+        const fr = FakeReader{
             .pos = self.to_read_pos,
             .buf = self.to_read.items,
             .random = self.random(),

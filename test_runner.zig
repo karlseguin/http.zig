@@ -6,10 +6,6 @@
 //   .root_source_file = b.path("src/main.zig"),
 // });
 
-pub const std_options = .{ .log_scope_levels = &[_]std.log.ScopeLevel{
-    .{ .scope = .websocket, .level = .err },
-} };
-
 const std = @import("std");
 const builtin = @import("builtin");
 
