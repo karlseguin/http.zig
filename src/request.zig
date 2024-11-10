@@ -196,10 +196,9 @@ pub const Request = struct {
 
         const r = try self.arena.create(BodyReader);
         r.* = .{
-            .req = self,
             .buffer = buf,
-            .remaining = self.body_len,
             .socket = conn.stream.handle,
+            .unread_body = &self.unread_body,
         };
 
         return .{ .context = r};
@@ -504,33 +503,29 @@ pub const Request = struct {
     }
 
     pub const BodyReader = struct {
-        req: *Request,
-        socket: std.posix.socket_t,
-        remaining: usize,
         buffer: []const u8,
+        unread_body: *usize,
+        socket: std.posix.socket_t,
 
         pub const Error = std.posix.ReadError;
 
         pub fn read(self: *BodyReader, into: []u8) Error!usize {
             const b = self.buffer;
-            const remaining = self.remaining;
-
             if (b.len != 0) {
                 const l = @min(b.len, into.len);
                 @memcpy(into[0..l], b[0..l]);
                 self.buffer = b[l..];
-                self.remaining = remaining - l;
-
                 return l;
             }
 
-            if (remaining == 0) {
+            const unread = self.unread_body.*;
+            if (unread == 0) {
                 return 0;
             }
 
-            const buf = if (into.len > remaining) into[0..remaining] else into;
+            const buf = if (into.len > unread) into[0..unread] else into;
             const n = try std.posix.read(self.socket, buf);
-            self.remaining = remaining - n;
+            self.unread_body.* = unread - n;
             return n;
         }
     };
