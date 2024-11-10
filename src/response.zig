@@ -407,7 +407,6 @@ pub const Response = struct {
     };
 };
 
-
 // All the upfront memory allocation that we can do. Gets re-used from request
 // to request.
 pub const State = struct {

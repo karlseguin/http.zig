@@ -48,10 +48,10 @@ pub const Request = struct {
     body_buffer: ?buffer.Buffer = null,
     body_len: usize = 0,
 
-    // True if we haven't read the [full] body yet. This can only happen when
+    // The number of unread bytes from the body. This can only happen when
     // lazy_read_size is configured and the request is larger that this value.
     // There can still be _part_ of the body in body_buffer.
-    lazy_body: bool,
+    unread_body: usize,
 
     // cannot use an optional on qs, because it's pre-allocated so always exists
     qs_read: bool = false,
@@ -95,7 +95,7 @@ pub const Request = struct {
             .fd = &state.fd,
             .mfd = &state.mfd,
             .method = state.method.?,
-            .lazy_body = state.lazy_body,
+            .unread_body = state.unread_body,
             .method_string = state.method_string orelse "",
             .protocol = state.protocol.?,
             .url = Url.parse(state.url.?),
@@ -175,7 +175,9 @@ pub const Request = struct {
         return self.parseMultiFormData();
     }
 
-    pub fn streamBody(self: *Request) !Stream {
+    pub const Reader = std.io.Reader(*BodyReader, BodyReader.Error, BodyReader.read);
+
+    pub fn reader(self: *Request, timeout_ms: usize) !Reader {
         var buf: []const u8 = &.{};
         if (self.body_buffer) |bb| {
             std.debug.assert(bb.type == .static);
@@ -183,16 +185,24 @@ pub const Request = struct {
         }
 
         const conn = self.conn;
-        if (self.lazy_body == true) {
+        if (self.unread_body > 0) {
             try conn.blockingMode();
+            const timeval = std.mem.toBytes(std.posix.timeval{
+                .sec = @intCast(@divTrunc(timeout_ms, 1000)),
+                .usec = @intCast(@mod(timeout_ms, 1000) * 1000),
+            });
+            try std.posix.setsockopt(conn.stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &timeval);
         }
 
-        return .{
+        const r = try self.arena.create(BodyReader);
+        r.* = .{
             .req = self,
             .buffer = buf,
             .remaining = self.body_len,
             .socket = conn.stream.handle,
         };
+
+        return .{ .context = r};
     }
 
     // OK, this is a bit complicated.
@@ -493,39 +503,35 @@ pub const Request = struct {
         };
     }
 
-    pub const Stream = struct {
+    pub const BodyReader = struct {
         req: *Request,
+        socket: std.posix.socket_t,
         remaining: usize,
         buffer: []const u8,
-        socket: std.posix.socket_t,
 
-        pub fn deinit(self: *Stream) void {
-            self.req.conn.nonblockingMode() catch {};
-        }
+        pub const Error = std.posix.ReadError;
 
-        pub fn read(self: *Stream, into: []u8) !?[]u8 {
+        pub fn read(self: *BodyReader, into: []u8) Error!usize {
             const b = self.buffer;
             const remaining = self.remaining;
+
             if (b.len != 0) {
                 const l = @min(b.len, into.len);
-
-                const buf = into[0..l];
-                @memcpy(buf, b[0..l]);
-
+                @memcpy(into[0..l], b[0..l]);
                 self.buffer = b[l..];
                 self.remaining = remaining - l;
 
-                return buf;
+                return l;
             }
 
             if (remaining == 0) {
-                return null;
+                return 0;
             }
 
-            var buf = if (into.len > remaining) into[0..remaining] else into;
+            const buf = if (into.len > remaining) into[0..remaining] else into;
             const n = try std.posix.read(self.socket, buf);
             self.remaining = remaining - n;
-            return if (n == 0) null else buf[0..n];
+            return n;
         }
     };
 };
@@ -595,9 +601,9 @@ pub const State = struct {
     // know what it is from the content-length header
     body_len: usize,
 
-    // True if we aren't reading the body. Happens when lazy_read_size is enabled
-    // and we get a large body. It'll be up to the app to read it!
-    lazy_body: bool,
+    // Happens when lazy_read_size is enabled and we get a large body.
+    // It'll be up to the app to read it!
+    unread_body: usize,
 
     middlewares: std.StringHashMap(*anyopaque),
 
@@ -614,7 +620,7 @@ pub const State = struct {
             .method = null,
             .method_string = "",
             .protocol = null,
-            .lazy_body = false,
+            .unread_body = 0,
             .buffer_pool = buffer_pool,
             .lazy_read_size = config.lazy_read_size,
             .max_body_size = config.max_body_size orelse 1_048_576,
@@ -641,7 +647,7 @@ pub const State = struct {
         self.len = 0;
         self.url = null;
         self.method = null;
-        self.lazy_body = false;
+        self.unread_body = 0;
         self.method_string = null;
         self.protocol = null;
 
@@ -794,7 +800,7 @@ pub const State = struct {
                 self.pos = space + 1;
                 self.method = .OTHER;
                 self.method_string = candidate;
-            }
+            },
         }
         return true;
     }
@@ -953,22 +959,7 @@ pub const State = struct {
         const buf = self.buf;
 
         // how much (if any) of the body we've already read
-        if (self.lazy_read_size) |lazy_read| {
-            if (cl >= lazy_read) {
-                self.pos = len;
-                self.lazy_body = true;
-                self.body = .{ .type = .static, .data = buf[pos..len] };
-                return true;
-            }
-        }
-
         const read = len - pos;
-        if (read == cl) {
-            // we've read the entire body into buf, point to that.
-            self.pos = len;
-            self.body = .{ .type = .static, .data = buf[pos..len] };
-            return true;
-        }
 
         if (read > cl) {
             return error.InvalidContentLength;
@@ -976,6 +967,22 @@ pub const State = struct {
 
         // how much of the body are we missing
         const missing = cl - read;
+
+        if (self.lazy_read_size) |lazy_read| {
+            if (cl >= lazy_read) {
+                self.pos = len;
+                self.unread_body = missing;
+                self.body = .{ .type = .static, .data = buf[pos..len] };
+                return true;
+            }
+        }
+
+        if (missing == 0) {
+            // we've read the entire body into buf, point to that.
+            self.pos = len;
+            self.body = .{ .type = .static, .data = buf[pos..len] };
+            return true;
+        }
 
         // how much spare space we have in our static buffer
         const spare = buf.len - len;
@@ -1606,7 +1613,7 @@ test "request: fuzz" {
         const number_of_requests = random.uintAtMost(u8, 10) + 1;
 
         for (0..number_of_requests) |_| {
-            defer ctx.conn.requestDone(4096);
+            defer ctx.conn.requestDone(4096, true) catch unreachable;
             const method = randomMethod(random);
             const url = t.randomString(random, aa, 20);
 

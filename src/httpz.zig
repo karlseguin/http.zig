@@ -557,6 +557,12 @@ pub fn Server(comptime H: type) type {
             res.write() catch {
                 conn.handover = .close;
             };
+
+            if (req.unread_body > 0 and conn.handover == .keepalive) {
+                drain(&req) catch {
+                    conn.handover = .close;
+                };
+            }
         }
 
         pub fn middleware(self: *Self, comptime M: type, config: M.Config) !Middleware(H) {
@@ -714,6 +720,21 @@ const FallbackAllocator = struct {
     }
 };
 
+// Called when we have unread bytes on the request and want to keepalive the
+// connection. Only happens when lazy_read_size is configured and the client
+// didn't read the [whole] body
+// There should already be a receive timeout on the socket since the only
+// way for this to be
+fn drain(req: *Request) !void {
+    var r = try req.reader(2000);
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        if (try r.read(&buf) == 0) {
+            return;
+        }
+    }
+}
+
 const t = @import("t.zig");
 var global_test_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
@@ -739,13 +760,10 @@ test "tests:beforeAll" {
     const ga = global_test_allocator.allocator();
 
     {
-        default_server = try Server(void).init(ga, .{
-            .port = 5992,
-            .request = .{
-                .lazy_read_size = 4_096,
-                .max_body_size = 1_048_576,
-            }
-        }, {});
+        default_server = try Server(void).init(ga, .{ .port = 5992, .request = .{
+            .lazy_read_size = 4_096,
+            .max_body_size = 1_048_576,
+        } }, {});
 
         // only need to do this because we're using listenInNewThread instead
         // of blocking here. So the array to hold the middleware needs to outlive
@@ -772,7 +790,7 @@ test "tests:beforeAll" {
         router.method("PING", "/test/method", TestDummyHandler.method, .{});
         router.get("/test/query", TestDummyHandler.reqQuery, .{});
         router.get("/test/stream", TestDummyHandler.eventStream, .{});
-        router.get("/test/req_stream", TestDummyHandler.reqStream, .{});
+        router.get("/test/req_reader", TestDummyHandler.reqReader, .{});
         router.get("/test/chunked", TestDummyHandler.chunked, .{});
         router.get("/test/route_data", TestDummyHandler.routeData, .{ .data = &TestDummyHandler.RouteData{ .power = 12345 } });
         router.all("/test/cors", TestDummyHandler.jsonRes, .{ .middlewares = cors });
@@ -1306,12 +1324,12 @@ test "httpz: custom handle" {
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 9\r\n\r\nhello teg", testReadAll(stream, &buf));
 }
 
-test "httpz: request body streaming" {
+test "httpz: request body reader" {
     {
         // no body
         const stream = testStream(5992);
         defer stream.close();
-        try stream.writeAll("GET /test/req_stream HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+        try stream.writeAll("GET /test/req_reader HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
         var res = testReadParsed(stream);
         defer res.deinit();
@@ -1322,7 +1340,7 @@ test "httpz: request body streaming" {
         // small body
         const stream = testStream(5992);
         defer stream.close();
-        try stream.writeAll("GET /test/req_stream HTTP/1.1\r\nContent-Length: 4\r\n\r\n123z");
+        try stream.writeAll("GET /test/req_reader HTTP/1.1\r\nContent-Length: 4\r\n\r\n123z");
 
         var res = testReadParsed(stream);
         defer res.deinit();
@@ -1336,7 +1354,7 @@ test "httpz: request body streaming" {
     for (0..10) |_| {
         const stream = testStream(5992);
         defer stream.close();
-        var req: []const u8 = "GET /test/req_stream HTTP/1.1\r\nContent-Length: 20000\r\n\r\n" ++ ("a" ** 20_000);
+        var req: []const u8 = "GET /test/req_reader HTTP/1.1\r\nContent-Length: 20000\r\n\r\n" ++ ("a" ** 20_000);
         while (req.len > 0) {
             const len = random.uintAtMost(usize, req.len - 1) + 1;
             const n = stream.write(req[0..len]) catch |err| switch (err) {
@@ -1351,7 +1369,6 @@ test "httpz: request body streaming" {
         defer res.deinit();
         try res.expectJson(.{ .length = 20_000 });
     }
-
 }
 
 test "websocket: invalid request" {
@@ -1549,16 +1566,22 @@ const TestDummyHandler = struct {
         try res.startEventStream(StreamContext{ .data = "hello" }, StreamContext.handle);
     }
 
-    fn reqStream(req: *Request, res: *Response) !void {
-        var stream = try req.streamBody();
-        defer stream.deinit();
+    fn reqReader(req: *Request, res: *Response) !void {
+        var reader = try req.reader(2000);
 
         var l: usize = 0;
         var buf: [1024]u8 = undefined;
-        while (try stream.read(&buf)) |data| {
-            l += data.len;
+        while (true) {
+            const n = try reader.read(&buf);
+            if (n == 0) {
+                break;
+            }
+            if (req.body_len > 10 and std.mem.indexOfNonePos(u8, buf[0..n], 0, "a") != null) {
+                return error.InvalidData;
+            }
+            l += n;
         }
-        return res.json(.{.length = l}, .{});
+        return res.json(.{ .length = l }, .{});
     }
 
     const StreamContext = struct {

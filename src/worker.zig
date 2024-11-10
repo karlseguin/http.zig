@@ -212,7 +212,8 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
 
             var is_keepalive = false;
             while (true) {
-                defer conn.requestDone(self.retain_allocated_bytes_keepalive);
+                // impossible for this to fail in blocking mode
+                defer conn.requestDone(self.retain_allocated_bytes_keepalive, false) catch unreachable;
                 switch (self.handleRequest(conn, is_keepalive, thread_buf) catch .close) {
                     .keepalive => {
                         is_keepalive = true;
@@ -481,7 +482,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 .max_conn = config.workers.max_conn orelse 8_192,
                 .timeout_request = config.timeout.request orelse MAX_TIMEOUT,
                 .timeout_keepalive = config.timeout.keepalive orelse MAX_TIMEOUT,
-                .retain_allocated_bytes =  config.workers.retain_allocated_bytes orelse 8192,
+                .retain_allocated_bytes = config.workers.retain_allocated_bytes orelse 8192,
             };
         }
 
@@ -572,8 +573,11 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                                 const stream = http_conn.stream;
                                 const done = http_conn.req_state.parse(http_conn.req_arena.allocator(), stream) catch |err| {
+                                    // maybe a write fail or something, doesn't matter, we're closing the connection
                                     requestError(http_conn, err) catch {};
-                                    http_conn.requestDone(self.retain_allocated_bytes);
+
+                                    // impossible to fail when false is passed
+                                    http_conn.requestDone(self.retain_allocated_bytes, false) catch unreachable;
                                     conn.close();
                                     self.disown(conn);
                                     continue;
@@ -586,7 +590,6 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                                 self.swapList(conn, .active);
                                 thread_pool.spawn(.{ self, now, conn });
-
                             },
                             .websocket => thread_pool.spawn(.{ self, now, conn }),
                         },
@@ -671,6 +674,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 const http_conn = try self.http_conn_pool.acquire();
                 http_conn.request_count = 1;
                 http_conn._state = .request;
+                http_conn._io_mode = .nonblocking;
                 http_conn.address = address;
                 http_conn.socket_flags = socket_flags;
                 http_conn.stream = .{ .handle = socket };
@@ -771,9 +775,16 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             metrics.request();
             http_conn.request_count += 1;
             self.server.handleRequest(http_conn, thread_buf);
-            http_conn.requestDone(self.retain_allocated_bytes);
 
-            switch (http_conn.handover) {
+            var handover = http_conn.handover;
+            http_conn.requestDone(self.retain_allocated_bytes, handover == .keepalive or handover == .websocket) catch {
+                // This means we failed to put the connection into
+                // nonblocking mode. Rare, but safer to clos the connection
+                // at this point.
+                handover = .close;
+            };
+
+            switch (handover) {
                 .keepalive => {
                     http_conn.timeout = now + self.timeout_keepalive;
                     self.swapList(conn, .keepalive);
@@ -827,7 +838,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         }
 
         // Enforces timeouts, and returns when the next timeout should be checked.
-        fn prepareToWait(self: *Self, now: u32) struct {bool, ?i32} {
+        fn prepareToWait(self: *Self, now: u32) struct { bool, ?i32 } {
             const request_timed_out, const request_count, const request_timeout = collectTimedOut(&self.request_list, now);
 
             const keepalive_timed_out, const keepalive_count, const keepalive_timeout = blk: {
@@ -850,17 +861,17 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             }
 
             if (request_timeout == null and keepalive_timeout == null) {
-                return .{closed, null};
+                return .{ closed, null };
             }
 
             const next = @min(request_timeout orelse MAX_TIMEOUT, keepalive_timeout orelse MAX_TIMEOUT);
             if (next < now) {
                 // can happen if a socket was just about to timeout when prepareToWait
                 // was called
-                return .{closed, 1};
+                return .{ closed, 1 };
             }
 
-            return .{closed, @intCast(next - now)};
+            return .{ closed, @intCast(next - now) };
         }
 
         // lists are ordered from soonest to timeout to last, as soon as we find
@@ -1047,7 +1058,7 @@ fn KQueue(comptime WSH: type) type {
             try self.change(conn.getSocket(), @intFromPtr(conn), posix.system.EVFILT.READ, posix.system.EV.ADD | posix.system.EV.ENABLE, 0);
         }
 
-        fn rearmRead(self: *Self, conn: *Conn(WSH)) !void{
+        fn rearmRead(self: *Self, conn: *Conn(WSH)) !void {
             // called from the worker thread, can't use change_buffer
             _ = try posix.kevent(self.fd, &.{.{
                 .ident = @intCast(conn.getSocket()),
@@ -1215,7 +1226,7 @@ fn EPoll(comptime WSH: type) type {
             return posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, conn.getSocket(), &event);
         }
 
-        fn rearmRead(self: *Self, conn: *Conn(WSH)) !void{
+        fn rearmRead(self: *Self, conn: *Conn(WSH)) !void {
             var event = linux.epoll_event{
                 .data = .{ .ptr = @intFromPtr(conn) },
                 .events = linux.EPOLL.IN | linux.EPOLL.RDHUP | linux.EPOLL.ONESHOT,
@@ -1483,10 +1494,17 @@ pub const HTTPConn = struct {
         websocket: *anyopaque,
     };
 
-    // can be concurrently accessed, use getState and setState
+    pub const IOMode = enum {
+        blocking,
+        nonblocking,
+    };
+
+    // can be concurrently accessed, use getState
     _state: State,
 
     _mut: Thread.Mutex,
+
+    _io_mode: IOMode,
 
     handover: Handover,
 
@@ -1554,6 +1572,7 @@ pub const HTTPConn = struct {
             .res_state = res_state,
             .req_arena = req_arena,
             .conn_arena = conn_arena,
+            ._io_mode = if (httpz.blockingMode()) .blocking else .nonblocking,
         };
     }
 
@@ -1568,20 +1587,16 @@ pub const HTTPConn = struct {
         allocator.destroy(self.conn_arena);
     }
 
-    pub fn requestDone(self: *HTTPConn, retain_allocated_bytes: usize) void {
+    pub fn requestDone(self: *HTTPConn, retain_allocated_bytes: usize, revert_blocking: bool) !void {
         self.req_state.reset();
         self.res_state.reset();
         _ = self.req_arena.reset(.{ .retain_with_limit = retain_allocated_bytes });
+        if (revert_blocking) {
+            try self.nonblockingMode();
+        }
     }
 
-    // getting put back into the pool
-    pub fn reset(self: *HTTPConn) void {
-        self.handover = .unknown;
-        self.stream = undefined;
-        self.address = undefined;
-    }
-
-    pub fn writeAll(self: *const HTTPConn, data: []const u8) !void {
+    pub fn writeAll(self: *HTTPConn, data: []const u8) !void {
         const socket = self.stream.handle;
 
         var i: usize = 0;
@@ -1602,25 +1617,16 @@ pub const HTTPConn = struct {
             std.debug.assert(n != 0);
             i += n;
         }
-
-        // if write fails, and we're in blocking, it doesn't really matter
-        // we're going to be closing connction anyways
-        if (blocking) {
-            try self.nonblockingMode();
-        }
     }
 
-    pub fn writeAllIOVec(self: *const HTTPConn, vec: []posix.iovec_const) !void {
+    pub fn writeAllIOVec(self: *HTTPConn, vec: []posix.iovec_const) !void {
         const socket = self.stream.handle;
 
         var i: usize = 0;
-        var blocking = false;
-
         while (true) {
             var n = posix.writev(socket, vec[i..]) catch |err| switch (err) {
                 error.WouldBlock => {
                     try self.blockingMode();
-                    blocking = true;
                     continue;
                 },
                 else => return err,
@@ -1630,9 +1636,6 @@ pub const HTTPConn = struct {
                 n -= vec[i].len;
                 i += 1;
                 if (i >= vec.len) {
-                    if (blocking) {
-                        try self.nonblockingMode();
-                    }
                     return;
                 }
             }
@@ -1641,22 +1644,30 @@ pub const HTTPConn = struct {
         }
     }
 
-    pub fn blockingMode(self: *const HTTPConn) !void {
+    pub fn blockingMode(self: *HTTPConn) !void {
         if (comptime httpz.blockingMode() == true) {
             // When httpz is in blocking mode, than we always keep the socket in
             // blocking mode
+            return;
+        }
+        if (self._io_mode == .blocking) {
             return;
         }
         _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags & ~@as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
+        self._io_mode = .blocking;
     }
 
-    pub fn nonblockingMode(self: *const HTTPConn) !void {
+    pub fn nonblockingMode(self: *HTTPConn) !void {
         if (comptime httpz.blockingMode() == true) {
             // When httpz is in blocking mode, than we always keep the socket in
             // blocking mode
             return;
         }
+        if (self._io_mode == .nonblocking) {
+            return;
+        }
         _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags);
+        self._io_mode = .nonblocking;
     }
 };
 
@@ -1792,7 +1803,7 @@ const TestNode = struct {
 
     fn alloc(id: i32) *TestNode {
         const tn = t.allocator.create(TestNode) catch unreachable;
-        tn.* = .{.id = id};
+        tn.* = .{ .id = id };
         return tn;
     }
 };

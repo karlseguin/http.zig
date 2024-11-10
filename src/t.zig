@@ -111,6 +111,7 @@ pub const Context = struct {
             .ws_worker = undefined,
             .conn_arena = ctx_arena,
             .req_arena = std.heap.ArenaAllocator.init(aa),
+            ._io_mode = if (httpz.blockingMode()) .blocking else .nonblocking,
         };
 
         return .{
