@@ -441,7 +441,7 @@ if (try req.jsonObject()) |t| {
 }
 ```
 
-## Form Data
+### Form Data
 The body of the request, if any, can be parsed as a "x-www-form-urlencoded "value  using `req.formData()`. The `request.max_form_count` configuration value must be set to the maximum number of form fields to support. This defaults to 0.
 
 This behaves similarly to `query()`.
@@ -462,7 +462,7 @@ while (it.next()) |kv| {
 
 Once this function is called, `req.multiFormData()` will no longer work (because the body is assumed parsed).
 
-## Multi Part Form Data
+### Multi Part Form Data
 Similar to the above, `req.multiFormData()` can be called to parse requests with a "multipart/form-data" content type. The `request.max_multiform_count` configuration value must be set to the maximum number of form fields to support. This defaults to 0.
 
 This is a different API than `formData` because the return type is different. Rather than a simple string=>value type, the multi part form data value consists of a `value: []const u8` and a `filename: ?[]const u8`.
@@ -485,6 +485,32 @@ while (it.next()) |kv| {
 Once this function is called, `req.formData()` will no longer work (because the body is assumed parsed).
 
 Advance warning: This is one of the few methods that can modify the request in-place. For most people this won't be an issue, but if you use `req.body()` and `req.multiFormData()`, say to log the raw body, the content-disposition field names are escaped in-place. It's still safe to use `req.body()` but any  content-disposition name that was escaped will be a little off.
+
+### Lazy Loading
+By default, httpz reads the full request body into memory. Depending on httpz configuration and the request size, the body will be stored in the static request buffer, a large buffer pool, or dynamically allocated.
+
+As an alternative, when `config.request.lazy_read_size` is set, bodies larger than the configured bytes will not be read into memory. Instead, applications can create a `io.Reader` by calling `req.reader(timeout_in_ms)`. 
+
+```zig
+// 5000 millisecond read timeout on a per-read basis
+var reader = try req.reader(5000);
+var buf: [4096]u8 = undefined;
+while (true) {
+    const n = try reader.read(&buf);
+    if (n == 0) break
+   // buf[0..n] is what was read
+}
+```
+
+`req.reader` can safely be used whether or not the full body was already in-memory - the API abstracts reading from already-loaded bytes and bytes still waiting to be received on the socket. You can check `req.unread_body > 0` to know whether lazy loading is in effect.
+
+A few notes about the implementation.
+
+If if the body is larger than the configured `lazy_read_size`, part of the body might still be read into the request's static buffer. The `io.Reader` returned by `req.reader()` will abstract this detail away and return the full body.
+
+Also, if the body isn't fully read, but the connection is marked for keepalive (which is generally the default), httpz will still read the full body, but will do so in 4K chunks.
+
+While the `io.Reader` can be used for non-lazy loaded bodies, there's overhead to this. It is better to use it only when you know that the body is large (i.e., a file upload).
 
 # httpz.Response
 The following fields are the most useful:
@@ -720,7 +746,6 @@ httpz comes with a built-in CORS middleware: `httpz.middlewares.Cors`. Its confi
 
 The CORS middleware will include a `Access-Control-Allow-Origin: $origin` to every request. For an OPTIONS request where the `sec-fetch-mode` is set to `cors, the `Access-Control-Allow-Headers`, `Access-Control-Allow-Methods` and `Access-Control-Max-Age` response headers will optionally be set based on the configuration.
 
-
 # Configuration
 The second parameter given to `Server(H).init` is an `httpz.Config`. When running in <a href=#blocking-mode>blocking mode</a> (e.g. on Windows) a few of these behave slightly, but not drastically, different.
 
@@ -805,10 +830,16 @@ try httpz.listen(allocator, &router, .{
 
     // options for tweaking request processing
     .request = .{
-        // Maximum body size that we'll process. We can allocate up 
+        // Maximum request body size that we'll process. We can allocate up 
         // to this much memory per request for the body. Internally, we might
         // keep this memory around for a number of requests as an optimization.
         .max_body_size: usize = 1_048_576,
+
+        // When set, if request body is larger than this value, the body won't be
+        // eagerly read. The application can use `req.reader()` to create a reader
+        // to read the body. Prevents loading large bodies completely in memory.
+        // It makes no sense to set this > `max_body_size`.
+        .lazy_read_size: ?usize = null,
 
         // This memory is allocated upfront. The request header _must_ fit into
         // this space, else the request will be rejected.
