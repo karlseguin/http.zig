@@ -90,6 +90,13 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
             };
         }
 
+        // Return a RouteConfig with the given dispatcher function embedded
+        pub fn registerDispatcher(_: Self, dispatcher: Dispatcher) RC {
+            return RC{
+                .dispatcher = dispatcher,
+            };
+        }
+
         pub fn get(self: *Self, path: []const u8, action: Action, config: RC) void {
             self.tryGet(path, action, config) catch @panic("failed to create route");
         }
