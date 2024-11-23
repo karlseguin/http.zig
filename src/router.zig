@@ -90,11 +90,9 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
             };
         }
 
-        // Return a RouteConfig with the given dispatcher function embedded
-        pub fn registerDispatcher(_: Self, dispatcher: Dispatcher) RC {
-            return RC{
-                .dispatcher = dispatcher,
-            };
+        /// routeConfig allows the user to pass an anon struct, and have it coerced into the correct RC type for this router
+        pub fn routeConfig(_: Self, config: RC) RC {
+            return config;
         }
 
         pub fn get(self: *Self, path: []const u8, action: Action, config: RC) void {
