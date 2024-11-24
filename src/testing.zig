@@ -80,8 +80,8 @@ pub const Testing = struct {
 
             for (diffs.items, 0..) |diff, i| {
                 std.debug.print("\n==Difference #{d}==\n", .{i + 1});
-                std.debug.print("  {s}: {s}\n  Left: {s}\n  Right: {s}\n", .{ diff.path, diff.err, diff.a, diff.b });
-                std.debug.print("  Actual:\n    {s}\n", .{self.body});
+                std.debug.print("{s}: {s} {s} {s}\n", .{ diff.path, diff.a, diff.err, diff.b });
+                std.debug.print("Actual:\n{s}\n", .{jc.pretty_actual orelse self.body});
             }
             return error.JsonNotEqual;
         }
@@ -349,6 +349,7 @@ fn isUnreserved(c: u8) bool {
 
 const JsonComparer = struct {
     _arena: std.heap.ArenaAllocator,
+    pretty_actual: ?[]const u8 = null,
 
     const Diff = struct {
         err: []const u8,
@@ -389,6 +390,8 @@ const JsonComparer = struct {
 
         const a_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, a_bytes, .{});
         const b_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, b_bytes, .{});
+
+        self.pretty_actual = try std.json.stringifyAlloc(allocator, b_value, .{.whitespace = .indent_2}) ;
 
         var diffs = ArrayList(Diff).init(allocator);
         var path = ArrayList([]const u8).init(allocator);
