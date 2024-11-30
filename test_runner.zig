@@ -33,6 +33,8 @@ pub fn main() !void {
     var skip: usize = 0;
     var leak: usize = 0;
 
+    try std.posix.getrandom(std.mem.asBytes(&std.testing.random_seed));
+
     const printer = Printer.init();
     printer.fmt("\r\x1b[0K", .{}); // beginning of line and clear to end of line
 
