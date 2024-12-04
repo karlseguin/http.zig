@@ -101,7 +101,7 @@ pub const Response = struct {
 
     pub fn headerOpts(self: *Response, name: []const u8, value: []const u8, opts: HeaderOpts) !void {
         const n = if (opts.dupe_name) try self.arena.dupe(u8, name) else name;
-        const v = if (opts.dupe_name) try self.arena.dupe(u8, value) else name;
+        const v = if (opts.dupe_value) try self.arena.dupe(u8, value) else value;
         self.headers.add(n, v);
     }
 
