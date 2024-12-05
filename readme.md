@@ -726,14 +726,14 @@ const cors = try server.middleware(httpz.middleware.Cors, .{
 
 // apply this middleware to all routes (unless the route 
 // explicitly opts out)
-var router = server.router(.{.middlewares = .{cors}});
+var router = server.router(.{.middlewares = &.{cors}});
 
 // or we could add middleware on a route-per-route bassis
-router.get("/v1/users", .{.middlewares = &.{cors}});
+router.get("/v1/users", user, .{.middlewares = &.{cors}});
 
 // by default, middlewares on a route are appended to the global middlewares
 // we can replace them instead by specifying a middleware_strategy
-router.get("/v1/metrics", .{.middlewares = &.{cors}, .middleware_strategy = .replace});
+router.get("/v1/metrics", metrics, .{.middlewares = &.{cors}, .middleware_strategy = .replace});
 ```
 
 ## Cors
