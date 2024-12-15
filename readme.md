@@ -512,6 +512,16 @@ Also, if the body isn't fully read, but the connection is marked for keepalive (
 
 While the `io.Reader` can be used for non-lazy loaded bodies, there's overhead to this. It is better to use it only when you know that the body is large (i.e., a file upload).
 
+## Cookies
+Use the `req.cookies` method to get a `Request.Cookie` object. Use `get` to get an optional cookie value for a given cookie name. The cookie name is case sensitive.
+
+```zig
+var cookies = req.cookies();
+if (cookies.get("auth")) |auth| {
+  /// ...
+}
+```
+
 # httpz.Response
 The following fields are the most useful:
 

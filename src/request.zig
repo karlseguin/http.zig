@@ -143,6 +143,12 @@ pub const Request = struct {
         return self.parseQuery();
     }
 
+    pub fn cookies(self: *const Request) Cookie {
+        return .{
+            .header = self.header("cookie") orelse "",
+        };
+    }
+
     pub fn json(self: *Request, comptime T: type) !?T {
         const b = self.body() orelse return null;
         return try std.json.parseFromSliceLeaky(T, self.arena, b, .{});
@@ -527,6 +533,28 @@ pub const Request = struct {
             const n = try std.posix.read(self.socket, buf);
             self.unread_body.* = unread - n;
             return n;
+        }
+    };
+
+    pub const Cookie = struct {
+        header: []const u8,
+
+        pub fn get(self: Cookie, name: []const u8) ?[]const u8 {
+            var it = std.mem.splitScalar(u8, self.header, ';');
+            while (it.next()) |kv| {
+                if (name.len >= kv.len) {
+                    // need at leat an '=' beyond the name
+                    continue;
+                }
+                if (std.mem.startsWith(u8, kv, name) == false) {
+                    continue;
+                }
+                if (kv[name.len] != '=') {
+                    continue;
+                }
+                return kv[name.len + 1..];
+            }
+            return null;
         }
     };
 };
@@ -1695,6 +1723,49 @@ test "request: fuzz" {
                 try t.expectEqual(null, actual_body);
             }
         }
+    }
+}
+
+test "request: cookie" {
+    defer t.reset();
+    {
+        const r = try testParse("PUT / HTTP/1.0\r\n\r\n", .{});
+        const cookies = r.cookies();
+        try t.expectEqual(null, cookies.get(""));
+        try t.expectEqual(null, cookies.get("auth"));
+    }
+
+    {
+        const r = try testParse("PUT / HTTP/1.0\r\nCookie: \r\n\r\n", .{});
+        const cookies = r.cookies();
+        try t.expectEqual(null, cookies.get(""));
+        try t.expectEqual(null, cookies.get("auth"));
+    }
+
+    {
+        const r = try testParse("PUT / HTTP/1.0\r\nCookie: auth=hello\r\n\r\n", .{});
+        const cookies = r.cookies();
+        try t.expectEqual(null, cookies.get(""));
+        try t.expectString("hello", cookies.get("auth").?);
+        try t.expectEqual(null, cookies.get("world"));
+    }
+
+    {
+        const r = try testParse("PUT / HTTP/1.0\r\nCookie: Name=leto;power=9000\r\n\r\n", .{});
+        const cookies = r.cookies();
+        try t.expectEqual(null, cookies.get(""));
+        try t.expectEqual(null, cookies.get("name"));
+        try t.expectString("leto", cookies.get("Name").?);
+        try t.expectString("9000", cookies.get("power").?);
+    }
+
+    {
+        const r = try testParse("PUT / HTTP/1.0\r\nCookie: Name=Ghanima;id=Name\r\n\r\n", .{});
+        const cookies = r.cookies();
+        try t.expectEqual(null, cookies.get(""));
+        try t.expectEqual(null, cookies.get("name"));
+        try t.expectString("Ghanima", cookies.get("Name").?);
+        try t.expectString("Name", cookies.get("id").?);
     }
 }
 
