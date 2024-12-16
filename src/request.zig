@@ -542,17 +542,19 @@ pub const Request = struct {
         pub fn get(self: Cookie, name: []const u8) ?[]const u8 {
             var it = std.mem.splitScalar(u8, self.header, ';');
             while (it.next()) |kv| {
-                if (name.len >= kv.len) {
-                    // need at leat an '=' beyond the name
+                const trimmed = std.mem.trimLeft(u8, kv, " ");
+                if (name.len >= trimmed.len) {
+                    // need at least an '=' beyond the name
                     continue;
                 }
-                if (std.mem.startsWith(u8, kv, name) == false) {
+
+                if (std.mem.startsWith(u8, trimmed, name) == false) {
                     continue;
                 }
-                if (kv[name.len] != '=') {
+                if (trimmed[name.len] != '=') {
                     continue;
                 }
-                return kv[name.len + 1..];
+                return trimmed[name.len + 1..];
             }
             return null;
         }
@@ -1751,7 +1753,7 @@ test "request: cookie" {
     }
 
     {
-        const r = try testParse("PUT / HTTP/1.0\r\nCookie: Name=leto;power=9000\r\n\r\n", .{});
+        const r = try testParse("PUT / HTTP/1.0\r\nCookie: Name=leto; power=9000\r\n\r\n", .{});
         const cookies = r.cookies();
         try t.expectEqual(null, cookies.get(""));
         try t.expectEqual(null, cookies.get("name"));
