@@ -207,8 +207,9 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 return;
             };
 
-            conn.stream = .{ .handle = socket };
             conn.address = address;
+            conn.handover = .unknown;
+            conn.stream = .{ .handle = socket };
 
             var is_keepalive = false;
             while (true) {
