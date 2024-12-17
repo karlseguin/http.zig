@@ -675,6 +675,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 const http_conn = try self.http_conn_pool.acquire();
                 http_conn.request_count = 1;
                 http_conn._state = .request;
+                http_conn.handover = .unknown;
                 http_conn._io_mode = .nonblocking;
                 http_conn.address = address;
                 http_conn.socket_flags = socket_flags;
