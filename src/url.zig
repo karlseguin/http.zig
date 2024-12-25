@@ -1,7 +1,13 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const metrics = @import("metrics.zig");
 
 const Allocator = std.mem.Allocator;
+
+const backend_supports_vectors = switch (builtin.zig_backend) {
+    .stage2_llvm, .stage2_c => true,
+    else => false,
+};
 
 pub const Url = struct {
     raw: []const u8 = "",
@@ -125,13 +131,16 @@ pub const Url = struct {
 
     pub fn isValid(url: []const u8) bool {
         var rest = url;
-        if (comptime std.simd.suggestVectorLength(u8)) |vector_len| {
-            while (rest.len >= vector_len) {
-                const block: @Vector(vector_len, u8) = rest[0..vector_len].*;
-                if (@reduce(.Min, block) < 32 or @reduce(.Max, block) > 126) {
-                    return false;
+
+        if (comptime backend_supports_vectors) {
+            if (comptime std.simd.suggestVectorLength(u8)) |vector_len| {
+                while (rest.len >= vector_len) {
+                    const block: @Vector(vector_len, u8) = rest[0..vector_len].*;
+                    if (@reduce(.Min, block) < 32 or @reduce(.Max, block) > 126) {
+                        return false;
+                    }
+                    rest = rest[vector_len..];
                 }
-                rest = rest[vector_len..];
             }
         }
 
