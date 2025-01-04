@@ -848,7 +848,7 @@ try httpz.listen(allocator, &router, .{
         // When set, if request body is larger than this value, the body won't be
         // eagerly read. The application can use `req.reader()` to create a reader
         // to read the body. Prevents loading large bodies completely in memory.
-        // It makes no sense to set this > `max_body_size`.
+        // When set, max_body_size is ignored.
         .lazy_read_size: ?usize = null,
 
         // This memory is allocated upfront. The request header _must_ fit into
