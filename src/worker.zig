@@ -530,7 +530,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             var last_timeout = now;
             while (true) {
                 var timeout: ?i32 = 1;
-                if (now - last_timeout > 1) {
+                if (now > last_timeout and now - last_timeout > 1) {
                     // we don't all prepareToWait more than once per second
                     const had_timeouts, timeout = self.prepareToWait(now);
                     if (had_timeouts and self.full) {
