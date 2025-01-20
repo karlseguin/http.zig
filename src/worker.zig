@@ -1675,11 +1675,9 @@ pub const HTTPConn = struct {
 };
 
 pub fn timestamp(clamp: u32) u32 {
-    if (comptime @hasDecl(posix, "CLOCK") == false or posix.CLOCK == void) {
+    if (comptime @hasDecl(posix, "CLOCK") == false or  posix.CLOCK == void) {
         const value: u32 = @intCast(std.time.timestamp());
-        if (value <= clamp) {
-            return clamp + 1;
-        }
+        return if (value <= clamp) return clamp + 1 else value;
     }
     var ts: posix.timespec = undefined;
     posix.clock_gettime(posix.CLOCK.MONOTONIC, &ts) catch unreachable;
