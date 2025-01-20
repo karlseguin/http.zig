@@ -7,7 +7,7 @@ http.zig is used by [logdk](https://github.com/karlseguin/logdk), my log aggrega
 This library supports native Zig module (introduced in 0.11). Add a "httpz" dependency to your `build.zig.zon`. This library only imports [websocket.zig](https://github.com/karlseguin/websocket.zig) and [metrics.zig](https://github.com/karlseguin/metrics.zig) - two libraries that I've written which have no other dependencies.
 
 ```
-zig fetch --save git+https://github.com/karlseguin/http.zig
+zig fetch --save git+https://github.com/karlseguin/http.zig#zig-0.13
 ```
 
 In your `build.zig.zon`:
