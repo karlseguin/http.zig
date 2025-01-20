@@ -250,7 +250,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
 
             if (timeout) |to| {
                 if (is_keepalive == false) {
-                    deadline = timestamp() + to.sec;
+                    deadline = timestamp(0) + to.sec;
                 }
                 try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &to.timeval);
             }
@@ -297,13 +297,13 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                             // an actual timeout, or it could just be removing the keepalive timeout
                             // either way, it's the same code (timeval will just be set to 0 for
                             // the second case)
-                            deadline = timestamp() + to.sec;
+                            deadline = timestamp(0) + to.sec;
                             try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &to.timeval);
                         }
                         is_first = false;
                     }
                 } else if (deadline) |dl| {
-                    if (timestamp() > dl) {
+                    if (timestamp(0) > dl) {
                         metrics.timeoutRequest(1);
                         return .close;
                     }
@@ -526,11 +526,12 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 return;
             };
 
-            var now = timestamp();
+            var now = timestamp(0);
             var last_timeout = now;
             while (true) {
                 var timeout: ?i32 = 1;
                 if (now - last_timeout > 1) {
+
                     // we don't all prepareToWait more than once per second
                     const had_timeouts, timeout = self.prepareToWait(now);
                     if (had_timeouts and self.full) {
@@ -544,7 +545,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     std.time.sleep(std.time.ns_per_s);
                     continue;
                 };
-                now = timestamp();
+                now = timestamp(now);
                 var closed_conn = false;
 
                 while (it.next()) |event| {
@@ -1673,12 +1674,15 @@ pub const HTTPConn = struct {
     }
 };
 
-pub fn timestamp() u32 {
+pub fn timestamp(clamp: u32) u32 {
     if (comptime @hasDecl(posix, "CLOCK") == false or posix.CLOCK == void) {
-        return @intCast(std.time.timestamp());
+        const value: u32 = @intCast(std.time.timestamp());
+        if (value <= clamp) {
+            return clamp + 1;
+        }
     }
     var ts: posix.timespec = undefined;
-    posix.clock_gettime(posix.CLOCK.REALTIME, &ts) catch unreachable;
+    posix.clock_gettime(posix.CLOCK.MONOTONIC, &ts) catch unreachable;
     return @intCast(ts.sec);
 }
 
