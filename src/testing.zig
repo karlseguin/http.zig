@@ -487,8 +487,8 @@ const JsonComparer = struct {
 fn isString(comptime T: type) bool {
     switch (@typeInfo(T)) {
         .pointer => |ptr| switch (ptr.size) {
-            .Slice => return ptr.child == u8,
-            .One => switch (@typeInfo(ptr.child)) {
+            .slice => return ptr.child == u8,
+            .one => switch (@typeInfo(ptr.child)) {
                 .array => |arr| return arr.child == u8,
                 else => return false,
             },
