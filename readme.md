@@ -1060,7 +1060,7 @@ try std.testing.expectEqual(@as(i64, 9000), json.Object.get("over").?.Integer);
 For more advanced validation, use the `parseResponse` function to return a structure representing the parsed response:
 
 ```zig
-const res = try web_test.parsedResponse();
+const res = try web_test.parseResponse();
 try std.testing.expectEqual(@as(u16, 200), res.status);
 // use res.body for a []const u8  
 // use res.headers for a std.StringHashMap([]const u8)
