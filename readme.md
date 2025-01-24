@@ -576,6 +576,32 @@ try res.headerOpts("Location", location, .{.dupe_value = true});
 
 `HeaderOpts` currently supports `dupe_name: bool` and `dupe_value: bool`, both default to `false`.
 
+## Cookies
+You can use the `res.setCookie(name, value, opts)` to set the "Set-Cookie" header.
+
+```zig
+try res.setCookie("cookie_name3", "cookie value 3", .{
+    .path = "/auth/",
+    .domain = "www.openmymind.net",
+    .max_age = 9001,
+    .secure = true,
+    .http_only = true,
+    .partitioned = true,
+    .same_site = .lax,  // or .none, or .strict (or null to leave out)
+});
+```
+
+`setCookie` does not validate the name, value, path or domain - it assumes you're setting proper values. It *will* double-quote values which contain spaces or commas (as required).
+
+If, for whatever reason, `res.setCookie` doesn't work for you, you always have full control over the cookie value via `res.header("Set-Cookie", value)`.
+
+```zig
+var cookies = req.cookies();
+if (cookies.get("auth")) |auth| {
+  /// ...
+}
+```
+
 ## Writing
 By default, httpz will automatically flush your response. In more advance cases, you can use `res.write()` to explicitly flush it. This is useful in cases where you have resources that need to be freed/released only after the response is written. For example, my [LRU cache](https://github.com/karlseguin/cache.zig) uses atomic referencing counting to safely allow concurrent access to cached data. This requires callers to "release" the cached entry:
 

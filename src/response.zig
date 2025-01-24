@@ -94,6 +94,11 @@ pub const Response = struct {
         self.headers.add(name, value);
     }
 
+    pub fn setCookie(self: *Response, name: []const u8, value: []const u8, opts: CookieOpts) !void {
+        const serialized = try serializeCookie(self.arena, name, value, &opts);
+        self.header("Set-Cookie", serialized);
+    }
+
     pub const HeaderOpts = struct {
         dupe_name: bool = false,
         dupe_value: bool = false,
@@ -407,6 +412,78 @@ pub const Response = struct {
     };
 };
 
+pub const CookieOpts = struct {
+    // by not using optional, we can get the len without the if check
+    path: []const u8 = "",
+    domain: []const u8 = "",
+    max_age: ?i32 = null,
+    secure: bool = false,
+    http_only: bool = false,
+    partitioned: bool = false,
+    same_site: ?SameSite = null,
+
+    pub const SameSite = enum {
+        lax,
+        strict,
+        none,
+    };
+};
+
+// we expect arena to be an ArenaAllocator
+pub fn serializeCookie(arena: Allocator, name: []const u8, value: []const u8, cookie: *const CookieOpts) ![]u8 {
+    // Golang uses 110 as a "typical length of cookie attributes"
+    const path = cookie.path;
+    const domain = cookie.domain;
+
+    const estimated_len = name.len + value.len + path.len + domain.len + 110;
+    var buf = std.ArrayListUnmanaged(u8){};
+
+    try buf.ensureTotalCapacity(arena, estimated_len);
+    buf.appendSliceAssumeCapacity(name);
+    buf.appendAssumeCapacity('=');
+
+    if (std.mem.indexOfAny(u8, value, ", ") != null) {
+        buf.appendAssumeCapacity('"');
+        buf.appendSliceAssumeCapacity(value);
+        buf.appendAssumeCapacity('"');
+    } else {
+        buf.appendSliceAssumeCapacity(value);
+    }
+
+    if (path.len != 0) {
+        buf.appendSliceAssumeCapacity("; Path=");
+        buf.appendSliceAssumeCapacity(path);
+    }
+
+    if (domain.len != 0) {
+        buf.appendSliceAssumeCapacity("; Domain=");
+        buf.appendSliceAssumeCapacity(domain);
+    }
+
+    if (cookie.max_age) |ma| {
+        try buf.appendSlice(arena, "; Max-Age=");
+        try std.fmt.formatInt(ma, 10, .lower, .{}, buf.writer(arena));
+    }
+
+    if (cookie.http_only) {
+        try buf.appendSlice(arena, "; HttpOnly");
+    }
+    if (cookie.secure) {
+        try buf.appendSlice(arena, "; Secure");
+    }
+    if (cookie.partitioned) {
+        try buf.appendSlice(arena, "; Partitioned");
+    }
+
+    if (cookie.same_site) |ss| switch (ss) {
+        .lax => try buf.appendSlice(arena, "; SameSite=Lax"),
+        .strict => try buf.appendSlice(arena, "; SameSite=Strict"),
+        .none => try buf.appendSlice(arena, "; SameSite=None"),
+    };
+
+    return buf.items;
+}
+
 // All the upfront memory allocation that we can do. Gets re-used from request
 // to request.
 pub const State = struct {
@@ -576,6 +653,43 @@ test "response: header" {
         t.allocator.free(v);
         try res.write();
         try ctx.expect("HTTP/1.1 200 \r\nKey2: Value2\r\nContent-Length: 0\r\n\r\n");
+    }
+}
+
+test "response: setCookie" {
+    {
+        var ctx = t.Context.init(.{});
+        defer ctx.deinit();
+
+        var res = ctx.response();
+        try res.setCookie("c-n", "c-v", .{});
+        try t.expectString("c-n=c-v", res.headers.get("Set-Cookie").?);
+    }
+
+    {
+        var ctx = t.Context.init(.{});
+        defer ctx.deinit();
+
+        var res = ctx.response();
+        try res.setCookie("c-n2", "c,v", .{});
+        try t.expectString("c-n2=\"c,v\"", res.headers.get("Set-Cookie").?);
+    }
+
+    {
+        var ctx = t.Context.init(.{});
+        defer ctx.deinit();
+
+        var res = ctx.response();
+        try res.setCookie("cookie_name3", "cookie value 3", .{
+            .path = "/auth/",
+            .domain = "www.openmymind.net",
+            .max_age = 9001,
+            .secure = true,
+            .http_only = true,
+            .partitioned = true,
+            .same_site = .lax,
+        });
+        try t.expectString("cookie_name3=\"cookie value 3\"; Path=/auth/; Domain=www.openmymind.net; Max-Age=9001; HttpOnly; Secure; Partitioned; SameSite=Lax", res.headers.get("Set-Cookie").?);
     }
 }
 
