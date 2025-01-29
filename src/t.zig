@@ -153,6 +153,7 @@ pub const Context = struct {
 
     fn setupFakeSocketPair(server: *posix.socket_t, client: *posix.socket_t) !void {
         const listener = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch unreachable;
+        defer posix.close(listener);
 
         var address = try std.net.Address.parseIp("127.0.0.1", 0);
         try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
@@ -163,8 +164,8 @@ pub const Context = struct {
         try posix.getsockname(listener, &address.any, &len);
 
         var thread = try std.Thread.spawn(.{}, struct {
-            fn accept(listner: posix.socket_t, server_side: *posix.socket_t) !void {
-                server_side.* = try posix.accept(listner, null, null, 0);
+            fn accept(l: posix.socket_t, server_side: *posix.socket_t) !void {
+                server_side.* = try posix.accept(l, null, null, 0);
             }
         }.accept, .{listener, server});
 
