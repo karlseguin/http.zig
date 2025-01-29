@@ -5,6 +5,7 @@
 const std = @import("std");
 const httpz = @import("httpz.zig");
 
+const posix = std.posix;
 const Allocator = std.mem.Allocator;
 
 const Conn = @import("worker.zig").HTTPConn;
@@ -26,7 +27,7 @@ pub fn reset() void {
 
 pub fn getRandom() std.Random.DefaultPrng {
     var seed: u64 = undefined;
-    std.posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
+    posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
     return std.Random.DefaultPrng.init(seed);
 }
 
@@ -50,24 +51,33 @@ pub const Context = struct {
 
     pub fn allocInit(ctx_allocator: Allocator, config_: httpz.Config) Context {
         var pair: [2]c_int = undefined;
-        const rc = std.c.socketpair(std.posix.AF.LOCAL, std.posix.SOCK.STREAM, 0, &pair);
-        if (rc != 0) {
-            @panic("socketpair fail");
+        if (@import("builtin").os.tag == .windows) {
+            // create the socket pair manually on Windows because `socketpair` does not exist on Windows
+            // use INET instead of LOCAL because LOCAL is an alias for UNIX, which does not exist on Windows
+            setupFakeSocketPair(&pair[0], &pair[1]) catch |err| {
+                std.debug.print("Failed to setup local client<->server: {}", .{err});
+                @panic(@errorName(err));
+            };
+        } else {
+            const rc = std.c.socketpair(posix.AF.LOCAL, posix.SOCK.STREAM, 0, &pair);
+            if (rc != 0) {
+                @panic("socketpair fail");
+            }
         }
 
         {
-            const timeout = std.mem.toBytes(std.posix.timeval{
+            const timeout = std.mem.toBytes(posix.timeval{
                 .sec = 0,
                 .usec = 20_000,
             });
-            std.posix.setsockopt(pair[0], std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &timeout) catch unreachable;
-            std.posix.setsockopt(pair[0], std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, &timeout) catch unreachable;
-            std.posix.setsockopt(pair[1], std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &timeout) catch unreachable;
-            std.posix.setsockopt(pair[1], std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, &timeout) catch unreachable;
+            posix.setsockopt(pair[0], posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeout) catch unreachable;
+            posix.setsockopt(pair[0], posix.SOL.SOCKET, posix.SO.SNDTIMEO, &timeout) catch unreachable;
+            posix.setsockopt(pair[1], posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeout) catch unreachable;
+            posix.setsockopt(pair[1], posix.SOL.SOCKET, posix.SO.SNDTIMEO, &timeout) catch unreachable;
 
             // for request.fuzz, which does up to an 8K write. Not sure why this has
             // to be so much more but on linux, even a 10K SNDBUF results in WOULD_BLOCK.
-            std.posix.setsockopt(pair[1], std.posix.SOL.SOCKET, std.posix.SO.SNDBUF, &std.mem.toBytes(@as(c_int, 20_000))) catch unreachable;
+            posix.setsockopt(pair[1], posix.SOL.SOCKET, posix.SO.SNDBUF, &std.mem.toBytes(@as(c_int, 20_000))) catch unreachable;
         }
 
         const server = std.net.Stream{ .handle = pair[0] };
@@ -141,6 +151,28 @@ pub const Context = struct {
         ctx_allocator.destroy(self.arena);
     }
 
+    fn setupFakeSocketPair(server: *posix.socket_t, client: *posix.socket_t) !void {
+        const listener = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch unreachable;
+
+        var address = try std.net.Address.parseIp("127.0.0.1", 0);
+        try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
+        try posix.bind(listener, &address.any, address.getOsSockLen());
+        try posix.listen(listener, 0);
+
+        var len: posix.socklen_t = @sizeOf(std.net.Address);
+        try posix.getsockname(listener, &address.any, &len);
+
+        var thread = try std.Thread.spawn(.{}, struct {
+            fn accept(listner: posix.socket_t, server_side: *posix.socket_t) !void {
+                server_side.* = try posix.accept(listner, null, null, 0);
+            }
+        }.accept, .{listener, server});
+
+        client.* = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch unreachable;
+        try posix.connect(client.*, &address.any, address.getOsSockLen());
+        thread.join();
+    }
+
     // force the server side socket to be closed, which helps our reading-test
     // know that there's no more data.
     pub fn close(self: *Context) void {
@@ -187,7 +219,7 @@ pub const Context = struct {
         // should have no extra data
         // let's check, with a shor timeout, which could let things slip, but
         // else we slow down fuzz tests too much
-        std.posix.setsockopt(self.client.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &std.mem.toBytes(std.posix.timeval{
+        posix.setsockopt(self.client.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(posix.timeval{
             .sec = 0,
             .usec = 1_000,
         })) catch unreachable;
@@ -200,7 +232,7 @@ pub const Context = struct {
         };
         try expectEqual(0, n);
 
-        std.posix.setsockopt(self.client.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &std.mem.toBytes(std.posix.timeval{
+        posix.setsockopt(self.client.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(posix.timeval{
             .sec = 0,
             .usec = 20_000,
         })) catch unreachable;
@@ -209,7 +241,7 @@ pub const Context = struct {
     fn random(self: *Context) std.Random {
         if (self._random == null) {
             var seed: u64 = undefined;
-            std.posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
+            posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
             self._random = std.Random.DefaultPrng.init(seed);
         }
         return self._random.?.random();
