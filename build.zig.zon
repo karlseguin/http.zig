@@ -4,12 +4,12 @@
   .version = "0.0.0",
   .dependencies = .{
     .metrics = .{
-      .url = "https://github.com/karlseguin/metrics.zig/archive/ca494b536787e95e5290527c0b30b82eff2d5d38.tar.gz",
-      .hash = "122084a9d77d05c33b1a559882e34a018e2c8d4d1a017ccebe5a8c956c16d545fd0a"
+      .url = "https://github.com/karlseguin/metrics.zig/archive/cf2797bcb3aea7e5cdaf4de39c5550c70796e7b1.tar.gz",
+      .hash = "122061f30077ef518dd435d397598ab3c45daa3d2c25e6b45383fb94d0bd2c3af1af"
     },
     .websocket = .{
-      .url = "https://github.com/karlseguin/websocket.zig/archive/e581dba86d7b2987fb765d97a892dd9007c4925a.tar.gz",
-      .hash = "12205295b51c304aa5cc6eefdf7922829cb433959c742ae6c9755d2a05b871c857ea"
+      .url = "https://github.com/karlseguin/websocket.zig/archive/c63acec1e31159647c66979571604097406d5647.tar.gz",
+      .hash = "1220cb75f778354bc894ceb824542c942b6f5f41d56052b2e146812cd323c3bb6b89"
     },
   },
 }
