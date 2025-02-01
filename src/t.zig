@@ -50,7 +50,7 @@ pub const Context = struct {
     _random: ?std.Random.DefaultPrng = null,
 
     pub fn allocInit(ctx_allocator: Allocator, config_: httpz.Config) Context {
-        var pair: [2]c_int = undefined;
+        var pair: [2]posix.socket_t = undefined;
         if (@import("builtin").os.tag == .windows) {
             // create the socket pair manually on Windows because `socketpair` does not exist on Windows
             // use INET instead of LOCAL because LOCAL is an alias for UNIX, which does not exist on Windows
@@ -167,7 +167,7 @@ pub const Context = struct {
             fn accept(l: posix.socket_t, server_side: *posix.socket_t) !void {
                 server_side.* = try posix.accept(l, null, null, 0);
             }
-        }.accept, .{listener, server});
+        }.accept, .{ listener, server });
 
         client.* = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch unreachable;
         try posix.connect(client.*, &address.any, address.getOsSockLen());
