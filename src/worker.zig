@@ -1679,8 +1679,7 @@ pub fn timestamp(clamp: u32) u32 {
         const value: u32 = @intCast(std.time.timestamp());
         return if (value <= clamp) return clamp + 1 else value;
     }
-    var ts: posix.timespec = undefined;
-    posix.clock_gettime(posix.CLOCK.MONOTONIC, &ts) catch unreachable;
+    const ts = posix.clock_gettime(posix.CLOCK.MONOTONIC) catch unreachable;
     return @intCast(ts.sec);
 }
 
