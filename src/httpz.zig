@@ -278,13 +278,14 @@ pub fn Server(comptime H: type) type {
 
             // do not pass arena.allocator to WorkerState, it needs to be able to
             // allocate and free at will.
+            const ws_config = config.websocket;
             var websocket_state = try websocket.server.WorkerState.init(allocator, .{
-                .max_message_size = config.websocket.max_message_size,
+                .max_message_size = ws_config.max_message_size,
                 .buffers = .{
-                    .small_size = if (has_websocket) config.websocket.small_buffer_size else 0,
-                    .small_pool = if (has_websocket) config.websocket.small_buffer_pool else 0,
-                    .large_size = if (has_websocket) config.websocket.large_buffer_size else 0,
-                    .large_pool = if (has_websocket) config.websocket.large_buffer_pool else 0,
+                    .small_size = if (has_websocket) ws_config.small_buffer_size else 0,
+                    .small_pool = if (has_websocket) ws_config.small_buffer_pool else 0,
+                    .large_size = if (has_websocket) ws_config.large_buffer_size else 0,
+                    .large_pool = if (has_websocket) ws_config.large_buffer_pool else 0,
                 },
                 // disable handshake memory allocation since httpz is handling
                 // the handshake request directly
@@ -293,6 +294,10 @@ pub fn Server(comptime H: type) type {
                     .max_size = 0,
                     .max_headers = 0,
                 },
+                .compression = if (ws_config.compression) .{
+                    .write_threshold = ws_config.compression_write_treshold,
+                    .retain_write_buffer = ws_config.compression_retain_writer,
+                } else null,
             });
             errdefer websocket_state.deinit();
 
@@ -657,19 +662,32 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: an
     const key = req.header("sec-websocket-key") orelse return false;
 
     const http_conn = res.conn;
-
     const ws_worker: *websocket.server.Worker(H) = @ptrCast(@alignCast(http_conn.ws_worker));
 
     var hc = try ws_worker.createConn(http_conn.stream.handle, http_conn.address, worker.timestamp(0));
     errdefer ws_worker.cleanupConn(hc);
 
     hc.handler = try H.init(&hc.conn, ctx);
-    try http_conn.stream.writeAll(&websocket.Handshake.createReply(key));
+
+    var agreed_compression: ?websocket.Compression = null;
+    if (ws_worker.canCompress()) {
+        if (req.header("sec-websocket-extensions")) |ext| {
+            if (try websocket.Handshake.parseExtension(ext)) |request_compression| {
+                agreed_compression = .{
+                    .client_no_context_takeover = request_compression.client_no_context_takeover,
+                    .server_no_context_takeover = request_compression.server_no_context_takeover,
+                };
+            }
+        }
+    }
+
+    var reply_buf: [512]u8 = undefined;
+    try http_conn.stream.writeAll(websocket.Handshake.createReply(key, agreed_compression, &reply_buf));
     if (comptime std.meta.hasFn(H, "afterInit")) {
         const params = @typeInfo(@TypeOf(H.afterInit)).@"fn".params;
         try if (comptime params.len == 1) hc.handler.?.afterInit() else hc.handler.?.afterInit(ctx);
     }
-
+    try ws_worker.setupConnection(hc, agreed_compression);
     res.written = true;
     http_conn.handover = .{ .websocket = hc };
     return true;

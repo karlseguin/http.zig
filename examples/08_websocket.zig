@@ -18,8 +18,8 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // For websocket support, you _must_ define a Handler, and your Handler _must_
-    // have a WebsocketHandler decleration
-    var server = try httpz.Server(Handler).init(allocator, .{ .port = PORT }, Handler{});
+    // have a WebsocketHandler declaration
+    var server = try httpz.Server(Handler).init(allocator, .{.port = PORT}, Handler{});
 
     defer server.deinit();
 

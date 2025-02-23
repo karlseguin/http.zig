@@ -55,6 +55,9 @@ pub const Config = struct {
         small_buffer_pool: ?usize = null,
         large_buffer_size: ?usize = null,
         large_buffer_pool: ?u16 = null,
+        compression: bool = false,
+        compression_retain_writer: bool = true,
+        compression_write_treshold: ?usize = null,
     };
 
     pub fn threadPoolCount(self: *const Config) u32 {

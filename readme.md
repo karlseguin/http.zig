@@ -930,6 +930,12 @@ try httpz.listen(allocator, &router, .{
         small_buffer_pool: ?usize = null,
         large_buffer_size: ?usize = null,
         large_buffer_pool: ?u16 = null,
+        compression: bool = false,
+        compression_retain_writer: bool = true,
+        // if compression is true, and this is null, then
+        // we accept compressed messaged from the client, but never send
+        // compressed messages
+        compression_write_treshold: ?usize = null,
     },
 });
 ```
