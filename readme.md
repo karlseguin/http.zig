@@ -18,7 +18,7 @@ pub fn main() !void {
     server.deinit();
   }
   
-  var router = server.router(.{});
+  var router = try server.router(.{});
   router.get("/api/user/:id", getUser, .{});
 
   // blocks
@@ -120,7 +120,7 @@ pub fn main() !void {
   };
 
   var server = try httpz.Server(*App).init(allocator, .{.port = 5882}, &app);
-  var router = server.router(.{});
+  var router = try server.router(.{});
   router.get("/api/user/:id", getUser, .{});
   try server.listen();
 }
@@ -262,7 +262,7 @@ pub fn main() !void {
     // overwrite the default error handler
     server.errorHandler(errorHandler); 
 
-    var router = server.router(.{});
+    var router = try server.router(.{});
 
     // use get/post/put/head/patch/options/delete
     // you can also use "all" to attach to all methods
@@ -659,7 +659,7 @@ You can specify a separate configuration for each route. To change the configura
 ```zig
 var server = try httpz.Server(Handler).init(allocator, .{.port = 5882}, &handler);
   
-var router = server.router(.{});
+var router = try server.router(.{});
 
 // Will use Handler.dispatch on the &handler instance passed to init
 // No middleware
@@ -762,7 +762,7 @@ const cors = try server.middleware(httpz.middleware.Cors, .{
 
 // apply this middleware to all routes (unless the route 
 // explicitly opts out)
-var router = server.router(.{.middlewares = &.{cors}});
+var router = try server.router(.{.middlewares = &.{cors}});
 
 // or we could add middleware on a route-per-route bassis
 router.get("/v1/users", user, .{.middlewares = &.{cors}});

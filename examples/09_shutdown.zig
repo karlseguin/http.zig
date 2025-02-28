@@ -34,7 +34,7 @@ pub fn main() !void {
     var server = try httpz.Server(void).init(allocator, .{.port = PORT}, {});
     defer server.deinit();
 
-    var router = server.router(.{});
+    var router = try server.router(.{});
     router.get("/", index, .{});
 
     std.debug.print("listening http://localhost:{d}/\n", .{PORT});

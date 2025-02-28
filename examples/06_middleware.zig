@@ -29,7 +29,7 @@ pub fn main() !void {
     // see example/middleware/Logger.zig
     const logger = try server.middleware(Logger, .{ .query = true });
 
-    var router = server.router(.{});
+    var router = try server.router(.{});
 
     // Apply middleware to all routes created from this point on
     router.middlewares = &.{logger};

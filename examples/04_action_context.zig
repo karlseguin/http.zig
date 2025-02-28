@@ -20,7 +20,7 @@ pub fn main() !void {
     // see 09_shutdown.zig for how to to break server.listen with an interrupt
     defer server.stop();
 
-    var router = server.router(.{});
+    var router = try server.router(.{});
 
     const restricted_route = &RouteData{ .restricted = true };
 

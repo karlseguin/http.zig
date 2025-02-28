@@ -466,13 +466,15 @@ pub fn Server(comptime H: type) type {
             }
         }
 
-        pub fn router(self: *Self, config: RouterConfig) *Router(H, ActionArg) {
+        pub fn router(self: *Self, config: RouterConfig) !*Router(H, ActionArg) {
             // we store this in self for us when no route is found (these will
             // still be executed).
-            self._middlewares = config.middlewares;
+
+            const owned = try self.arena.dupe(Middleware(H), config.middlewares);
+            self._middlewares = owned;
 
             // we store this in router to append to add/append to created routes
-            self._router.middlewares = config.middlewares;
+            self._router.middlewares = owned;
 
             return &self._router;
         }
@@ -806,7 +808,7 @@ test "tests:beforeAll" {
         middlewares[0] = try default_server.middleware(TestMiddleware, .{ .id = 100 });
         middlewares[1] = cors[0];
 
-        var router = default_server.router(.{});
+        var router = try default_server.router(.{});
         // router.get("/test/ws", testWS);
         router.get("/fail", TestDummyHandler.fail, .{});
         router.get("/test/json", TestDummyHandler.jsonRes, .{});
@@ -827,7 +829,7 @@ test "tests:beforeAll" {
 
     {
         dispatch_default_server = try Server(*TestHandlerDefaultDispatch).init(ga, .{ .port = 5993 }, &test_handler_default_dispatch1);
-        var router = dispatch_default_server.router(.{});
+        var router = try dispatch_default_server.router(.{});
         router.get("/", TestHandlerDefaultDispatch.echo, .{});
         router.get("/write/*", TestHandlerDefaultDispatch.echoWrite, .{});
         router.get("/fail", TestHandlerDefaultDispatch.fail, .{});
@@ -849,14 +851,14 @@ test "tests:beforeAll" {
 
     {
         dispatch_server = try Server(*TestHandlerDispatch).init(ga, .{ .port = 5994 }, &test_handler_dispatch);
-        var router = dispatch_server.router(.{});
+        var router = try dispatch_server.router(.{});
         router.get("/", TestHandlerDispatch.root, .{});
         test_server_threads[2] = try dispatch_server.listenInNewThread();
     }
 
     {
         dispatch_action_context_server = try Server(*TestHandlerDispatchContext).init(ga, .{ .port = 5995 }, &test_handler_disaptch_context);
-        var router = dispatch_action_context_server.router(.{});
+        var router = try dispatch_action_context_server.router(.{});
         router.get("/", TestHandlerDispatchContext.root, .{});
         test_server_threads[3] = try dispatch_action_context_server.listenInNewThread();
     }
@@ -865,7 +867,7 @@ test "tests:beforeAll" {
         // with only 1 worker, and a min/max conn of 1, each request should
         // hit our reset path.
         reuse_server = try Server(void).init(ga, .{ .port = 5996, .workers = .{ .count = 1, .min_conn = 1, .max_conn = 1 } }, {});
-        var router = reuse_server.router(.{});
+        var router = try reuse_server.router(.{});
         router.get("/test/writer", TestDummyHandler.reuseWriter, .{});
         test_server_threads[4] = try reuse_server.listenInNewThread();
     }
@@ -877,7 +879,7 @@ test "tests:beforeAll" {
 
     {
         websocket_server = try Server(TestWebsocketHandler).init(ga, .{ .port = 5998 }, TestWebsocketHandler{});
-        var router = websocket_server.router(.{});
+        var router = try websocket_server.router(.{});
         router.get("/ws", TestWebsocketHandler.upgrade, .{});
         test_server_threads[6] = try websocket_server.listenInNewThread();
     }
