@@ -213,19 +213,22 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
 
             var is_keepalive = false;
             while (true) {
-                // impossible for this to fail in blocking mode
-                defer conn.requestDone(self.retain_allocated_bytes_keepalive, false) catch unreachable;
                 switch (self.handleRequest(conn, is_keepalive, thread_buf) catch .close) {
                     .keepalive => {
                         is_keepalive = true;
+                        conn.requestDone(self.retain_allocated_bytes_keepalive, false) catch unreachable;
                     },
                     .close, .unknown => {
                         posix.close(socket);
+                        // impossible for this to fail in blocking mode
+                        conn.requestDone(self.retain_allocated_bytes_keepalive, false) catch unreachable;
                         self.http_conn_pool.release(conn);
                         return;
                     },
                     .websocket => |ptr| {
                         const hc: *ws.HandlerConn(WSH) = @ptrCast(@alignCast(ptr));
+                        // impossible for this to fail in blocking mode
+                        conn.requestDone(self.retain_allocated_bytes_keepalive, false) catch unreachable;
                         self.http_conn_pool.release(conn);
                         // blocking read loop
                         // will close the connection
@@ -235,6 +238,8 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                         return;
                     },
                     .disown => {
+                        // impossible for this to fail in blocking mode
+                        conn.requestDone(self.retain_allocated_bytes_keepalive, false) catch unreachable;
                         self.http_conn_pool.release(conn);
                         return;
                     },
