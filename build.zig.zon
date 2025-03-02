@@ -1,7 +1,8 @@
 .{
-  .name = "httpz",
+  .name = .httpz,
   .paths = .{""},
   .version = "0.0.0",
+  .fingerprint = 0x472add02ac73d53c,
   .dependencies = .{
     .metrics = .{
       .url = "https://github.com/karlseguin/metrics.zig/archive/cf2797bcb3aea7e5cdaf4de39c5550c70796e7b1.tar.gz",
