@@ -975,7 +975,6 @@ pub const State = struct {
         if (cl == 0) return true;
 
         if (self.lazy_read_size == null and cl > self.max_body_size) {
-            metrics.bodyTooBig();
             return error.BodyTooBig;
         }
 

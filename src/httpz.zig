@@ -964,6 +964,15 @@ test "httpz: invalid content length value (2)" {
     try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
 }
 
+test "httpz: body too big" {
+    const stream = testStream(5993);
+    defer stream.close();
+    try stream.writeAll("POST / HTTP/1.1\r\nContent-Length: 999999999999999999\r\n\r\n");
+
+    var buf: [100]u8 = undefined;
+    try t.expectString("HTTP/1.1 413 \r\nConnection: Close\r\nContent-Length: 23\r\n\r\nRequest body is too big", testReadAll(stream, &buf));
+}
+
 test "httpz: overflow content length" {
     const stream = testStream(5992);
     defer stream.close();

@@ -1721,6 +1721,10 @@ fn requestError(conn: *HTTPConn, err: anyerror) !void {
             metrics.invalidRequest();
             return writeError(handle, 400, "Invalid Request");
         },
+        error.BodyTooBig => {
+            metrics.bodyTooBig();
+            return writeError(handle, 413, "Request body is too big");
+        },
         error.BrokenPipe, error.ConnectionClosed, error.ConnectionResetByPeer => return,
         else => {
             log.err("server error: {}", .{err});
