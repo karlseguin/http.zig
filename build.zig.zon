@@ -1,16 +1,16 @@
 .{
-  .name = .httpz,
-  .paths = .{""},
-  .version = "0.0.0",
-  .fingerprint = 0x472add02ac73d53c,
-  .dependencies = .{
-    .metrics = .{
-      .url = "https://github.com/karlseguin/metrics.zig/archive/cf2797bcb3aea7e5cdaf4de39c5550c70796e7b1.tar.gz",
-      .hash = "122061f30077ef518dd435d397598ab3c45daa3d2c25e6b45383fb94d0bd2c3af1af"
+    .name = .httpz,
+    .paths = .{""},
+    .version = "0.0.0",
+    .fingerprint = 0x472add02ac73d53c,
+    .dependencies = .{
+        .metrics = .{
+            .url = "https://github.com/karlseguin/metrics.zig/archive/cf2797bcb3aea7e5cdaf4de39c5550c70796e7b1.tar.gz",
+            .hash = "N-V-__8AAHOzAQBh8wB371GN1DXTl1mKs8Rdqj0sJea0U4P7",
+        },
+        .websocket = .{
+            .url = "https://github.com/karlseguin/websocket.zig/archive/7c3f1149bffcde1dec98dea88a442e2b580d750a.tar.gz",
+            .hash = "websocket-0.1.0-ZPISdXNIAwCXG7oHBj4zc1CfmZcDeyR6hfTEOo8_YI4r",
+        },
     },
-    .websocket = .{
-      .url = "https://github.com/karlseguin/websocket.zig/archive/7c3f1149bffcde1dec98dea88a442e2b580d750a.tar.gz",
-      .hash = "1220971bba07063e3373509f9997037b247a85f4c43a8f3f608e2b25d241fb72dd6d"
-    },
-  },
 }
