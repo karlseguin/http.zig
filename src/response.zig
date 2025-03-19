@@ -110,7 +110,7 @@ pub const Response = struct {
         self.headers.add(n, v);
     }
 
-    pub fn startEventStreamThread(self: *Response, ctx: anytype, comptime handler: fn (@TypeOf(ctx), std.net.Stream) void) !void {
+    pub fn startEventStream(self: *Response, ctx: anytype, comptime handler: fn (@TypeOf(ctx), std.net.Stream) void) !void {
         self.content_type = .EVENTS;
         self.headers.add("Cache-Control", "no-cache");
         self.headers.add("Connection", "keep-alive");
@@ -129,7 +129,7 @@ pub const Response = struct {
         thread.detach();
     }
 
-    pub fn startEventStream(self: *Response) !std.net.Stream {
+    pub fn startEventStreamSync(self: *Response) !std.net.Stream {
         self.content_type = .EVENTS;
         self.headers.add("Cache-Control", "no-cache");
         self.headers.add("Connection", "keep-alive");
@@ -137,11 +137,9 @@ pub const Response = struct {
         const conn = self.conn;
         const stream = conn.stream;
 
-        // Do a blocking write to get the header out first :)
-        // try conn.blockingMode();
+        // just keep it in non-blocking mode and return the stream
         const header_buf = try self.prepareHeader();
         try stream.writeAll(header_buf);
-        // try conn.nonblockingMode();
 
         self.disown();
         return stream;
