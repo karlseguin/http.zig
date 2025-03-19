@@ -138,10 +138,10 @@ pub const Response = struct {
         const stream = conn.stream;
 
         // Do a blocking write to get the header out first :)
-        try conn.blockingMode();
+        // try conn.blockingMode();
         const header_buf = try self.prepareHeader();
         try stream.writeAll(header_buf);
-        try conn.nonblockingMode();
+        // try conn.nonblockingMode();
 
         self.disown();
         return stream;
