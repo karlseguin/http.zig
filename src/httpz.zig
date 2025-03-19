@@ -818,6 +818,7 @@ test "tests:beforeAll" {
         router.method("PING", "/test/method", TestDummyHandler.method, .{});
         router.get("/test/query", TestDummyHandler.reqQuery, .{});
         router.get("/test/stream", TestDummyHandler.eventStream, .{});
+        router.get("/test/stream", TestDummyHandler.eventStreamSync, .{});
         router.get("/test/req_reader", TestDummyHandler.reqReader, .{});
         router.get("/test/chunked", TestDummyHandler.chunked, .{});
         router.get("/test/route_data", TestDummyHandler.routeData, .{ .data = &TestDummyHandler.RouteData{ .power = 12345 } });
@@ -1601,6 +1602,14 @@ const TestDummyHandler = struct {
     fn eventStream(_: *Request, res: *Response) !void {
         res.status = 818;
         try res.startEventStream(StreamContext{ .data = "hello" }, StreamContext.handle);
+    }
+
+    fn eventStreamSync(_: *Request, res: *Response) !void {
+        res.status = 818;
+        const stream = try res.startEventStreamSync();
+        const w = stream.writer();
+        w.writeAll("hello") catch unreachable;
+        w.writeAll("a message") catch unreachable;
     }
 
     fn reqReader(req: *Request, res: *Response) !void {
