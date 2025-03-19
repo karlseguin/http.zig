@@ -110,7 +110,7 @@ pub const Response = struct {
         self.headers.add(n, v);
     }
 
-    pub fn startEventStream(self: *Response, ctx: anytype, comptime handler: fn (@TypeOf(ctx), std.net.Stream) void) !void {
+    pub fn startEventStreamThread(self: *Response, ctx: anytype, comptime handler: fn (@TypeOf(ctx), std.net.Stream) void) !void {
         self.content_type = .EVENTS;
         self.headers.add("Cache-Control", "no-cache");
         self.headers.add("Connection", "keep-alive");
@@ -127,6 +127,24 @@ pub const Response = struct {
 
         const thread = try std.Thread.spawn(.{}, handler, .{ ctx, stream });
         thread.detach();
+    }
+
+    pub fn startEventStream(self: *Response) !std.net.Stream {
+        self.content_type = .EVENTS;
+        self.headers.add("Cache-Control", "no-cache");
+        self.headers.add("Connection", "keep-alive");
+
+        const conn = self.conn;
+        const stream = conn.stream;
+
+        // Do a blocking write to get the header out first :)
+        try conn.blockingMode();
+        const header_buf = try self.prepareHeader();
+        try stream.writeAll(header_buf);
+        try conn.nonblockingMode();
+
+        self.disown();
+        return stream;
     }
 
     pub fn chunk(self: *Response, data: []const u8) !void {
