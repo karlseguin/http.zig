@@ -129,6 +129,22 @@ pub const Response = struct {
         thread.detach();
     }
 
+    pub fn startEventStreamSync(self: *Response) !std.net.Stream {
+        self.content_type = .EVENTS;
+        self.headers.add("Cache-Control", "no-cache");
+        self.headers.add("Connection", "keep-alive");
+
+        const conn = self.conn;
+        const stream = conn.stream;
+
+        // just keep it in non-blocking mode and return the stream
+        const header_buf = try self.prepareHeader();
+        try stream.writeAll(header_buf);
+
+        self.disown();
+        return stream;
+    }
+
     pub fn chunk(self: *Response, data: []const u8) !void {
         const conn = self.conn;
         if (!self.chunked) {

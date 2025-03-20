@@ -818,6 +818,7 @@ test "tests:beforeAll" {
         router.method("PING", "/test/method", TestDummyHandler.method, .{});
         router.get("/test/query", TestDummyHandler.reqQuery, .{});
         router.get("/test/stream", TestDummyHandler.eventStream, .{});
+        router.get("/test/streamsync", TestDummyHandler.eventStreamSync, .{});
         router.get("/test/req_reader", TestDummyHandler.reqReader, .{});
         router.get("/test/chunked", TestDummyHandler.chunked, .{});
         router.get("/test/route_data", TestDummyHandler.routeData, .{ .data = &TestDummyHandler.RouteData{ .power = 12345 } });
@@ -1266,6 +1267,22 @@ test "httpz: event stream" {
     try t.expectString("helloa message", res.body);
 }
 
+test "httpz: event stream sync" {
+    const stream = testStream(5992);
+    defer stream.close();
+    try stream.writeAll("GET /test/streamsync HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+    var res = testReadParsed(stream);
+    defer res.deinit();
+
+    try t.expectEqual(818, res.status);
+    try t.expectEqual(true, res.headers.get("Content-Length") == null);
+    try t.expectString("text/event-stream; charset=UTF-8", res.headers.get("Content-Type").?);
+    try t.expectString("no-cache", res.headers.get("Cache-Control").?);
+    try t.expectString("keep-alive", res.headers.get("Connection").?);
+    try t.expectString("helloa sync message", res.body);
+}
+
 test "httpz: keepalive" {
     const stream = testStream(5993);
     defer stream.close();
@@ -1601,6 +1618,14 @@ const TestDummyHandler = struct {
     fn eventStream(_: *Request, res: *Response) !void {
         res.status = 818;
         try res.startEventStream(StreamContext{ .data = "hello" }, StreamContext.handle);
+    }
+
+    fn eventStreamSync(_: *Request, res: *Response) !void {
+        res.status = 818;
+        const stream = try res.startEventStreamSync();
+        const w = stream.writer();
+        w.writeAll("hello") catch unreachable;
+        w.writeAll("a sync message") catch unreachable;
     }
 
     fn reqReader(req: *Request, res: *Response) !void {
