@@ -222,7 +222,7 @@ If your handler has a public `uncaughtError` method, it will be called whenever 
 
 ```zig
 const App = struct {
-  pub fn uncaughtError(self: *App, _: *Request, res: *Response, err: anyerror) void {
+  pub fn uncaughtError(_: *App, req: *httpz.Request, res: *httpz.Response, err: anyerror) void {
     std.log.info("500 {} {s} {}", .{req.method, req.url.path, err});
     res.status = 500;
     res.body = "sorry";
@@ -237,7 +237,7 @@ For the most control, you can define a `handle` method. This circumvents most of
 
 ```zig
 const App = struct {
-  pub fn handle(app: *App, req: *Request, res: *Response) void {
+  pub fn handle(app: *App, req: *httpz.Request, res: *httpz.Response) void {
     // todo
   }
 };
