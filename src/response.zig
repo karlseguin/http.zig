@@ -219,6 +219,7 @@ pub const Response = struct {
         //     type, it would have been set via the res.header(...) call, so would
         //     be included in `len)
         var len: usize = 220;
+
         for (names, values) |name, value| {
             // +4 for the colon, space and trailer
             len += name.len + value.len + 4;
@@ -322,6 +323,7 @@ pub const Response = struct {
             // prepends a \r\n. Hence,for the first chunk, we'll have the correct \r\n\r\n
             if (self.chunked) break :blk "Transfer-Encoding: chunked\r\n";
             if (self.content_type == .EVENTS) break :blk "\r\n";
+            if (headers.has("Content-Length")) break :blk "\r\n";
             break :blk "Content-Length: 0\r\n\r\n";
         };
 
@@ -670,6 +672,17 @@ test "response: header" {
         try res.write();
         try ctx.expect("HTTP/1.1 200 \r\nKey2: Value2\r\nContent-Length: 0\r\n\r\n");
     }
+}
+
+test "response: explit content length" {
+    var ctx = t.Context.init(.{});
+    defer ctx.deinit();
+
+    var res = ctx.response();
+    res.header("Key1", "Value1");
+    res.header("Content-Length", "30");
+    try res.write();
+    try ctx.expect("HTTP/1.1 200 \r\nKey1: Value1\r\nContent-Length: 30\r\n\r\n");
 }
 
 test "response: setCookie" {

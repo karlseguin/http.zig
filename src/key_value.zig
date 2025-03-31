@@ -53,6 +53,16 @@ fn KeyValue(K: type, V: type, equalFn: fn (lhs: K, rhs: K) callconv(.Inline) boo
             return null;
         }
 
+        pub fn has(self: *const Self, key: K) bool {
+            const hash = hashFn(key);
+            for (self.hashes[0..self.len], 0..) |h, i| {
+                if (h == hash and equalFn(self.keys[i], key)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         pub fn reset(self: *Self) void {
             self.len = 0;
         }
