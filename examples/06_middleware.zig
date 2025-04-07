@@ -35,7 +35,7 @@ pub fn main() !void {
     router.middlewares = &.{logger};
 
     router.get("/", index, .{});
-    router.get("/other", other, .{ .middlewares = &.{} });
+    router.get("/other", other, .{ .middlewares = &.{}, .middleware_strategy = .replace });
 
     std.debug.print("listening http://localhost:{d}/\n", .{PORT});
 
