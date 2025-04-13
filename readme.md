@@ -53,8 +53,8 @@ fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
 * [Server Side Events](#server-side-events)
 * [Websocket](#websocket)
 
-# Migration
-If you're coming from a previous version, I've made some breaking changes recently (largely to accomodate much better integration with websocket.zig). See the [Migration Wiki](https://github.com/karlseguin/http.zig/wiki/Migration) for more details.
+# Versions
+The `master` branch targets Zig 0.14. The `dev` branch targets the latest version of Zig.
 
 # Examples
 See the [examples](https://github.com/karlseguin/http.zig/tree/master/examples) folder for examples. If you clone this repository, you can run `zig build example_#` to run a specific example:
