@@ -246,11 +246,6 @@ pub fn Server(comptime H: type) type {
         middlewares: []const Middleware(H) = &.{},
     };
 
-    const MiddlewareItem = struct {
-        middleware: Middleware(H),
-        node: std.SinglyLinkedList.Node = .{},
-    };
-
     return struct {
         handler: H,
         config: Config,
@@ -264,7 +259,7 @@ pub fn Server(comptime H: type) type {
         _max_request_per_connection: usize,
         _middlewares: []const Middleware(H),
         _websocket_state: websocket.server.WorkerState,
-        _middleware_registry: std.SinglyLinkedList,
+        _middleware_registry: std.SinglyLinkedList(Middleware(H)),
 
         const Self = @This();
         const Worker = if (blockingMode()) worker.Blocking(*Self, WebsocketHandler) else worker.NonBlocking(*Self, WebsocketHandler);
@@ -330,8 +325,7 @@ pub fn Server(comptime H: type) type {
 
             var node = self._middleware_registry.first;
             while (node) |n| {
-                const item: *MiddlewareItem = @fieldParentPtr("node", n);
-                item.middleware.deinit();
+                n.data.deinit();
                 node = n.next;
             }
 
@@ -581,7 +575,7 @@ pub fn Server(comptime H: type) type {
         pub fn middleware(self: *Self, comptime M: type, config: M.Config) !Middleware(H) {
             const arena = self.arena;
 
-            const node = try arena.create(MiddlewareItem);
+            const node = try arena.create(std.SinglyLinkedList(Middleware(H)).Node);
             errdefer arena.destroy(node);
 
             const m = try arena.create(M);
@@ -596,8 +590,8 @@ pub fn Server(comptime H: type) type {
             }
 
             const iface = Middleware(H).init(m);
-            node.*.middleware = iface;
-            self._middleware_registry.prepend(&node.node);
+            node.data = iface;
+            self._middleware_registry.prepend(node);
 
             return iface;
         }
