@@ -171,9 +171,9 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             thread_pool.stop();
         }
 
-        pub fn stop(_: *const Self) void {
-            // noop, exists for compatibility with NonBlocking worker
-            // we'll stop when the http.Server shutdown the listening socket.
+        pub fn stop(self: *const Self) void {
+            // The HTTP server will stop when the http.Server shutdown the listening socket.
+            self.websocket.shutdown();
         }
 
         // Called in a worker thread. `thread_buf` is a thread-specific buffer that
@@ -530,6 +530,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 log.err("Failed to add monitor to listening socket: {}", .{err});
                 return;
             };
+            defer self.websocket.shutdown();
 
             var now = timestamp(0);
             var last_timeout = now;
