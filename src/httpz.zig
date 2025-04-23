@@ -180,6 +180,7 @@ pub fn Middleware(comptime H: type) type {
         ptr: *anyopaque,
         deinitFn: *const fn (ptr: *anyopaque) void,
         executeFn: *const fn (ptr: *anyopaque, req: *Request, res: *Response, executor: *Server(H).Executor) anyerror!void,
+        registry_node: std.SinglyLinkedList.Node,
 
         const Self = @This();
 
@@ -205,6 +206,7 @@ pub fn Middleware(comptime H: type) type {
                 .ptr = ptr,
                 .deinitFn = gen.deinit,
                 .executeFn = gen.execute,
+                .registry_node = .{},
             };
         }
 
@@ -259,7 +261,7 @@ pub fn Server(comptime H: type) type {
         _max_request_per_connection: usize,
         _middlewares: []const Middleware(H),
         _websocket_state: websocket.server.WorkerState,
-        _middleware_registry: std.SinglyLinkedList(Middleware(H)),
+        _middleware_registry: std.SinglyLinkedList,
 
         const Self = @This();
         const Worker = if (blockingMode()) worker.Blocking(*Self, WebsocketHandler) else worker.NonBlocking(*Self, WebsocketHandler);
@@ -325,7 +327,8 @@ pub fn Server(comptime H: type) type {
 
             var node = self._middleware_registry.first;
             while (node) |n| {
-                n.data.deinit();
+                const iface: *Middleware(H) = @fieldParentPtr("registry_node", n);
+                iface.deinit();
                 node = n.next;
             }
 
@@ -575,9 +578,6 @@ pub fn Server(comptime H: type) type {
         pub fn middleware(self: *Self, comptime M: type, config: M.Config) !Middleware(H) {
             const arena = self.arena;
 
-            const node = try arena.create(std.SinglyLinkedList(Middleware(H)).Node);
-            errdefer arena.destroy(node);
-
             const m = try arena.create(M);
             errdefer arena.destroy(m);
             switch (comptime @typeInfo(@TypeOf(M.init)).@"fn".params.len) {
@@ -589,11 +589,12 @@ pub fn Server(comptime H: type) type {
                 else => @compileError(@typeName(M) ++ ".init should accept 1 or 2 parameters"),
             }
 
-            const iface = Middleware(H).init(m);
-            node.data = iface;
-            self._middleware_registry.prepend(node);
+            const iface = try arena.create(Middleware(H));
+            errdefer arena.destroy(iface);
 
-            return iface;
+            iface.* = Middleware(H).init(m);
+            self._middleware_registry.prepend(&iface.registry_node);
+            return iface.*;
         }
 
         pub const Executor = struct {

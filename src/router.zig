@@ -838,6 +838,7 @@ fn fakeMiddleware(impl: *const FakeMiddlewareImpl) httpz.Middleware(void) {
         .ptr = @constCast(impl),
         .deinitFn = undefined,
         .executeFn = undefined,
+        .registry_node = .{},
     };
 }
 
