@@ -253,7 +253,7 @@ pub const Response = struct {
                 .ICO => "Content-Type: image/vnd.microsoft.icon\r\n",
                 .JPG => "Content-Type: image/jpeg\r\n",
                 .JS => "Content-Type: text/javascript; charset=UTF-8\r\n",
-                .JSON => "Content-Type: application/json\r\n",
+                .JSON => "Content-Type: application/json; charset=UTF-8\r\n",
                 .OTF => "Content-Type: font/otf\r\n",
                 .PDF => "Content-Type: application/pdf\r\n",
                 .PNG => "Content-Type: image/png\r\n",
