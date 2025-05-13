@@ -247,6 +247,11 @@ pub fn Server(comptime H: type) type {
     };
 
     return struct {
+        const MiddlewareNode = struct {
+            data: Middleware(H),
+            node: std.SinglyLinkedList.Node = .{},
+        };
+
         handler: H,
         config: Config,
         arena: Allocator,
@@ -259,7 +264,7 @@ pub fn Server(comptime H: type) type {
         _max_request_per_connection: usize,
         _middlewares: []const Middleware(H),
         _websocket_state: websocket.server.WorkerState,
-        _middleware_registry: std.SinglyLinkedList(Middleware(H)),
+        _middleware_registry: std.SinglyLinkedList,
 
         const Self = @This();
         const Worker = if (blockingMode()) worker.Blocking(*Self, WebsocketHandler) else worker.NonBlocking(*Self, WebsocketHandler);
@@ -322,11 +327,13 @@ pub fn Server(comptime H: type) type {
 
         pub fn deinit(self: *Self) void {
             self._websocket_state.deinit();
-
-            var node = self._middleware_registry.first;
-            while (node) |n| {
-                n.data.deinit();
-                node = n.next;
+            var middleware_node: ?*MiddlewareNode = null;
+            if (self._middleware_registry.first != null) {
+                middleware_node = @fieldParentPtr("node", self._middleware_registry.first.?);
+            }
+            while (middleware_node) |m| {
+                m.data.deinit();
+                middleware_node = @fieldParentPtr("node", m.node.next.?);
             }
 
             const arena: *std.heap.ArenaAllocator = @ptrCast(@alignCast(self.arena.ptr));
@@ -577,8 +584,8 @@ pub fn Server(comptime H: type) type {
         pub fn middleware(self: *Self, comptime M: type, config: M.Config) !Middleware(H) {
             const arena = self.arena;
 
-            const node = try arena.create(std.SinglyLinkedList(Middleware(H)).Node);
-            errdefer arena.destroy(node);
+            const middleware_node = try arena.create(MiddlewareNode);
+            errdefer arena.destroy(middleware_node);
 
             const m = try arena.create(M);
             errdefer arena.destroy(m);
@@ -592,8 +599,8 @@ pub fn Server(comptime H: type) type {
             }
 
             const iface = Middleware(H).init(m);
-            node.data = iface;
-            self._middleware_registry.prepend(node);
+            middleware_node.data = iface;
+            self._middleware_registry.prepend(&middleware_node.node);
 
             return iface;
         }
