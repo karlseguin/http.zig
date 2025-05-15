@@ -66,7 +66,7 @@ pub const Testing = struct {
 
         pub fn expectJson(self: Response, expected: anytype) !void {
             if (self.headers.get("Content-Type")) |ct| {
-                try t.expectString("application/json", ct);
+                try t.expectString("application/json; charset=UTF-8", ct);
             } else {
                 return error.NoContentTypeHeader;
             }
