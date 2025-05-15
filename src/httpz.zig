@@ -1099,7 +1099,7 @@ test "httpz: json response" {
     try stream.writeAll("GET /test/json HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
     var buf: [200]u8 = undefined;
-    try t.expectString("HTTP/1.1 201 \r\nContent-Type: application/json\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 201 \r\nContent-Type: application/json; charset=UTF-8\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", testReadAll(stream, &buf));
 }
 
 test "httpz: query" {
@@ -1359,7 +1359,7 @@ test "httpz: custom dispatch without action context" {
     try stream.writeAll("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
     var buf: [200]u8 = undefined;
-    try t.expectString("HTTP/1.1 200 \r\nContent-Type: application/json\r\ndstate: 10\r\ndispatch: TestHandlerDispatch\r\nContent-Length: 12\r\n\r\n{\"state\":10}", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 200 \r\nContent-Type: application/json; charset=UTF-8\r\ndstate: 10\r\ndispatch: TestHandlerDispatch\r\nContent-Length: 12\r\n\r\n{\"state\":10}", testReadAll(stream, &buf));
 }
 
 test "httpz: custom dispatch with action context" {
@@ -1368,7 +1368,7 @@ test "httpz: custom dispatch with action context" {
     try stream.writeAll("GET /?name=teg HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
 
     var buf: [200]u8 = undefined;
-    try t.expectString("HTTP/1.1 200 \r\nContent-Type: application/json\r\ndstate: 20\r\ndispatch: TestHandlerDispatchContext\r\nContent-Length: 12\r\n\r\n{\"other\":30}", testReadAll(stream, &buf));
+    try t.expectString("HTTP/1.1 200 \r\nContent-Type: application/json; charset=UTF-8\r\ndstate: 20\r\ndispatch: TestHandlerDispatchContext\r\nContent-Length: 12\r\n\r\n{\"other\":30}", testReadAll(stream, &buf));
 }
 
 test "httpz: custom handle" {
