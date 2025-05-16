@@ -135,7 +135,7 @@ fn Worker(comptime F: anytype) type {
         // position in the queue to write to
         head: usize,
 
-        // pendind jobs
+        // pending jobs
         queue: []Args,
 
         buffer: []u8,
