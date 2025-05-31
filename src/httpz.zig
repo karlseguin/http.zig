@@ -1615,7 +1615,7 @@ const TestDummyHandler = struct {
     }
 
     fn jsonRes(_: *Request, res: *Response) !void {
-        res.status = 201;
+        res.setStatus(.created);
         try res.json(.{ .over = 9000, .teg = "soup" }, .{});
     }
 

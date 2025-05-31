@@ -529,6 +529,8 @@ The following fields are the most useful:
 * `content_type` - an httpz.ContentType enum value. This is a convenience and optimization over using the `res.header` function.
 * `arena` - A fast thread-local buffer that fallsback to an ArenaAllocator, same as `req.arena`.
 
+The `status` field is a `u16`. You can alternatively use `res.setStatus(.ok)` if you prefer to use the `std.http.Status` enum.
+
 ## Body
 The simplest way to set a body is to set `res.body` to a `[]const u8`. **However** the provided value must remain valid until the body is written, which happens after the function exists or when `res.write()` is explicitly called.
 

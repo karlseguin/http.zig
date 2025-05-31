@@ -94,6 +94,10 @@ pub const Response = struct {
         self.headers.add(name, value);
     }
 
+    pub fn setStatus(self: *Response, status: std.http.Status) void {
+        self.status = @intFromEnum(status);
+    }
+
     pub fn setCookie(self: *Response, name: []const u8, value: []const u8, opts: CookieOpts) !void {
         const serialized = try serializeCookie(self.arena, name, value, &opts);
         self.header("Set-Cookie", serialized);
