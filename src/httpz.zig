@@ -364,6 +364,9 @@ pub fn Server(comptime H: type) type {
                 const proto = if (address.any.family == posix.AF.UNIX) @as(u32, 0) else posix.IPPROTO.TCP;
                 break :blk try posix.socket(address.any.family, sock_flags, proto);
             };
+            defer if (!comptime blockingMode()) {
+                posix.close(listener);
+            };
 
             if (no_delay) {
                 // TODO: Broken on darwin:
@@ -463,8 +466,8 @@ pub fn Server(comptime H: type) type {
                     // (which might not be that necessary since, on Linux,
                     // NonBlocking should be used)
                     posix.shutdown(l, .recv) catch {};
+                    posix.close(l);
                 }
-                posix.close(l);
             }
         }
 
