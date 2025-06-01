@@ -189,6 +189,11 @@ pub const Testing = struct {
         try t.expectEqual(expected, self.res.status);
     }
 
+    pub fn expectStatusCode(self: *const Testing, expected: std.http.Status) !void {
+        const code = @intFromEnum(expected);
+        try t.expectEqual(code, self.res.status);
+    }
+
     pub fn expectBody(self: *Testing, expected: []const u8) !void {
         const pr = try self.parseResponse();
         try t.expectString(expected, pr.body);
@@ -391,7 +396,7 @@ const JsonComparer = struct {
         const a_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, a_bytes, .{});
         const b_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, b_bytes, .{});
 
-        self.pretty_actual = try std.json.stringifyAlloc(allocator, b_value, .{.whitespace = .indent_2}) ;
+        self.pretty_actual = try std.json.stringifyAlloc(allocator, b_value, .{ .whitespace = .indent_2 });
 
         var diffs = ArrayList(Diff).init(allocator);
         var path = ArrayList([]const u8).init(allocator);
@@ -628,4 +633,13 @@ test "testing: parseResponse" {
     const res = try ht.parseResponse();
     try t.expectEqual(201, res.status);
     try t.expectEqual(2, res.headers.count());
+}
+
+test "testing: expectStatusCode" {
+    var ht = init(.{});
+    defer ht.deinit();
+
+    ht.res.status = 200;
+
+    try ht.expectStatusCode(.created);
 }
