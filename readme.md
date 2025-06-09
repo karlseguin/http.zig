@@ -68,7 +68,7 @@ listening http://localhost:8800/
 1) Add http.zig as a dependency in your `build.zig.zon`:
 
 ```bash
-zig fetch --save git+https://github.com/karlseguin/http.zig#master
+zig fetch --save "git+https://github.com/karlseguin/http.zig#master"
 ```
 
 2) In your `build.zig`, add the `httpz` module as a dependency you your program:
