@@ -91,31 +91,7 @@ pub const Url = struct {
         for (0..unescaped_len) |i| {
             const b = input[in_i];
             if (b == '%') {
-                const enc = input[in_i + 1 .. in_i + 3];
-                out[i] = switch (@as(u16, @bitCast(enc[0..2].*))) {
-                    asUint("20") => ' ',
-                    asUint("21") => '!',
-                    asUint("22") => '"',
-                    asUint("23") => '#',
-                    asUint("24") => '$',
-                    asUint("25") => '%',
-                    asUint("26") => '&',
-                    asUint("27") => '\'',
-                    asUint("28") => '(',
-                    asUint("29") => ')',
-                    asUint("2A") => '*',
-                    asUint("2B") => '+',
-                    asUint("2C") => ',',
-                    asUint("2F") => '/',
-                    asUint("3A") => ':',
-                    asUint("3B") => ';',
-                    asUint("3D") => '=',
-                    asUint("3F") => '?',
-                    asUint("40") => '@',
-                    asUint("5B") => '[',
-                    asUint("5D") => ']',
-                    else => decodeHex(enc[0]) << 4 | decodeHex(enc[1]),
-                };
+                out[i] = decodeHex(input[in_i + 1]) << 4 | decodeHex(input[in_i + 2]);
                 in_i += 3;
             } else if (b == '+') {
                 out[i] = ' ';
