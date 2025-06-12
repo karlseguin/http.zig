@@ -639,7 +639,7 @@ test "testing: expectStatusCode" {
     var ht = init(.{});
     defer ht.deinit();
 
-    ht.res.status = 200;
+    ht.res.status = 201;
 
     try ht.expectStatusCode(.created);
 }
