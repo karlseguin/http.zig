@@ -61,7 +61,7 @@ pub const Url = struct {
         while (in_i < input.len) {
             const b = input[in_i];
             if (b == '%') {
-                if (in_i + 2 >= input.len or !HEX_CHAR[input[in_i + 1]] or !HEX_CHAR[input[in_i + 2]]) {
+                if (in_i + 2 >= input.len or !std.ascii.isHex(input[in_i + 1]) or !std.ascii.isHex(input[in_i + 2])) {
                     return error.InvalidEscapeSequence;
                 }
                 in_i += 3;
@@ -91,31 +91,7 @@ pub const Url = struct {
         for (0..unescaped_len) |i| {
             const b = input[in_i];
             if (b == '%') {
-                const enc = input[in_i + 1 .. in_i + 3];
-                out[i] = switch (@as(u16, @bitCast(enc[0..2].*))) {
-                    asUint("20") => ' ',
-                    asUint("21") => '!',
-                    asUint("22") => '"',
-                    asUint("23") => '#',
-                    asUint("24") => '$',
-                    asUint("25") => '%',
-                    asUint("26") => '&',
-                    asUint("27") => '\'',
-                    asUint("28") => '(',
-                    asUint("29") => ')',
-                    asUint("2A") => '*',
-                    asUint("2B") => '+',
-                    asUint("2C") => ',',
-                    asUint("2F") => '/',
-                    asUint("3A") => ':',
-                    asUint("3B") => ';',
-                    asUint("3D") => '=',
-                    asUint("3F") => '?',
-                    asUint("40") => '@',
-                    asUint("5B") => '[',
-                    asUint("5D") => ']',
-                    else => HEX_DECODE[enc[0]] << 4 | HEX_DECODE[enc[1]],
-                };
+                out[i] = decodeHex(input[in_i + 1]) << 4 | decodeHex(input[in_i + 2]);
                 in_i += 3;
             } else if (b == '+') {
                 out[i] = ' ';
@@ -155,13 +131,11 @@ pub const Url = struct {
 };
 
 /// converts ascii to unsigned int of appropriate size
-pub fn asUint(comptime string: anytype) @Type(std.builtin.Type{
-    .int = .{
-        .bits = @bitSizeOf(@TypeOf(string.*)) - 8, // (- 8) to exclude sentinel 0
-        .signedness = .unsigned,
-    },
-}) {
-    const byteLength = @bitSizeOf(@TypeOf(string.*)) / 8 - 1;
+pub fn asUint(comptime string: anytype) std.meta.Int(
+    .unsigned,
+    @bitSizeOf(@TypeOf(string.*)) - 8, // (- 8) to exclude sentinel 0
+) {
+    const byteLength = @sizeOf(@TypeOf(string.*)) - 1;
     const expectedType = *const [byteLength:0]u8;
     if (@TypeOf(string) != expectedType) {
         @compileError("expected : " ++ @typeName(expectedType) ++ ", got: " ++ @typeName(@TypeOf(string)));
@@ -170,21 +144,17 @@ pub fn asUint(comptime string: anytype) @Type(std.builtin.Type{
     return @bitCast(@as(*const [byteLength]u8, string).*);
 }
 
-const HEX_CHAR = blk: {
-    var all = std.mem.zeroes([256]bool);
-    for ('a'..('f' + 1)) |b| all[b] = true;
-    for ('A'..('F' + 1)) |b| all[b] = true;
-    for ('0'..('9' + 1)) |b| all[b] = true;
+const HEX_DECODE_ARRAY = blk: {
+    var all: ['f' - '0' + 1]u8 = undefined;
+    for ('0'..('9' + 1)) |b| all[b - '0'] = b - '0';
+    for ('A'..('F' + 1)) |b| all[b - '0'] = b - 'A' + 10;
+    for ('a'..('f' + 1)) |b| all[b - '0'] = b - 'a' + 10;
     break :blk all;
 };
 
-const HEX_DECODE = blk: {
-    var all = std.mem.zeroes([256]u8);
-    for ('a'..('z' + 1)) |b| all[b] = b - 'a' + 10;
-    for ('A'..('Z' + 1)) |b| all[b] = b - 'A' + 10;
-    for ('0'..('9' + 1)) |b| all[b] = b - '0';
-    break :blk all;
-};
+inline fn decodeHex(char: u8) u8 {
+    return @as([*]const u8, @ptrFromInt((@intFromPtr(&HEX_DECODE_ARRAY) - @as(usize, '0'))))[char];
+}
 
 const t = @import("t.zig");
 test "url: parse" {
