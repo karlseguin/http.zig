@@ -432,6 +432,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         // connections that are closest to timeing out at the head.
         timeout_keepalive: u32,
 
+        mutex: std.Thread.Mutex,
+
         const Self = @This();
 
         const Loop = switch (builtin.os.tag) {
@@ -489,6 +491,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 .timeout_request = config.timeout.request orelse MAX_TIMEOUT,
                 .timeout_keepalive = config.timeout.keepalive orelse MAX_TIMEOUT,
                 .retain_allocated_bytes = config.workers.retain_allocated_bytes orelse 8192,
+                .mutex = .{},
             };
         }
 
@@ -821,6 +824,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         }
 
         pub fn processWebsocketData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, hc: *ws.HandlerConn(WSH)) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
             var ws_conn = &hc.conn;
             const success = self.websocket.worker.dataAvailable(hc, thread_buf);
             if (success == false) {
