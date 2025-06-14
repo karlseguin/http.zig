@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) !void {
 
     {
         const enable_tsan = b.option(bool, "tsan", "Enable ThreadSanitizer");
-        const test_filter = b.option([]const u8, "test-filter", "Filter for test");
+        const test_filter = b.option([]const []const u8, "test-filter", "Filters for test: specify multiple times for multiple filters");
         const tests = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path("src/httpz.zig"),
@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) !void {
                 .optimize = optimize,
                 .sanitize_thread = enable_tsan,
             }),
-            .filter = test_filter,
+            .filters = test_filter orelse &.{},
             .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
         });
         tests.linkLibC();
