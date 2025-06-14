@@ -7,10 +7,9 @@ const Allocator = std.mem.Allocator;
 fn KeyValue(V: type, hashFn: fn (key: []const u8) callconv(.Inline) u8) type {
     return struct {
         len: usize,
-        max: usize,
-        keys: [*][]const u8,
-        values: [*]V,
-        hashes: [*]u8,
+        keys: [][]const u8,
+        values: []V,
+        hashes: []u8,
 
         const Self = @This();
         pub const Value = V;
@@ -25,21 +24,21 @@ fn KeyValue(V: type, hashFn: fn (key: []const u8) callconv(.Inline) u8) type {
             const allocation = try allocator.alignedAlloc(u8, alignment, max * size);
             return .{
                 .len = 0,
-                .max = max,
-                .keys = @alignCast(@ptrCast(if (kFirst) allocation.ptr else allocation[max * @sizeOf(V)..].ptr)),
-                .values = @alignCast(@ptrCast(if (kFirst) allocation[max * @sizeOf([]const u8)..].ptr else allocation.ptr)),
-                .hashes = allocation[max * @sizeOf([]const u8) + max * @sizeOf(V)..].ptr,
+                .keys = @as([*][]const u8, @alignCast(@ptrCast(if (kFirst) allocation.ptr else allocation[max * @sizeOf(V)..].ptr)))[0..max],
+                .values = @as([*]V, @alignCast(@ptrCast(if (kFirst) allocation[max * @sizeOf([]const u8)..].ptr else allocation.ptr)))[0..max],
+                .hashes = allocation[max * @sizeOf([]const u8) + max * @sizeOf(V)..],
             };
         }
 
         pub fn deinit(self: *Self, allocator: Allocator) void {
-            allocator.free(@as([*] align(alignment) u8, @alignCast(@ptrCast(if (kFirst) self.keys else self.values)))[0..self.max * size]);
+            const allocation = @as([*] align(alignment) u8, @alignCast(@ptrCast(if (kFirst) self.keys.ptr else self.values.ptr)));
+            allocator.free(allocation[0..self.keys.len * size]);
         }
 
         pub fn add(self: *Self, key: []const u8, value: V) void {
             const len = self.len;
-            const max = self.max;
-            var keys = self.keys[0..max];
+            const max = self.keys.len;
+            var keys = self.keys;
             if (len == max) {
                 return;
             }
@@ -69,19 +68,18 @@ fn KeyValue(V: type, hashFn: fn (key: []const u8) callconv(.Inline) u8) type {
         }
 
         pub fn iterator(self: *const Self) Iterator {
+            const len = self.len;
             return .{
                 .pos = 0,
-                .len = self.len,
-                .keys = self.keys,
-                .values = self.values,
+                .keys = self.keys[0..len],
+                .values = self.values[0..len],
             };
         }
 
         pub const Iterator = struct {
             pos: usize,
-            len: usize,
-            keys: [*][]const u8,
-            values: [*]V,
+            keys: [][]const u8,
+            values: []V,
 
             const KV = struct {
                 key: []const u8,
@@ -90,7 +88,7 @@ fn KeyValue(V: type, hashFn: fn (key: []const u8) callconv(.Inline) u8) type {
 
             pub fn next(self: *Iterator) ?KV {
                 const pos = self.pos;
-                if (pos == self.len) {
+                if (pos == self.keys.len) {
                     return null;
                 }
 

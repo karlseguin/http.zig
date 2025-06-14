@@ -12,26 +12,24 @@ const Allocator = std.mem.Allocator;
 //     methods reflect how Router uses this.
 pub const Params = struct {
     len: usize,
-    max: usize,
-    names: [*][]const u8,
-    values: [*][]const u8,
+    names: [][]const u8,
+    values: [][]const u8,
 
     pub fn init(allocator: Allocator, max: usize) !Params {
         const allocation = try allocator.alloc([]const u8, 2 * max);
         return .{
             .len = 0,
-            .max = max,
-            .names = allocation.ptr,
-            .values = allocation[max..].ptr,
+            .names = allocation[0..max],
+            .values = allocation[max..],
         };
     }
 
     pub fn deinit(self: *Params, allocator: Allocator) void {
-        allocator.free(self.names[0 .. 2 * self.max]);
+        allocator.free(self.names.ptr[0 .. 2 * self.names.len]);
     }
 
     pub fn addValue(self: *Params, value: []const u8) void {
-        if (self.len == self.max) {
+        if (self.len == self.names.len) {
             return;
         }
         self.values[self.len] = value;
