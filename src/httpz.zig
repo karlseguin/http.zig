@@ -424,6 +424,7 @@ pub fn Server(comptime H: type) type {
                     workers[i].stop();
                 };
 
+                var ready_sem = std.Thread.Semaphore{};
                 const threads = try self.arena.alloc(Thread, workers.len);
                 for (0..workers.len) |i| {
                     workers[i] = try Worker.init(allocator, self, &config);
@@ -431,8 +432,12 @@ pub fn Server(comptime H: type) type {
                         workers[i].stop();
                         workers[i].deinit();
                     }
-                    threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], listener });
+                    threads[i] = try Thread.spawn(.{}, Worker.run, .{ &workers[i], listener, &ready_sem });
                     started += 1;
+                }
+
+                for (0..workers.len) |_| {
+                    ready_sem.wait();
                 }
 
                 // incase listenInNewThread was used and is waiting for us to start

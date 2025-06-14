@@ -518,7 +518,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             self.loop.stop();
         }
 
-        pub fn run(self: *Self, listener: posix.fd_t) void {
+        pub fn run(self: *Self, listener: posix.fd_t, ready_sem: *std.Thread.Semaphore) void {
             var thread_pool = &self.thread_pool;
 
             self.loop.start() catch |err| {
@@ -526,10 +526,14 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 return;
             };
 
+            // Whether this fails or succeeds we can confidently signal upstream
+            // that we're ready enough to be stopped in necessary.
             self.loop.monitorAccept(listener) catch |err| {
                 log.err("Failed to add monitor to listening socket: {}", .{err});
+                ready_sem.post();
                 return;
             };
+            ready_sem.post();
             defer self.websocket.shutdown();
 
             var now = timestamp(0);
@@ -1681,7 +1685,7 @@ pub const HTTPConn = struct {
 };
 
 pub fn timestamp(clamp: u32) u32 {
-    if (comptime @hasDecl(posix, "CLOCK") == false or  posix.CLOCK == void) {
+    if (comptime @hasDecl(posix, "CLOCK") == false or posix.CLOCK == void) {
         const value: u32 = @intCast(std.time.timestamp());
         return if (value <= clamp) return clamp + 1 else value;
     }
