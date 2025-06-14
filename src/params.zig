@@ -16,41 +16,36 @@ pub const Params = struct {
     values: [][]const u8,
 
     pub fn init(allocator: Allocator, max: usize) !Params {
-        const names = try allocator.alloc([]const u8, max);
-        const values = try allocator.alloc([]const u8, max);
+        const allocation = try allocator.alloc([]const u8, 2 * max);
         return .{
             .len = 0,
-            .names = names,
-            .values = values,
+            .names = allocation[0..max],
+            .values = allocation[max..],
         };
     }
 
     pub fn deinit(self: *Params, allocator: Allocator) void {
-        allocator.free(self.names);
-        allocator.free(self.values);
+        allocator.free(self.names.ptr[0 .. 2 * self.names.len]);
     }
 
     pub fn addValue(self: *Params, value: []const u8) void {
-        const len = self.len;
-        const values = self.values;
-        if (len == values.len) {
+        if (self.len == self.names.len) {
             return;
         }
-        values[len] = value;
-        self.len = len + 1;
+        self.values[self.len] = value;
+        self.len += 1;
     }
 
     // It should be impossible for names.len != self.len at this point, but it's
     // a bit dangerous to assume that since self.names is re-used between requests
     // and we don't want to leak anything, so I think enforcing a len of names.len
     // is safer, since names is generally statically defined based on routes setup.
-    pub fn addNames(self: *Params, names: [][]const u8) void {
+    //
+    // `noalias names` as `names` being a pointer inside self.names doesn't make sense,
+    //  and memcpy needs this guarantee anyways.
+    pub fn addNames(self: *Params, noalias names: [][]const u8) void {
         std.debug.assert(names.len == self.len);
-        const n = self.names;
-        for (names, 0..) |name, i| {
-            n[i] = name;
-        }
-        self.len = names.len;
+        @memcpy(self.names[0..self.len], names);
     }
 
     pub fn get(self: *const Params, needle: []const u8) ?[]const u8 {
