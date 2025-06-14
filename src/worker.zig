@@ -1559,6 +1559,8 @@ pub const HTTPConn = struct {
     // (especially since not everyone cares about websockets).
     ws_worker: *anyopaque,
 
+    mutex: std.Thread.Mutex,
+
     fn init(allocator: Allocator, buffer_pool: *BufferPool, ws_worker: *anyopaque, config: *const Config) !HTTPConn {
         const conn_arena = try allocator.create(std.heap.ArenaAllocator);
         errdefer allocator.destroy(conn_arena);
@@ -1587,6 +1589,7 @@ pub const HTTPConn = struct {
             .req_arena = req_arena,
             .conn_arena = conn_arena,
             ._io_mode = if (httpz.blockingMode()) .blocking else .nonblocking,
+            .mutex = .{},
         };
     }
 
@@ -1598,6 +1601,9 @@ pub const HTTPConn = struct {
     }
 
     pub fn requestDone(self: *HTTPConn, retain_allocated_bytes: usize, revert_blocking: bool) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         self.req_state.reset();
         self.res_state.reset();
         _ = self.req_arena.reset(.{ .retain_with_limit = retain_allocated_bytes });
