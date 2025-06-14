@@ -22,11 +22,13 @@ pub fn build(b: *std.Build) !void {
     }
 
     {
+        const enable_tsan = b.option(bool, "tsan", "Enable ThreadSanitizer");
         const test_filter = b.option([]const u8, "test-filter", "Filter for test");
         const tests = b.addTest(.{
             .root_source_file = b.path("src/httpz.zig"),
             .target = target,
             .optimize = optimize,
+            .sanitize_thread = enable_tsan,
             .filter = test_filter,
             .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
         });
