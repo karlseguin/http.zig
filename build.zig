@@ -25,10 +25,12 @@ pub fn build(b: *std.Build) !void {
         const enable_tsan = b.option(bool, "tsan", "Enable ThreadSanitizer");
         const test_filter = b.option([]const u8, "test-filter", "Filter for test");
         const tests = b.addTest(.{
-            .root_source_file = b.path("src/httpz.zig"),
-            .target = target,
-            .optimize = optimize,
-            .sanitize_thread = enable_tsan,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/httpz.zig"),
+                .target = target,
+                .optimize = optimize,
+                .sanitize_thread = enable_tsan,
+            }),
             .filter = test_filter,
             .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
         });
@@ -74,9 +76,11 @@ pub fn build(b: *std.Build) !void {
         for (examples) |ex| {
             const exe = b.addExecutable(.{
                 .name = ex.name,
-                .target = target,
-                .optimize = optimize,
-                .root_source_file = b.path(ex.file),
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path(ex.file),
+                    .target = target,
+                    .optimize = optimize,
+                }),
             });
             exe.root_module.addImport("httpz", httpz_module);
             exe.root_module.addImport("metrics", metrics_module);
