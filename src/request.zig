@@ -207,7 +207,7 @@ pub const Request = struct {
             .unread_body = &self.unread_body,
         };
 
-        return .{ .context = r};
+        return .{ .context = r };
     }
 
     // OK, this is a bit complicated.
@@ -554,7 +554,7 @@ pub const Request = struct {
                 if (trimmed[name.len] != '=') {
                     continue;
                 }
-                return trimmed[name.len + 1..];
+                return trimmed[name.len + 1 ..];
             }
             return null;
         }
@@ -564,6 +564,10 @@ pub const Request = struct {
 // All the upfront memory allocation that we can do. Each worker keeps a pool
 // of these to re-use.
 pub const State = struct {
+    // Since multiple threads try to modify this state, e.g. via parse and
+    // reset, this mutex is used to prevent races
+    mutex: std.Thread.Mutex = .{},
+
     // Header must fit in here. Extra space can be used to fit the body or decode
     // URL parameters.
     buf: []u8,
@@ -667,6 +671,9 @@ pub const State = struct {
     }
 
     pub fn reset(self: *State) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         // not our job to clear the arena!
         self.pos = 0;
         self.len = 0;
@@ -693,6 +700,9 @@ pub const State = struct {
 
     // returns true if the header has been fully parsed
     pub fn parse(self: *State, req_arena: Allocator, stream: anytype) !bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         if (self.body != null) {
             // if we have a body, then we've read the header. We want to read into
             // self.body, not self.buf.
