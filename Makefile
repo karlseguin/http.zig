@@ -2,8 +2,8 @@ F=
 zig ?= zig
 .PHONY: t
 t:
-	TEST_FILTER='${F}' '${zig}' build test -Dforce_blocking=false -freference-trace --summary all
-	TEST_FILTER='${F}' '${zig}' build test -Dforce_blocking=true -freference-trace --summary all
+	TEST_FILTER='${F}' '${zig}' build test -Dtsan=true -Dforce_blocking=false -freference-trace --summary all
+	TEST_FILTER='${F}' '${zig}' build test -Dtsan=true -Dforce_blocking=true -freference-trace --summary all
 
 .PHONY: tn
 tn:
