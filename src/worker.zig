@@ -570,7 +570,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                         .signal => self.processSignal(&closed_conn),
                         .recv => |conn| switch (conn.protocol) {
                             .http => |http_conn| {
-                                switch (http_conn._state.load(.monotonic)) {
+                                switch (http_conn._state.load(.acquire)) {
                                     .request, .keepalive => {},
                                     .active, .handover => {
                                         // we need to finish whatever we're doing
@@ -628,14 +628,14 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             http_conn._mut.lock();
             defer http_conn._mut.unlock();
 
-            switch (http_conn._state.load(.monotonic)) {
+            switch (http_conn._state.load(.acquire)) {
                 .active => self.active_list.remove(conn),
                 .keepalive => self.keepalive_list.remove(conn),
                 .request => self.request_list.remove(conn),
                 .handover => self.handover_list.remove(conn),
             }
 
-            http_conn._state.store(new_state, .monotonic);
+            http_conn._state.store(new_state, .release);
 
             switch (new_state) {
                 .active => self.active_list.insert(conn),
@@ -688,7 +688,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                 const http_conn = try self.http_conn_pool.acquire();
                 http_conn.request_count = 1;
-                http_conn._state.store(.request, .monotonic);
+                http_conn._state.store(.request, .release);
                 http_conn.handover = .unknown;
                 http_conn._io_mode = .nonblocking;
                 http_conn.address = address;
@@ -845,7 +845,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
         fn disown(self: *Self, conn: *Conn(WSH)) void {
             const http_conn = conn.protocol.http;
-            switch (http_conn._state.load(.monotonic)) {
+            switch (http_conn._state.load(.acquire)) {
                 .request => self.request_list.remove(conn),
                 .handover => self.handover_list.remove(conn),
                 .keepalive => self.keepalive_list.remove(conn),
