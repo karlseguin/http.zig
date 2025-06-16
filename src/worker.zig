@@ -432,6 +432,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         // connections that are closest to timeing out at the head.
         timeout_keepalive: u32,
 
+        mutex: std.Thread.Mutex,
+
         const Self = @This();
 
         const Loop = switch (builtin.os.tag) {
@@ -489,6 +491,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 .timeout_request = config.timeout.request orelse MAX_TIMEOUT,
                 .timeout_keepalive = config.timeout.keepalive orelse MAX_TIMEOUT,
                 .retain_allocated_bytes = config.workers.retain_allocated_bytes orelse 8192,
+                .mutex = .{},
             };
         }
 
@@ -567,7 +570,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                         .signal => self.processSignal(&closed_conn),
                         .recv => |conn| switch (conn.protocol) {
                             .http => |http_conn| {
-                                switch (http_conn.getState()) {
+                                switch (http_conn._state.load(.acquire)) {
                                     .request, .keepalive => {},
                                     .active, .handover => {
                                         // we need to finish whatever we're doing
@@ -625,15 +628,14 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             http_conn._mut.lock();
             defer http_conn._mut.unlock();
 
-            switch (http_conn._state) {
+            switch (http_conn._state.load(.acquire)) {
                 .active => self.active_list.remove(conn),
                 .keepalive => self.keepalive_list.remove(conn),
                 .request => self.request_list.remove(conn),
                 .handover => self.handover_list.remove(conn),
             }
 
-
-            http_conn.setState(new_state);
+            http_conn._state.store(new_state, .release);
 
             switch (new_state) {
                 .active => self.active_list.insert(conn),
@@ -686,7 +688,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                 const http_conn = try self.http_conn_pool.acquire();
                 http_conn.request_count = 1;
-                http_conn._state = .request;
+                http_conn._state.store(.request, .release);
                 http_conn.handover = .unknown;
                 http_conn._io_mode = .nonblocking;
                 http_conn.address = address;
@@ -822,6 +824,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         }
 
         pub fn processWebsocketData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, hc: *ws.HandlerConn(WSH)) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+
             var ws_conn = &hc.conn;
             const success = self.websocket.worker.dataAvailable(hc, thread_buf);
             if (success == false) {
@@ -840,7 +845,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
         fn disown(self: *Self, conn: *Conn(WSH)) void {
             const http_conn = conn.protocol.http;
-            switch (http_conn._state) {
+            switch (http_conn._state.load(.acquire)) {
                 .request => self.request_list.remove(conn),
                 .handover => self.handover_list.remove(conn),
                 .keepalive => self.keepalive_list.remove(conn),
@@ -1493,12 +1498,14 @@ pub const HTTPConn = struct {
     //
     // - keepalive: Conenction is between requests. We're waiting for the start
     //              of the new request. connections here are suject to the keepalive timeout.
-    const State = enum {
+    pub const State = enum(u8) {
         active,
         request,
         handover,
         keepalive,
     };
+
+    pub const AtomicState = std.atomic.Value(State);
 
     pub const Handover = union(enum) {
         disown,
@@ -1513,8 +1520,7 @@ pub const HTTPConn = struct {
         nonblocking,
     };
 
-    // can be concurrently accessed, use getState
-    _state: State,
+    _state: AtomicState,
 
     _mut: Thread.Mutex,
 
@@ -1559,6 +1565,8 @@ pub const HTTPConn = struct {
     // (especially since not everyone cares about websockets).
     ws_worker: *anyopaque,
 
+    mutex: std.Thread.Mutex,
+
     fn init(allocator: Allocator, buffer_pool: *BufferPool, ws_worker: *anyopaque, config: *const Config) !HTTPConn {
         const conn_arena = try allocator.create(std.heap.ArenaAllocator);
         errdefer allocator.destroy(conn_arena);
@@ -1575,7 +1583,7 @@ pub const HTTPConn = struct {
         return .{
             .timeout = 0,
             ._mut = .{},
-            ._state = .request,
+            ._state = AtomicState.init(.request),
             .handover = .unknown,
             .stream = undefined,
             .address = undefined,
@@ -1587,15 +1595,8 @@ pub const HTTPConn = struct {
             .req_arena = req_arena,
             .conn_arena = conn_arena,
             ._io_mode = if (httpz.blockingMode()) .blocking else .nonblocking,
+            .mutex = .{},
         };
-    }
-
-    pub fn getState(self: *const HTTPConn) State {
-        return @atomicLoad(State, &self._state, .acquire);
-    }
-
-    pub fn setState(self: *HTTPConn, state: State) void {
-        return @atomicStore(State, &self._state, state, .release);
     }
 
     pub fn deinit(self: *HTTPConn, allocator: Allocator) void {
@@ -1606,6 +1607,9 @@ pub const HTTPConn = struct {
     }
 
     pub fn requestDone(self: *HTTPConn, retain_allocated_bytes: usize, revert_blocking: bool) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         self.req_state.reset();
         self.res_state.reset();
         _ = self.req_arena.reset(.{ .retain_with_limit = retain_allocated_bytes });

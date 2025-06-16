@@ -109,7 +109,7 @@ pub const Context = struct {
         const conn = aa.create(Conn) catch unreachable;
         conn.* = .{
             ._mut = .{},
-            ._state = .request,
+            ._state = Conn.AtomicState.init(.request),
             .handover = .close,
             .stream = server,
             .address = std.net.Address.initIp4([_]u8{ 127, 0, 0, 200 }, 0),
@@ -122,6 +122,7 @@ pub const Context = struct {
             .conn_arena = ctx_arena,
             .req_arena = std.heap.ArenaAllocator.init(aa),
             ._io_mode = if (httpz.blockingMode()) .blocking else .nonblocking,
+            .mutex = .{},
         };
 
         return .{
