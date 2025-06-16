@@ -632,7 +632,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 .handover => self.handover_list.remove(conn),
             }
 
-            http_conn._state = new_state;
+
+            http_conn.setState(new_state);
 
             switch (new_state) {
                 .active => self.active_list.insert(conn),
@@ -1591,6 +1592,10 @@ pub const HTTPConn = struct {
 
     pub fn getState(self: *const HTTPConn) State {
         return @atomicLoad(State, &self._state, .acquire);
+    }
+
+    pub fn setState(self: *HTTPConn, state: State) void {
+        return @atomicStore(State, &self._state, state, .release);
     }
 
     pub fn deinit(self: *HTTPConn, allocator: Allocator) void {
