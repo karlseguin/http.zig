@@ -14,7 +14,9 @@ fn KeyValue(V: type, hashFn: fn (key: []const u8) callconv(.Inline) u8) type {
         const Self = @This();
         pub const Value = V;
 
-        const alignment = @max(@alignOf([]const u8), @alignOf(V));
+        const string_alignment = std.mem.Alignment.of([]const u8);
+        const v_alignment = std.mem.Alignment.of(V);
+        const alignment = std.mem.Alignment.max(string_alignment, v_alignment);
         const size = @sizeOf([]const u8) + @sizeOf(V) + @sizeOf(u8);
         const kFirst = @alignOf([]const u8) >= @alignOf(V);
 
@@ -24,15 +26,15 @@ fn KeyValue(V: type, hashFn: fn (key: []const u8) callconv(.Inline) u8) type {
             const allocation = try allocator.alignedAlloc(u8, alignment, max * size);
             return .{
                 .len = 0,
-                .keys = @as([*][]const u8, @alignCast(@ptrCast(if (kFirst) allocation.ptr else allocation[max * @sizeOf(V)..].ptr)))[0..max],
-                .values = @as([*]V, @alignCast(@ptrCast(if (kFirst) allocation[max * @sizeOf([]const u8)..].ptr else allocation.ptr)))[0..max],
-                .hashes = allocation[max * @sizeOf([]const u8) + max * @sizeOf(V)..],
+                .keys = @as([*][]const u8, @alignCast(@ptrCast(if (kFirst) allocation.ptr else allocation[max * @sizeOf(V) ..].ptr)))[0..max],
+                .values = @as([*]V, @alignCast(@ptrCast(if (kFirst) allocation[max * @sizeOf([]const u8) ..].ptr else allocation.ptr)))[0..max],
+                .hashes = allocation[max * @sizeOf([]const u8) + max * @sizeOf(V) ..],
             };
         }
 
         pub fn deinit(self: *Self, allocator: Allocator) void {
-            const allocation = @as([*] align(alignment) u8, @alignCast(@ptrCast(if (kFirst) self.keys.ptr else self.values.ptr)));
-            allocator.free(allocation[0..self.keys.len * size]);
+            const allocation = @as([*]align(alignment.toByteUnits()) u8, @alignCast(@ptrCast(if (kFirst) self.keys.ptr else self.values.ptr)));
+            allocator.free(allocation[0 .. self.keys.len * size]);
         }
 
         pub fn add(self: *Self, key: []const u8, value: V) void {
