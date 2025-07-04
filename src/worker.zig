@@ -94,7 +94,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             websocket.* = try ws.Worker(WSH).init(allocator, &server._websocket_state);
             errdefer websocket.deinit();
 
-            var http_conn_pool = try HTTPConnPool.init(allocator, buffer_pool, websocket, config);
+            var http_conn_pool = try HTTPConnPool.init(allocator, buffer_pool, websocket, 0, config);
             errdefer http_conn_pool.deinit();
 
             const retain_allocated_bytes_keepalive = config.workers.retain_allocated_bytes orelse 8192;
@@ -434,10 +434,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
         const Self = @This();
 
-        const Loop = switch (builtin.os.tag) {
-            .macos, .ios, .tvos, .watchos, .freebsd, .netbsd, .dragonfly, .openbsd => KQueue(WSH),
-            .linux => EPoll(WSH),
-            else => unreachable,
+        const Loop = switch (loopType()) {
+            .kqueue => KQueue(WSH),
+            .epoll => EPoll(WSH),
         };
 
         pub fn init(allocator: Allocator, server: S, config: *const Config) !Self {
@@ -455,7 +454,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             var conn_mem_pool = std.heap.MemoryPool(Conn(WSH)).init(allocator);
             errdefer conn_mem_pool.deinit();
 
-            var http_conn_pool = try HTTPConnPool.init(allocator, buffer_pool, websocket, config);
+            var http_conn_pool = try HTTPConnPool.init(allocator, buffer_pool, websocket, loop.fd, config);
             errdefer http_conn_pool.deinit();
 
             const thread_pool = try ThreadPool(Self.processData).init(allocator, .{
@@ -742,8 +741,12 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                         self.disown(conn);
                     },
                     .disown => {
+                        // When res.disown() was called, we immediately removed
+                        // the socket from the event loop. This is necessary
+                        // because the new owner of the socket might close it
+                        // before we get back here.
+                        // https://github.com/karlseguin/http.zig/issues/129#issuecomment-3031411404
                         closed_bool.* = true;
-                        loop.remove(conn) catch {};
                         self.disown(conn);
                     },
                     .websocket => |ptr| {
@@ -1092,10 +1095,6 @@ fn KQueue(comptime WSH: type) type {
             try self.change(socket, @intFromPtr(conn), posix.system.EVFILT.READ, posix.system.EV.ADD | posix.system.EV.DISPATCH, 0);
         }
 
-        fn remove(self: *Self, conn: *Conn(WSH)) !void {
-            try self.change(conn.getSocket(), 0, posix.system.EVFILT.READ, posix.system.EV.DELETE, 0);
-        }
-
         fn change(self: *Self, fd: posix.fd_t, data: usize, filter: i16, flags: u16, fflags: u16) !void {
             var change_count = self.change_count;
             var change_buffer = &self.change_buffer;
@@ -1252,9 +1251,6 @@ fn EPoll(comptime WSH: type) type {
             return self.rearmRead(conn);
         }
 
-        fn remove(self: *Self, conn: *Conn(WSH)) !void {
-            return posix.epoll_ctl(self.fd, linux.EPOLL.CTL_DEL, conn.getSocket(), null);
-        }
 
         fn wait(self: *Self, timeout_sec: ?i32) !Iterator {
             const event_list = &self.event_list;
@@ -1327,7 +1323,13 @@ const HTTPConnPool = struct {
     // API cleaner.
     websocket: *anyopaque,
 
-    fn init(allocator: Allocator, buffer_pool: *BufferPool, websocket: *anyopaque, config: *const Config) !HTTPConnPool {
+    // Unfortunately, in some special cases, we need to interact with the loop
+    // directly from a worker thread. Rather than store a *Loop, which could be
+    // misused (not all of the methods are safe to call from the non-worker
+    // thread), we store the loop's FD which is more opaque.
+    loop: i32,
+
+    fn init(allocator: Allocator, buffer_pool: *BufferPool, websocket: *anyopaque, loop: i32, config: *const Config) !HTTPConnPool {
         const min = config.workers.min_conn orelse @min(config.workers.max_conn orelse 64, 64);
 
         var conns = try allocator.alloc(*HTTPConn, min);
@@ -1345,7 +1347,7 @@ const HTTPConnPool = struct {
 
         for (0..min) |i| {
             const conn = try http_mem_pool.create();
-            conn.* = try HTTPConn.init(allocator, buffer_pool, websocket, config);
+            conn.* = try HTTPConn.init(allocator, buffer_pool, websocket, loop, config);
 
             conns[i] = conn;
             initialized += 1;
@@ -1353,6 +1355,7 @@ const HTTPConnPool = struct {
 
         return .{
             .mut = .{},
+            .loop = loop,
             .conns = conns,
             .config = config,
             .available = min,
@@ -1393,7 +1396,7 @@ const HTTPConnPool = struct {
                 self.http_mem_pool_mut.unlock();
             }
 
-            conn.* = try HTTPConn.init(self.allocator, self.buffer_pool, self.websocket, self.config);
+            conn.* = try HTTPConn.init(self.allocator, self.buffer_pool, self.websocket, self.loop, self.config);
             return conn;
         }
 
@@ -1559,7 +1562,13 @@ pub const HTTPConn = struct {
     // (especially since not everyone cares about websockets).
     ws_worker: *anyopaque,
 
-    fn init(allocator: Allocator, buffer_pool: *BufferPool, ws_worker: *anyopaque, config: *const Config) !HTTPConn {
+    // Unfortunately, in some special cases, we need to interact with the loop
+    // directly from a worker thread. Rather than store a *Loop, which could be
+    // misused (not all of the methods are safe to call from the non-worker
+    // thread), we store the loop's FD which is more opaque.
+    loop: i32,
+
+    fn init(allocator: Allocator, buffer_pool: *BufferPool, ws_worker: *anyopaque, loop: i32, config: *const Config) !HTTPConn {
         const conn_arena = try allocator.create(std.heap.ArenaAllocator);
         errdefer allocator.destroy(conn_arena);
 
@@ -1579,6 +1588,7 @@ pub const HTTPConn = struct {
             .handover = .unknown,
             .stream = undefined,
             .address = undefined,
+            .loop = loop,
             .request_count = 0,
             .socket_flags = 0,
             .ws_worker = ws_worker,
@@ -1586,7 +1596,7 @@ pub const HTTPConn = struct {
             .res_state = res_state,
             .req_arena = req_arena,
             .conn_arena = conn_arena,
-            ._io_mode = if (httpz.blockingMode()) .blocking else .nonblocking,
+            ._io_mode = if (comptime httpz.blockingMode()) .blocking else .nonblocking,
         };
     }
 
@@ -1603,6 +1613,43 @@ pub const HTTPConn = struct {
         self.req_arena.deinit();
         self.conn_arena.deinit();
         allocator.destroy(self.conn_arena);
+    }
+
+    // This method is being called from a worker thread. Be careful what you
+    // do here.
+    // When a connection is disowned, we need to remove it from the
+    // loop, since we aren't responsible for it anymore. However, we
+    // can't wait until the normal signal flow to do that, because, for
+    // all we know, the new owner of the socket will have closed the
+    // connection by then. We need to remove the socket from the loop
+    // synchronously when we're asked to disown it (as part of
+    // res.disown()).
+    pub fn disown(self: *HTTPConn) !void {
+        self.handover = .disown;
+
+        if (comptime httpz.blockingMode()) {
+            return;
+        }
+
+        const loop = self.loop;
+        const socket = self.stream.handle;
+        switch (comptime loopType()) {
+            .kqueue => {
+                _ = try posix.kevent(loop, &.{
+                        .{
+                            .ident = @intCast(socket),
+                            .filter = posix.system.EVFILT.READ,
+                            .flags =  posix.system.EV.DELETE,
+                            .fflags = 0,
+                            .data = 0,
+                            .udata = 0,
+                        },
+                    }, &.{}, null);
+            },
+            .epoll => {
+                return posix.epoll_ctl(loop,  std.os.linux.EPOLL.CTL_DEL, socket, null);
+            },
+        }
     }
 
     pub fn requestDone(self: *HTTPConn, retain_allocated_bytes: usize, revert_blocking: bool) !void {
@@ -1700,7 +1747,7 @@ pub fn timestamp(clamp: u32) u32 {
 
 fn initializeBufferPool(allocator: Allocator, config: *const Config) !*BufferPool {
     const large_buffer_count = config.workers.large_buffer_count orelse blk: {
-        if (httpz.blockingMode()) {
+        if (comptime httpz.blockingMode()) {
             break :blk config.threadPoolCount();
         } else {
             break :blk 16;
@@ -1754,12 +1801,26 @@ fn writeError(socket: posix.socket_t, comptime status: u16, comptime msg: []cons
     }
 }
 
+
+const LoopType = enum {
+    kqueue,
+    epoll,
+};
+
+fn loopType() LoopType {
+    return switch (builtin.os.tag) {
+        .macos, .ios, .tvos, .watchos, .freebsd, .netbsd, .dragonfly, .openbsd => .kqueue,
+        .linux => .epoll,
+        else => unreachable,
+    };
+}
+
 const t = @import("t.zig");
 test "HTTPConnPool" {
     var bp = try BufferPool.init(t.allocator, 2, 64);
     defer bp.deinit();
 
-    var p = try HTTPConnPool.init(t.allocator, &bp, undefined, &.{
+    var p = try HTTPConnPool.init(t.allocator, &bp, undefined, 0, &.{
         .workers = .{ .min_conn = 2 },
         .request = .{ .buffer_size = 64 },
     });

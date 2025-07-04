@@ -80,9 +80,9 @@ pub const Response = struct {
         };
     }
 
-    pub fn disown(self: *Response) void {
+    pub fn disown(self: *Response) !void {
         self.written = true;
-        self.conn.handover = .disown;
+        return self.conn.disown();
     }
 
     pub fn json(self: *Response, value: anytype, options: std.json.StringifyOptions) !void {
@@ -127,7 +127,7 @@ pub const Response = struct {
         const header_buf = try self.prepareHeader();
         try stream.writeAll(header_buf);
 
-        self.disown();
+        try self.disown();
 
         const thread = try std.Thread.spawn(.{}, handler, .{ ctx, stream });
         thread.detach();
@@ -145,7 +145,7 @@ pub const Response = struct {
         const header_buf = try self.prepareHeader();
         try stream.writeAll(header_buf);
 
-        self.disown();
+        try self.disown();
         return stream;
     }
 

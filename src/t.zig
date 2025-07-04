@@ -116,6 +116,7 @@ pub const Context = struct {
             .req_state = req_state,
             .res_state = res_state,
             .timeout = 0,
+            .loop = 0,
             .request_count = 0,
             .socket_flags = 0,
             .ws_worker = undefined,
