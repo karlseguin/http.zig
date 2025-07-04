@@ -21,6 +21,7 @@ fn KeyValue(V: type, hashFn: fn (key: []const u8) callconv(.Inline) u8) type {
         pub fn init(allocator: Allocator, max: usize) Allocator.Error!Self {
             // we want type with bigger alignment to be first.
             // Since alignment is always a power of 2, the second type is guaranteed to have correct alignment.
+
             const allocation = try allocator.alignedAlloc(u8, std.mem.Alignment.fromByteUnits(alignment), max * size);
             return .{
                 .len = 0,
