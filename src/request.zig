@@ -181,7 +181,7 @@ pub const Request = struct {
         return self.parseMultiFormData();
     }
 
-    pub const Reader = std.io.Reader(*BodyReader, BodyReader.Error, BodyReader.read);
+    pub const Reader = std.io.GenericReader(*BodyReader, BodyReader.Error, BodyReader.read);
 
     pub fn reader(self: *Request, timeout_ms: usize) !Reader {
         var buf: []const u8 = &.{};
@@ -207,7 +207,7 @@ pub const Request = struct {
             .unread_body = &self.unread_body,
         };
 
-        return .{ .context = r};
+        return .{ .context = r };
     }
 
     // OK, this is a bit complicated.
@@ -554,7 +554,7 @@ pub const Request = struct {
                 if (trimmed[name.len] != '=') {
                     continue;
                 }
-                return trimmed[name.len + 1..];
+                return trimmed[name.len + 1 ..];
             }
             return null;
         }
@@ -1095,8 +1095,9 @@ const t = @import("t.zig");
 test "atoi" {
     var buf: [5]u8 = undefined;
     for (0..99999) |i| {
-        const n = std.fmt.formatIntBuf(&buf, i, 10, .lower, .{});
-        try t.expectEqual(i, atoi(buf[0..n]).?);
+        var writer: std.io.Writer = .fixed(&buf);
+        try writer.printInt(i, 10, .lower, .{});
+        try t.expectEqual(i, atoi(writer.buffered()));
     }
 
     try t.expectEqual(null, atoi(""));
@@ -1821,7 +1822,7 @@ fn buildRequest(header: []const []const u8, body: []const []const u8) []const u8
         arr.appendSlice("\r\n") catch unreachable;
     }
     arr.appendSlice("Content-Length: ") catch unreachable;
-    std.fmt.formatInt(body_len, 10, .lower, .{}, arr.writer()) catch unreachable;
+    std.fmt.format(arr.writer(), "{d}", .{body_len}) catch unreachable;
     arr.appendSlice("\r\n\r\n") catch unreachable;
 
     for (body) |b| {
