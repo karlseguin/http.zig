@@ -140,10 +140,12 @@ pub const Testing = struct {
     }
 
     pub fn json(self: *Testing, value: anytype) void {
-        var arr = ArrayList(u8).init(self.arena);
-        std.json.stringify(value, .{}, arr.writer()) catch unreachable;
-        self.req.body_buffer = .{ .type = .static, .data = arr.items };
-        self.req.body_len = arr.items.len;
+        const json_writer = std.json.fmt(value, .{});
+        var aw: std.Io.Writer.Allocating = .init(self.arena);
+        json_writer.format(&aw.writer) catch unreachable;
+
+        self.req.body_buffer = .{ .type = .static, .data = aw.getWritten() };
+        self.req.body_len = aw.getWritten().len;
     }
 
     pub fn form(self: *Testing, data: anytype) void {
@@ -396,7 +398,10 @@ const JsonComparer = struct {
         const a_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, a_bytes, .{});
         const b_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, b_bytes, .{});
 
-        self.pretty_actual = try std.json.stringifyAlloc(allocator, b_value, .{ .whitespace = .indent_2 });
+        const json_writer = std.json.fmt(b_value, .{ .whitespace = .indent_2 });
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        try json_writer.format(&aw.writer);
+        self.pretty_actual = aw.getWritten();
 
         var diffs = ArrayList(Diff).init(allocator);
         var path = ArrayList([]const u8).init(allocator);
@@ -479,9 +484,10 @@ const JsonComparer = struct {
     }
 
     fn stringify(self: *JsonComparer, value: anytype) ![]const u8 {
-        var arr = ArrayList(u8).init(self._arena.allocator());
-        try std.json.stringify(value, .{}, arr.writer());
-        return arr.items;
+        var aw: std.io.Writer.Allocating = .init(self._arena.allocator());
+        const json_writer = std.json.fmt(value, .{});
+        try json_writer.format(&aw.writer);
+        return aw.getWritten();
     }
 
     fn format(self: *JsonComparer, value: anytype) []const u8 {

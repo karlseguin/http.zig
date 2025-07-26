@@ -181,8 +181,6 @@ pub const Request = struct {
         return self.parseMultiFormData();
     }
 
-    pub const Reader = std.io.Reader(*BodyReader, BodyReader.Error, BodyReader.read);
-
     pub fn reader(self: *Request, timeout_ms: usize) !Reader {
         var buf: []const u8 = &.{};
         if (self.body_buffer) |bb| {
@@ -200,14 +198,19 @@ pub const Request = struct {
             try std.posix.setsockopt(conn.stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &timeval);
         }
 
-        const r = try self.arena.create(BodyReader);
-        r.* = .{
+        return .{
             .buffer = buf,
             .socket = conn.stream.handle,
             .unread_body = &self.unread_body,
+            .interface = .{
+                .end = 0,
+                .seek = 0,
+                .buffer = &.{},
+                .vtable = &.{
+                    .stream = Reader.stream,
+                },
+            },
         };
-
-        return .{ .context = r};
     }
 
     // OK, this is a bit complicated.
@@ -508,14 +511,21 @@ pub const Request = struct {
         };
     }
 
-    pub const BodyReader = struct {
+    pub const Reader = struct {
         buffer: []const u8,
         unread_body: *usize,
         socket: std.posix.socket_t,
+        interface: std.io.Reader,
 
-        pub const Error = std.posix.ReadError;
+        pub fn stream(io_r: *std.Io.Reader, w: *std.io.Writer, limit: std.io.Limit) std.io.Reader.StreamError!usize {
+            const self: *Reader = @alignCast(@fieldParentPtr("interface", io_r));
+            const buf = limit.slice(try w.writableSliceGreedy(1));
+            const n = self.read(buf) catch return error.ReadFailed;
+            w.advance(n);
+            return n;
+        }
 
-        pub fn read(self: *BodyReader, into: []u8) Error!usize {
+        pub fn read(self: *Reader, into: []u8) !usize {
             const b = self.buffer;
             if (b.len != 0) {
                 const l = @min(b.len, into.len);
@@ -554,7 +564,7 @@ pub const Request = struct {
                 if (trimmed[name.len] != '=') {
                     continue;
                 }
-                return trimmed[name.len + 1..];
+                return trimmed[name.len + 1 ..];
             }
             return null;
         }
@@ -1095,8 +1105,9 @@ const t = @import("t.zig");
 test "atoi" {
     var buf: [5]u8 = undefined;
     for (0..99999) |i| {
-        const n = std.fmt.formatIntBuf(&buf, i, 10, .lower, .{});
-        try t.expectEqual(i, atoi(buf[0..n]).?);
+        var writer = std.Io.Writer.fixed(&buf);
+        try writer.printInt(i, 10, .lower, .{});
+        try t.expectEqual(i, atoi(buf[0..writer.end]).?);
     }
 
     try t.expectEqual(null, atoi(""));
@@ -1812,21 +1823,21 @@ fn buildRequest(header: []const []const u8, body: []const []const u8) []const u8
         body_len += b.len;
     }
 
-    var arr = std.ArrayList(u8).init(t.arena.allocator());
+    var aw: std.Io.Writer.Allocating = .init(t.arena.allocator());
     // 100 for the Content-Length that we'll add and all the \r\n
-    arr.ensureTotalCapacity(header_len + body_len + 100) catch unreachable;
+    aw.ensureTotalCapacity(header_len + body_len + 100) catch unreachable;
 
     for (header) |h| {
-        arr.appendSlice(h) catch unreachable;
-        arr.appendSlice("\r\n") catch unreachable;
+        aw.writer.writeAll(h) catch unreachable;
+        aw.writer.writeAll("\r\n") catch unreachable;
     }
-    arr.appendSlice("Content-Length: ") catch unreachable;
-    std.fmt.formatInt(body_len, 10, .lower, .{}, arr.writer()) catch unreachable;
-    arr.appendSlice("\r\n\r\n") catch unreachable;
+    aw.writer.writeAll("Content-Length: ") catch unreachable;
+    aw.writer.print("{d}", .{body_len}) catch unreachable;
+    aw.writer.writeAll("\r\n\r\n") catch unreachable;
 
     for (body) |b| {
-        arr.appendSlice(b) catch unreachable;
+        aw.writer.writeAll(b) catch unreachable;
     }
 
-    return arr.items;
+    return aw.getWritten();
 }

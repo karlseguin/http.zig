@@ -8,8 +8,13 @@ pub fn build(b: *std.Build) !void {
     const metrics_module = b.dependency("metrics", dep_opts).module("metrics");
     const websocket_module = b.dependency("websocket", dep_opts).module("websocket");
 
+    const enable_tsan = b.option(bool, "tsan", "Enable ThreadSanitizer");
+
     const httpz_module = b.addModule("httpz", .{
         .root_source_file = b.path("src/httpz.zig"),
+        .target = target,
+        .optimize = optimize,
+        .sanitize_thread = enable_tsan,
         .imports = &.{
             .{ .name = "metrics", .module = metrics_module },
             .{ .name = "websocket", .module = websocket_module },
@@ -22,15 +27,9 @@ pub fn build(b: *std.Build) !void {
     }
 
     {
-        const enable_tsan = b.option(bool, "tsan", "Enable ThreadSanitizer");
         const test_filter = b.option([]const []const u8, "test-filter", "Filters for test: specify multiple times for multiple filters");
         const tests = b.addTest(.{
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/httpz.zig"),
-                .target = target,
-                .optimize = optimize,
-                .sanitize_thread = enable_tsan,
-            }),
+            .root_module = httpz_module,
             .filters = test_filter orelse &.{},
             .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
         });
@@ -76,11 +75,7 @@ pub fn build(b: *std.Build) !void {
         for (examples) |ex| {
             const exe = b.addExecutable(.{
                 .name = ex.name,
-                .root_module = b.createModule(.{
-                    .root_source_file = b.path(ex.file),
-                    .target = target,
-                    .optimize = optimize,
-                }),
+                .root_module = httpz_module,
             });
             exe.root_module.addImport("httpz", httpz_module);
             exe.root_module.addImport("metrics", metrics_module);

@@ -546,10 +546,11 @@ res.body = try std.fmt.allocPrint(res.arena, "Hello {s}", .{name});
 Memory allocated with `res.arena` will exist until the response is sent.
 
 ## io.Writer
-`res.writer()` returns an `std.io.Writer`. Various types support writing to an io.Writer. For example, the built-in JSON stream writer can use this writer:
+`res.writer()` returns a Writer. Its `interface` field exposes an `std.Io.Writer`. Various types support writing to an io.Writer. For example, the built-in JSON stream writer can use this writer:
 
 ```zig
-var ws = std.json.writeStream(res.writer(), 4);
+var writer = res.writer();
+var ws = std.json.writeStream(&writer.interface, 4);
 try ws.beginObject();
 try ws.objectField("name");
 try ws.emitString(req.param("name").?);
