@@ -331,7 +331,7 @@ test "ThreadPool: batch add" {
                 tp.spawn(.{4});
             }
             while (tp.empty() == false) {
-                std.time.sleep(std.time.ns_per_ms);
+                std.Thread.sleep(std.time.ns_per_ms);
             }
             tp.stop();
             try t.expectEqual(10_000, testSum);
@@ -367,7 +367,7 @@ test "ThreadPool: small fuzz" {
         tp.spawn(.{3});
     }
     while (tp.empty() == false) {
-        std.time.sleep(std.time.ns_per_ms);
+        std.Thread.sleep(std.time.ns_per_ms);
     }
     tp.stop();
     try t.expectEqual(60_000, testSum);
@@ -403,7 +403,7 @@ test "ThreadPool: large fuzz" {
         tp.spawn(.{6});
     }
     while (tp.empty() == false) {
-        std.time.sleep(std.time.ns_per_ms);
+        std.Thread.sleep(std.time.ns_per_ms);
     }
     tp.stop();
     try t.expectEqual(210_000, testSum);
@@ -438,5 +438,5 @@ fn testIncr(c: u64, buf: []u8) void {
         else => unreachable,
     }
     // let the threadpool queue get backed up
-    std.time.sleep(std.time.ns_per_us * 20);
+    std.Thread.sleep(std.time.ns_per_us * 20);
 }

@@ -137,11 +137,11 @@ pub fn main() !void {
 }
 
 const Printer = struct {
-    out: std.fs.File.Writer,
+    out: std.fs.File.DeprecatedWriter,
 
     fn init() Printer {
         return .{
-            .out = std.io.getStdErr().writer(),
+            .out = std.fs.File.stderr().deprecatedWriter(),
         };
     }
 

@@ -551,7 +551,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                 var it = self.loop.wait(timeout) catch |err| {
                     log.err("Failed to wait on events: {}", .{err});
-                    std.time.sleep(std.time.ns_per_s);
+                    std.Thread.sleep(std.time.ns_per_s);
                     continue;
                 };
                 now = timestamp(now);
@@ -561,7 +561,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     switch (event) {
                         .accept => self.accept(listener, now) catch |err| {
                             log.err("Failed to accept connection: {}", .{err});
-                            std.time.sleep(std.time.ns_per_ms * 5);
+                            std.Thread.sleep(std.time.ns_per_ms * 5);
                         },
                         .signal => self.processSignal(&closed_conn),
                         .recv => |conn| switch (conn.protocol) {
@@ -630,7 +630,6 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 .request => self.request_list.remove(conn),
                 .handover => self.handover_list.remove(conn),
             }
-
 
             http_conn.setState(new_state);
 
@@ -834,7 +833,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 self.websocket.cleanupConn(hc);
             } else {
                 self.loop.rearmRead(conn) catch |err| {
-                    log.debug("({}) failed to add read event monitor: {}", .{ ws_conn.address, err });
+                    log.debug("({f}) failed to add read event monitor: {}", .{ ws_conn.address, err });
                     ws_conn.close(.{ .code = 4998, .reason = "wsz" }) catch {};
                     self.websocket.cleanupConn(hc);
                 };
@@ -1251,7 +1250,6 @@ fn EPoll(comptime WSH: type) type {
             return self.rearmRead(conn);
         }
 
-
         fn wait(self: *Self, timeout_sec: ?i32) !Iterator {
             const event_list = &self.event_list;
             var timeout: i32 = -1;
@@ -1636,18 +1634,18 @@ pub const HTTPConn = struct {
         switch (comptime loopType()) {
             .kqueue => {
                 _ = try posix.kevent(loop, &.{
-                        .{
-                            .ident = @intCast(socket),
-                            .filter = posix.system.EVFILT.READ,
-                            .flags =  posix.system.EV.DELETE,
-                            .fflags = 0,
-                            .data = 0,
-                            .udata = 0,
-                        },
-                    }, &.{}, null);
+                    .{
+                        .ident = @intCast(socket),
+                        .filter = posix.system.EVFILT.READ,
+                        .flags = posix.system.EV.DELETE,
+                        .fflags = 0,
+                        .data = 0,
+                        .udata = 0,
+                    },
+                }, &.{}, null);
             },
             .epoll => {
-                return posix.epoll_ctl(loop,  std.os.linux.EPOLL.CTL_DEL, socket, null);
+                return posix.epoll_ctl(loop, std.os.linux.EPOLL.CTL_DEL, socket, null);
             },
         }
     }
@@ -1800,7 +1798,6 @@ fn writeError(socket: posix.socket_t, comptime status: u16, comptime msg: []cons
         i += try posix.write(socket, response[i..]);
     }
 }
-
 
 const LoopType = enum {
     kqueue,
