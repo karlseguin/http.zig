@@ -126,9 +126,7 @@ pub const Response = struct {
 
         // caller probably expects this to be in blocking mode
         try conn.blockingMode();
-        const header_buf = try self.prepareHeader();
-        try stream.writeAll(header_buf);
-
+        try self.writeHeader();
         try self.disown();
 
         const thread = try std.Thread.spawn(.{}, handler, .{ ctx, stream });
@@ -144,9 +142,7 @@ pub const Response = struct {
         const stream = conn.stream;
 
         // just keep it in non-blocking mode and return the stream
-        const header_buf = try self.prepareHeader();
-        try stream.writeAll(header_buf);
-
+        try self.writeHeader();
         try self.disown();
         return stream;
     }
@@ -155,8 +151,7 @@ pub const Response = struct {
         const conn = self.conn;
         if (!self.chunked) {
             self.chunked = true;
-            const header_buf = try self.prepareHeader();
-            try conn.writeAll(header_buf);
+            try self.writeHeader();
         }
 
         // enough for a 1TB chunk
@@ -183,6 +178,11 @@ pub const Response = struct {
 
     pub fn writer(self: *Response) Writer {
         return Writer.init(self);
+    }
+
+    pub fn writeHeader(self: *Response) !void {
+        const header_buf = try self.prepareHeader();
+        return self.conn.writeAll(header_buf);
     }
 
     pub fn write(self: *Response) !void {
