@@ -1839,5 +1839,5 @@ fn buildRequest(header: []const []const u8, body: []const []const u8) []const u8
         aw.writer.writeAll(b) catch unreachable;
     }
 
-    return aw.getWritten();
+    return aw.written();
 }

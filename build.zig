@@ -75,10 +75,15 @@ pub fn build(b: *std.Build) !void {
         for (examples) |ex| {
             const exe = b.addExecutable(.{
                 .name = ex.name,
-                .root_module = httpz_module,
+                .root_module = b.createModule(.{
+                    .root_source_file = b.path(ex.file),
+                    .target = target,
+                    .optimize = optimize,
+                    .imports = &.{
+                        .{.name = "httpz", .module = httpz_module},
+                    }
+                }),
             });
-            exe.root_module.addImport("httpz", httpz_module);
-            exe.root_module.addImport("metrics", metrics_module);
             if (ex.libc) {
                 exe.linkLibC();
             }

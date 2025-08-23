@@ -685,26 +685,21 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: an
 
     hc.handler = try H.init(&hc.conn, ctx);
 
-    var agreed_compression: ?websocket.Compression = null;
+    var compression = false;
     if (ws_worker.canCompress()) {
         if (req.header("sec-websocket-extensions")) |ext| {
-            if (try websocket.Handshake.parseExtension(ext)) |request_compression| {
-                agreed_compression = .{
-                    .client_no_context_takeover = request_compression.client_no_context_takeover,
-                    .server_no_context_takeover = request_compression.server_no_context_takeover,
-                };
-            }
+            compression = try websocket.Handshake.parseExtension(ext) != null;
         }
     }
 
     var reply_buf: [512]u8 = undefined;
-    const reply = try websocket.Handshake.createReply(key, null, agreed_compression, &reply_buf);
+    const reply = try websocket.Handshake.createReply(key, null, compression, &reply_buf);
     try http_conn.stream.writeAll(reply);
     if (comptime std.meta.hasFn(H, "afterInit")) {
         const params = @typeInfo(@TypeOf(H.afterInit)).@"fn".params;
         try if (comptime params.len == 1) hc.handler.?.afterInit() else hc.handler.?.afterInit(ctx);
     }
-    try ws_worker.setupConnection(hc, agreed_compression);
+    try ws_worker.setupConnection(hc);
     res.written = true;
     http_conn.handover = .{ .websocket = hc };
     return true;
@@ -1736,7 +1731,7 @@ const TestHandlerDefaultDispatch = struct {
         var aw: std.io.Writer.Allocating = .init(res.arena);
         try json_writer.format(&aw.writer);
 
-        res.body = aw.getWritten();
+        res.body = aw.written();
         return res.write();
     }
 
