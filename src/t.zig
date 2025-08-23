@@ -125,15 +125,7 @@ pub const Context = struct {
             ._io_mode = if (httpz.blockingMode()) .blocking else .nonblocking,
         };
 
-        return .{
-            .conn = conn,
-            .arena = ctx_arena,
-            .stream = server,
-            .client = client,
-            .fake = false,
-            .to_read_pos = 0,
-            .to_read = std.ArrayList(u8).init(aa),
-        };
+        return .{ .conn = conn, .arena = ctx_arena, .stream = server, .client = client, .fake = false, .to_read_pos = 0, .to_read = .empty };
     }
 
     pub fn init(config: httpz.Config) Context {
@@ -186,7 +178,7 @@ pub const Context = struct {
 
     pub fn write(self: *Context, data: []const u8) void {
         if (self.fake) {
-            self.to_read.appendSlice(data) catch unreachable;
+            self.to_read.appendSlice(self.arena.allocator(), data) catch unreachable;
         } else {
             self.client.writeAll(data) catch unreachable;
         }
@@ -194,7 +186,7 @@ pub const Context = struct {
 
     pub fn read(self: Context, a: Allocator) !std.ArrayList(u8) {
         var buf: [1024]u8 = undefined;
-        var arr = std.ArrayList(u8).init(a);
+        var arr: std.ArrayList(u8) = .empty;
 
         while (true) {
             const n = self.client.read(&buf) catch |err| switch (err) {
@@ -202,7 +194,7 @@ pub const Context = struct {
                 else => return err,
             };
             if (n == 0) return arr;
-            try arr.appendSlice(buf[0..n]);
+            try arr.appendSlice(a, buf[0..n]);
         }
         unreachable;
     }

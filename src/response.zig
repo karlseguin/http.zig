@@ -85,8 +85,10 @@ pub const Response = struct {
         return self.conn.disown();
     }
 
-    pub fn json(self: *Response, value: anytype, options: std.json.StringifyOptions) !void {
-        try std.json.stringify(value, options, Writer.init(self));
+    pub fn json(self: *Response, value: anytype, options: std.json.Stringify.Options) !void {
+        const json_formatter = std.json.fmt(value, options);
+        var w = Writer.init(self);
+        try json_formatter.format(&w.interface);
         self.content_type = httpz.ContentType.JSON;
     }
 
@@ -156,8 +158,10 @@ pub const Response = struct {
         var buf: [16]u8 = undefined;
         buf[0] = '\r';
         buf[1] = '\n';
+        var w = std.Io.Writer.fixed(buf[2..]);
+        try w.printInt(data.len, 16, .upper, .{});
 
-        const len = 2 + std.fmt.formatIntBuf(buf[2..], data.len, 16, .upper, .{});
+        const len = 2 + w.buffered().len;
         buf[len] = '\r';
         buf[len + 1] = '\n';
 
@@ -172,11 +176,7 @@ pub const Response = struct {
         self.buffer.pos = 0;
     }
 
-    pub fn writer(self: *Response) Writer.IOWriter {
-        return .{ .context = Writer.init(self) };
-    }
-
-    pub fn directWriter(self: *Response) Writer {
+    pub fn writer(self: *Response) Writer {
         return Writer.init(self);
     }
 
@@ -339,67 +339,47 @@ pub const Response = struct {
     // std.io.Writer.
     pub const Writer = struct {
         res: *Response,
+        interface: std.Io.Writer,
 
         pub const Error = Allocator.Error;
-        pub const IOWriter = std.io.Writer(Writer, error{OutOfMemory}, Writer.write);
 
         fn init(res: *Response) Writer {
-            return .{ .res = res };
+            return .{ .res = res, .interface = .{
+                .buffer = &.{},
+                .vtable = &.{ .drain = Writer.drain },
+            } };
         }
 
-        pub fn truncate(self: Writer, n: usize) void {
-            const buf = &self.res.buffer;
-            const pos = buf.pos;
-            const to_truncate = if (pos > n) n else pos;
-            buf.pos = pos - to_truncate;
+        fn drain(io_w: *std.Io.Writer, data: []const []const u8, splat: usize) !usize {
+            _ = splat;
+            const self: *@This() = @fieldParentPtr("interface", io_w);
+            return self.writeAll(data[0]) catch return error.WriteFailed;
         }
 
-        pub fn writeByte(self: Writer, b: u8) !void {
-            var buf = try self.ensureSpace(1);
-            const pos = buf.pos;
-            buf.data[pos] = b;
-            buf.pos = pos + 1;
+        pub fn adaptToNewApi(self: Writer) Adapter {
+            return .{ .new_interface = self.interface };
         }
 
-        pub fn writeByteNTimes(self: Writer, b: u8, n: usize) !void {
-            var buf = try self.ensureSpace(n);
-            const pos = buf.pos;
-            var data = buf.data;
-            for (pos..pos + n) |i| {
-                data[i] = b;
-            }
-            buf.pos = pos + n;
-        }
+        pub const Adapter = struct {
+            err: ?Error = null,
+            new_interface: std.Io.Writer,
+        };
 
-        pub fn writeBytesNTimes(self: Writer, bytes: []const u8, n: usize) !void {
-            const l = bytes.len * n;
-            var buf = try self.ensureSpace(l);
-
-            var pos = buf.pos;
-            var data = buf.data;
-
-            for (0..n) |_| {
-                const end_pos = pos + bytes.len;
-                @memcpy(data[pos..end_pos], bytes);
-                pos = end_pos;
-            }
-            buf.pos = l;
-        }
-
-        pub fn writeAll(self: Writer, data: []const u8) !void {
+        fn writeAll(self: Writer, data: []const u8) !usize {
             var buf = try self.ensureSpace(data.len);
             const pos = buf.pos;
             const end_pos = pos + data.len;
             @memcpy(buf.data[pos..end_pos], data);
             buf.pos = end_pos;
+            return data.len;
         }
 
-        pub fn write(self: Writer, data: []const u8) Allocator.Error!usize {
+        fn write(self: Writer, data: []const u8) Allocator.Error!usize {
             try self.writeAll(data);
             return data.len;
         }
 
-        pub fn print(self: Writer, comptime format: []const u8, args: anytype) Allocator.Error!void {
+        fn print(self: Writer, comptime format: []const u8, args: anytype) Allocator.Error!void {
             return std.fmt.format(self, format, args);
         }
 
@@ -484,7 +464,10 @@ pub fn serializeCookie(arena: Allocator, name: []const u8, value: []const u8, co
 
     if (cookie.max_age) |ma| {
         try buf.appendSlice(arena, "; Max-Age=");
-        try std.fmt.formatInt(ma, 10, .lower, .{}, buf.writer(arena));
+        var cookie_buf: [20]u8 = undefined;
+        var cookie_writer = std.io.Writer.fixed(&cookie_buf);
+        try cookie_writer.printInt(ma, 10, .lower, .{});
+        try buf.appendSlice(arena, cookie_writer.buffered());
     }
 
     if (cookie.http_only) {
@@ -573,9 +556,10 @@ test "writeInt" {
     var buf: [10]u8 = undefined;
     var tst: [10]u8 = undefined;
     for (0..100_009) |i| {
-        const expected_len = std.fmt.formatIntBuf(tst[0..], i, 10, .lower, .{});
+        var writer = std.Io.Writer.fixed(&tst);
+        try writer.printInt(i, 10, .lower, .{});
         const l = writeInt(&buf, @intCast(i));
-        try t.expectString(tst[0..expected_len], buf[0..l]);
+        try t.expectString(tst[0..writer.end], buf[0..l]);
     }
 }
 
@@ -726,30 +710,6 @@ test "response: setCookie" {
     }
 }
 
-test "response: direct writer" {
-    defer t.reset();
-    var ctx = t.Context.init(.{});
-    defer ctx.deinit();
-
-    var res = ctx.response();
-
-    var writer = res.directWriter();
-    writer.truncate(1);
-    try writer.writeByte('[');
-    writer.truncate(4);
-    try writer.writeByte('[');
-    try writer.writeAll("12345");
-    writer.truncate(2);
-    try writer.writeByte(',');
-    try writer.writeAll("456");
-    try writer.writeByte(',');
-    writer.truncate(1);
-    try writer.writeByte(']');
-
-    try res.write();
-    try ctx.expect("HTTP/1.1 200 \r\nContent-Length: 9\r\n\r\n[123,456]");
-}
-
 // this used to crash
 test "response: multiple writers" {
     defer t.reset();
@@ -758,11 +718,11 @@ test "response: multiple writers" {
     var res = ctx.response();
     {
         var w = res.writer();
-        try w.writeAll("a" ** 5000);
+        try w.interface.writeAll("a" ** 5000);
     }
     {
         var w = res.writer();
-        try w.writeAll("z" ** 10);
+        try w.interface.writeAll("z" ** 10);
     }
     try res.write();
     try ctx.expect("HTTP/1.1 200 \r\nContent-Length: 5010\r\n\r\n" ++ ("a" ** 5000) ++ ("z" ** 10));
@@ -793,9 +753,9 @@ test "response: clearWriter" {
     var res = ctx.response();
     var writer = res.writer();
 
-    try writer.writeAll("abc");
+    try writer.interface.writeAll("abc");
     res.clearWriter();
-    try writer.writeAll("123");
+    try writer.interface.writeAll("123");
 
     try res.write();
     try ctx.expect("HTTP/1.1 200 \r\nContent-Length: 3\r\n\r\n123");

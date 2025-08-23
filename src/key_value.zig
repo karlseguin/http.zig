@@ -4,7 +4,7 @@ const mem = std.mem;
 const ascii = std.ascii;
 const Allocator = std.mem.Allocator;
 
-fn KeyValue(V: type, hashFn: fn (key: []const u8) callconv(.Inline) u8) type {
+fn KeyValue(V: type, hashFn: fn (key: []const u8) callconv(.@"inline") u8) type {
     return struct {
         len: usize,
         keys: [][]const u8,
@@ -21,18 +21,19 @@ fn KeyValue(V: type, hashFn: fn (key: []const u8) callconv(.Inline) u8) type {
         pub fn init(allocator: Allocator, max: usize) Allocator.Error!Self {
             // we want type with bigger alignment to be first.
             // Since alignment is always a power of 2, the second type is guaranteed to have correct alignment.
-            const allocation = try allocator.alignedAlloc(u8, alignment, max * size);
+
+            const allocation = try allocator.alignedAlloc(u8, std.mem.Alignment.fromByteUnits(alignment), max * size);
             return .{
                 .len = 0,
-                .keys = @as([*][]const u8, @alignCast(@ptrCast(if (kFirst) allocation.ptr else allocation[max * @sizeOf(V)..].ptr)))[0..max],
-                .values = @as([*]V, @alignCast(@ptrCast(if (kFirst) allocation[max * @sizeOf([]const u8)..].ptr else allocation.ptr)))[0..max],
-                .hashes = allocation[max * @sizeOf([]const u8) + max * @sizeOf(V)..],
+                .keys = @as([*][]const u8, @alignCast(@ptrCast(if (kFirst) allocation.ptr else allocation[max * @sizeOf(V) ..].ptr)))[0..max],
+                .values = @as([*]V, @alignCast(@ptrCast(if (kFirst) allocation[max * @sizeOf([]const u8) ..].ptr else allocation.ptr)))[0..max],
+                .hashes = allocation[max * @sizeOf([]const u8) + max * @sizeOf(V) ..],
             };
         }
 
         pub fn deinit(self: *Self, allocator: Allocator) void {
-            const allocation = @as([*] align(alignment) u8, @alignCast(@ptrCast(if (kFirst) self.keys.ptr else self.values.ptr)));
-            allocator.free(allocation[0..self.keys.len * size]);
+            const allocation = @as([*]align(alignment) u8, @alignCast(@ptrCast(if (kFirst) self.keys.ptr else self.values.ptr)));
+            allocator.free(allocation[0 .. self.keys.len * size]);
         }
 
         pub fn add(self: *Self, key: []const u8, value: V) void {

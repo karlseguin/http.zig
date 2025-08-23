@@ -246,6 +246,11 @@ pub fn Server(comptime H: type) type {
         middlewares: []const Middleware(H) = &.{},
     };
 
+    const MiddlewareItem = struct {
+        middleware: Middleware(H),
+        node: std.SinglyLinkedList.Node = .{},
+    };
+
     return struct {
         handler: H,
         config: Config,
@@ -259,7 +264,7 @@ pub fn Server(comptime H: type) type {
         _max_request_per_connection: usize,
         _middlewares: []const Middleware(H),
         _websocket_state: websocket.server.WorkerState,
-        _middleware_registry: std.SinglyLinkedList(Middleware(H)),
+        _middleware_registry: std.SinglyLinkedList,
 
         const Self = @This();
         const Worker = if (blockingMode()) worker.Blocking(*Self, WebsocketHandler) else worker.NonBlocking(*Self, WebsocketHandler);
@@ -325,7 +330,8 @@ pub fn Server(comptime H: type) type {
 
             var node = self._middleware_registry.first;
             while (node) |n| {
-                n.data.deinit();
+                const item: *MiddlewareItem = @fieldParentPtr("node", n);
+                item.middleware.deinit();
                 node = n.next;
             }
 
@@ -375,6 +381,7 @@ pub fn Server(comptime H: type) type {
             }
 
             try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
+
             if (config.unix_path == null and self._workers.len > 1) {
                 if (@hasDecl(posix.SO, "REUSEPORT_LB")) {
                     try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEPORT_LB, &std.mem.toBytes(@as(c_int, 1)));
@@ -582,7 +589,7 @@ pub fn Server(comptime H: type) type {
         pub fn middleware(self: *Self, comptime M: type, config: M.Config) !Middleware(H) {
             const arena = self.arena;
 
-            const node = try arena.create(std.SinglyLinkedList(Middleware(H)).Node);
+            const node = try arena.create(MiddlewareItem);
             errdefer arena.destroy(node);
 
             const m = try arena.create(M);
@@ -597,8 +604,8 @@ pub fn Server(comptime H: type) type {
             }
 
             const iface = Middleware(H).init(m);
-            node.data = iface;
-            self._middleware_registry.prepend(node);
+            node.*.middleware = iface;
+            self._middleware_registry.prepend(&node.node);
 
             return iface;
         }
@@ -678,25 +685,21 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: an
 
     hc.handler = try H.init(&hc.conn, ctx);
 
-    var agreed_compression: ?websocket.Compression = null;
+    var compression = false;
     if (ws_worker.canCompress()) {
         if (req.header("sec-websocket-extensions")) |ext| {
-            if (try websocket.Handshake.parseExtension(ext)) |request_compression| {
-                agreed_compression = .{
-                    .client_no_context_takeover = request_compression.client_no_context_takeover,
-                    .server_no_context_takeover = request_compression.server_no_context_takeover,
-                };
-            }
+            compression = try websocket.Handshake.parseExtension(ext) != null;
         }
     }
 
     var reply_buf: [512]u8 = undefined;
-    try http_conn.stream.writeAll(websocket.Handshake.createReply(key, agreed_compression, &reply_buf));
+    const reply = try websocket.Handshake.createReply(key, null, compression, &reply_buf);
+    try http_conn.stream.writeAll(reply);
     if (comptime std.meta.hasFn(H, "afterInit")) {
         const params = @typeInfo(@TypeOf(H.afterInit)).@"fn".params;
         try if (comptime params.len == 1) hc.handler.?.afterInit() else hc.handler.?.afterInit(ctx);
     }
-    try ws_worker.setupConnection(hc, agreed_compression);
+    try ws_worker.setupConnection(hc);
     res.written = true;
     http_conn.handover = .{ .websocket = hc };
     return true;
@@ -1328,7 +1331,7 @@ test "httpz: request in chunks" {
     const stream = testStream(5993);
     defer stream.close();
     try stream.writeAll("GET /api/v2/use");
-    std.time.sleep(std.time.ns_per_ms * 10);
+    std.Thread.sleep(std.time.ns_per_ms * 10);
     try stream.writeAll("rs/11 HTTP/1.1\r\n\r\n");
 
     var buf: [100]u8 = undefined;
@@ -1422,7 +1425,7 @@ test "httpz: request body reader" {
                 error.WouldBlock => 0,
                 else => return err,
             };
-            std.time.sleep(std.time.ns_per_ms * 2);
+            std.Thread.sleep(std.time.ns_per_ms * 2);
             req = req[n..];
         }
 
@@ -1471,7 +1474,7 @@ test "websocket: upgrade" {
                     break;
                 }
                 wait_count += 1;
-                std.time.sleep(std.time.ns_per_ms);
+                std.Thread.sleep(std.time.ns_per_ms);
                 continue;
             },
             else => return err,
@@ -1531,7 +1534,7 @@ fn testReadAll(stream: std.net.Stream, buf: []u8) []u8 {
             error.WouldBlock => {
                 if (blocked) return buf[0..pos];
                 blocked = true;
-                std.time.sleep(std.time.ns_per_ms);
+                std.Thread.sleep(std.time.ns_per_ms);
                 continue;
             },
             error.ConnectionResetByPeer => return buf[0..pos],
@@ -1562,7 +1565,7 @@ fn testReadHeader(stream: std.net.Stream) testing.Testing.Response {
             error.WouldBlock => {
                 if (blocked) unreachable;
                 blocked = true;
-                std.time.sleep(std.time.ns_per_ms);
+                std.Thread.sleep(std.time.ns_per_ms);
                 continue;
             },
             else => @panic(@errorName(err)),
@@ -1630,9 +1633,9 @@ const TestDummyHandler = struct {
     fn eventStreamSync(_: *Request, res: *Response) !void {
         res.status = 818;
         const stream = try res.startEventStreamSync();
-        const w = stream.writer();
-        w.writeAll("hello") catch unreachable;
-        w.writeAll("a sync message") catch unreachable;
+        var w = stream.writer(&.{});
+        w.interface.writeAll("hello") catch unreachable;
+        w.interface.writeAll("a sync message") catch unreachable;
     }
 
     fn reqReader(req: *Request, res: *Response) !void {
@@ -1668,7 +1671,8 @@ const TestDummyHandler = struct {
     }
 
     fn dispatchedAction(_: *Request, res: *Response) !void {
-        return res.directWriter().writeAll("action");
+        var writer = res.writer();
+        return writer.interface.writeAll("action");
     }
 
     fn middlewares(req: *Request, res: *Response) !void {
@@ -1718,14 +1722,16 @@ const TestHandlerDefaultDispatch = struct {
     }
 
     fn echoWrite(h: *TestHandlerDefaultDispatch, req: *Request, res: *Response) !void {
-        var arr = std.ArrayList(u8).init(res.arena);
-        try std.json.stringify(.{
+        const json_writer = std.json.fmt(.{
             .state = h.state,
             .method = @tagName(req.method),
             .path = req.url.path,
-        }, .{}, arr.writer());
+        }, .{});
 
-        res.body = arr.items;
+        var aw: std.io.Writer.Allocating = .init(res.arena);
+        try json_writer.format(&aw.writer);
+
+        res.body = aw.written();
         return res.write();
     }
 
@@ -1798,7 +1804,8 @@ const TestHandlerDispatchContext = struct {
 const TestHandlerHandle = struct {
     pub fn handle(_: TestHandlerHandle, req: *Request, res: *Response) void {
         const query = req.query() catch unreachable;
-        std.fmt.format(res.writer(), "hello {s}", .{query.get("name") orelse "world"}) catch unreachable;
+        var writer = res.writer();
+        writer.interface.print("hello {s}", .{query.get("name") orelse "world"}) catch unreachable;
     }
 };
 

@@ -140,22 +140,24 @@ pub const Testing = struct {
     }
 
     pub fn json(self: *Testing, value: anytype) void {
-        var arr = ArrayList(u8).init(self.arena);
-        std.json.stringify(value, .{}, arr.writer()) catch unreachable;
-        self.req.body_buffer = .{ .type = .static, .data = arr.items };
-        self.req.body_len = arr.items.len;
+        const json_writer = std.json.fmt(value, .{});
+        var aw: std.Io.Writer.Allocating = .init(self.arena);
+        json_writer.format(&aw.writer) catch unreachable;
+
+        self.req.body_buffer = .{ .type = .static, .data = aw.written() };
+        self.req.body_len = aw.written().len;
     }
 
     pub fn form(self: *Testing, data: anytype) void {
-        var arr = ArrayList(u8).init(self.arena);
+        var arr: ArrayList(u8) = .empty;
 
         inline for (@typeInfo(@TypeOf(data)).@"struct".fields) |field| {
             const name = escapeString(self.arena, field.name) catch unreachable;
             const value = escapeString(self.arena, @field(data, field.name)) catch unreachable;
-            arr.appendSlice(name) catch unreachable;
-            arr.append('=') catch unreachable;
-            arr.appendSlice(value) catch unreachable;
-            arr.append('&') catch unreachable;
+            arr.appendSlice(self.arena, name) catch unreachable;
+            arr.append(self.arena, '=') catch unreachable;
+            arr.appendSlice(self.arena, value) catch unreachable;
+            arr.append(self.arena, '&') catch unreachable;
         }
 
         const items = arr.items;
@@ -396,10 +398,13 @@ const JsonComparer = struct {
         const a_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, a_bytes, .{});
         const b_value = try std.json.parseFromSliceLeaky(std.json.Value, allocator, b_bytes, .{});
 
-        self.pretty_actual = try std.json.stringifyAlloc(allocator, b_value, .{ .whitespace = .indent_2 });
+        const json_writer = std.json.fmt(b_value, .{ .whitespace = .indent_2 });
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        try json_writer.format(&aw.writer);
+        self.pretty_actual = aw.written();
 
-        var diffs = ArrayList(Diff).init(allocator);
-        var path = ArrayList([]const u8).init(allocator);
+        var diffs: ArrayList(Diff) = .empty;
+        var path: ArrayList([]const u8) = .empty;
         try self.compareValue(a_value, b_value, &diffs, &path);
         return diffs;
     }
@@ -408,7 +413,7 @@ const JsonComparer = struct {
         const allocator = self._arena.allocator();
 
         if (!std.mem.eql(u8, @tagName(a), @tagName(b))) {
-            diffs.append(self.diff("types don't match", path, @tagName(a), @tagName(b))) catch unreachable;
+            diffs.append(allocator, self.diff("types don't match", path, @tagName(a), @tagName(b))) catch unreachable;
             return;
         }
 
@@ -416,38 +421,38 @@ const JsonComparer = struct {
             .null => {},
             .bool => {
                 if (a.bool != b.bool) {
-                    diffs.append(self.diff("not equal", path, self.format(a.bool), self.format(b.bool))) catch unreachable;
+                    diffs.append(allocator, self.diff("not equal", path, self.format(a.bool), self.format(b.bool))) catch unreachable;
                 }
             },
             .integer => {
                 if (a.integer != b.integer) {
-                    diffs.append(self.diff("not equal", path, self.format(a.integer), self.format(b.integer))) catch unreachable;
+                    diffs.append(allocator, self.diff("not equal", path, self.format(a.integer), self.format(b.integer))) catch unreachable;
                 }
             },
             .float => {
                 if (a.float != b.float) {
-                    diffs.append(self.diff("not equal", path, self.format(a.float), self.format(b.float))) catch unreachable;
+                    diffs.append(allocator, self.diff("not equal", path, self.format(a.float), self.format(b.float))) catch unreachable;
                 }
             },
             .number_string => {
                 if (!std.mem.eql(u8, a.number_string, b.number_string)) {
-                    diffs.append(self.diff("not equal", path, a.number_string, b.number_string)) catch unreachable;
+                    diffs.append(allocator, self.diff("not equal", path, a.number_string, b.number_string)) catch unreachable;
                 }
             },
             .string => {
                 if (!std.mem.eql(u8, a.string, b.string)) {
-                    diffs.append(self.diff("not equal", path, a.string, b.string)) catch unreachable;
+                    diffs.append(allocator, self.diff("not equal", path, a.string, b.string)) catch unreachable;
                 }
             },
             .array => {
                 const a_len = a.array.items.len;
                 const b_len = b.array.items.len;
                 if (a_len != b_len) {
-                    diffs.append(self.diff("array length", path, self.format(a_len), self.format(b_len))) catch unreachable;
+                    diffs.append(allocator, self.diff("array length", path, self.format(a_len), self.format(b_len))) catch unreachable;
                     return;
                 }
                 for (a.array.items, b.array.items, 0..) |a_item, b_item, i| {
-                    try path.append(try std.fmt.allocPrint(allocator, "{d}", .{i}));
+                    try path.append(allocator, try std.fmt.allocPrint(allocator, "{d}", .{i}));
                     try self.compareValue(a_item, b_item, diffs, path);
                     _ = path.pop();
                 }
@@ -456,11 +461,11 @@ const JsonComparer = struct {
                 var it = a.object.iterator();
                 while (it.next()) |entry| {
                     const key = entry.key_ptr.*;
-                    try path.append(key);
+                    try path.append(allocator, key);
                     if (b.object.get(key)) |b_item| {
                         try self.compareValue(entry.value_ptr.*, b_item, diffs, path);
                     } else {
-                        diffs.append(self.diff("field missing", path, key, "")) catch unreachable;
+                        diffs.append(allocator, self.diff("field missing", path, key, "")) catch unreachable;
                     }
                     _ = path.pop();
                 }
@@ -479,9 +484,10 @@ const JsonComparer = struct {
     }
 
     fn stringify(self: *JsonComparer, value: anytype) ![]const u8 {
-        var arr = ArrayList(u8).init(self._arena.allocator());
-        try std.json.stringify(value, .{}, arr.writer());
-        return arr.items;
+        var aw: std.io.Writer.Allocating = .init(self._arena.allocator());
+        const json_writer = std.json.fmt(value, .{});
+        try json_writer.format(&aw.writer);
+        return aw.written();
     }
 
     fn format(self: *JsonComparer, value: anytype) []const u8 {

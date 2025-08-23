@@ -22,16 +22,16 @@ pub fn main() !void {
     // SIGINT or SIGTERM are received
     std.posix.sigaction(std.posix.SIG.INT, &.{
         .handler = .{ .handler = shutdown },
-        .mask = std.posix.empty_sigset,
+        .mask = std.posix.sigemptyset(),
         .flags = 0,
     }, null);
     std.posix.sigaction(std.posix.SIG.TERM, &.{
         .handler = .{ .handler = shutdown },
-        .mask = std.posix.empty_sigset,
+        .mask = std.posix.sigemptyset(),
         .flags = 0,
     }, null);
 
-    var server = try httpz.Server(void).init(allocator, .{.port = PORT}, {});
+    var server = try httpz.Server(void).init(allocator, .{ .port = PORT }, {});
     defer server.deinit();
 
     var router = try server.router(.{});

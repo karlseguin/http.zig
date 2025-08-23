@@ -210,14 +210,14 @@ pub fn Router(comptime Handler: type, comptime Action: type) type {
                 normalized = normalized[0 .. normalized.len - 1];
             }
 
-            var param_name_collector = std.ArrayList([]const u8).init(allocator);
-            defer param_name_collector.deinit();
+            var param_name_collector: std.ArrayList([]const u8) = .empty;
+            defer param_name_collector.deinit(allocator);
 
             var route_part = root;
             var it = std.mem.splitScalar(u8, normalized, '/');
             while (it.next()) |part| {
                 if (part[0] == ':') {
-                    try param_name_collector.append(part[1..]);
+                    try param_name_collector.append(allocator, part[1..]);
                     if (route_part.param_part) |child| {
                         route_part = child;
                     } else {
