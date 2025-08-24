@@ -356,7 +356,7 @@ pub const Response = struct {
             return self.writeAll(data[0]) catch return error.WriteFailed;
         }
 
-        pub fn adaptToNewApi(self: Writer) Adapter {
+        pub fn adaptToNewApi(self: Writer, _: []u8) Adapter {
             return .{ .new_interface = self.interface };
         }
 

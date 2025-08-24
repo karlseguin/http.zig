@@ -81,16 +81,23 @@ fn writer(req: *httpz.Request, res: *httpz.Response) !void {
     res.content_type = httpz.ContentType.JSON;
 
     const name = req.param("name").?;
-    var ws = std.json.writeStream(res.writer(), .{ .whitespace = .indent_4 });
+    var out: std.io.Writer.Allocating = .init(res.arena);
+    var ws: std.json.Stringify = .{
+        .writer = &out.writer,
+        .options = .{ .whitespace = .indent_4 },
+    };
     try ws.beginObject();
     try ws.objectField("name");
     try ws.write(name);
     try ws.endObject();
+
+    res.body = out.written();
 }
 
 fn metrics(_: *httpz.Request, res: *httpz.Response) !void {
     // httpz exposes some prometheus-style metrics
-    return httpz.writeMetrics(res.writer());
+    var w = res.writer();
+    return httpz.writeMetrics(&w.interface);
 }
 
 fn formShow(_: *httpz.Request, res: *httpz.Response) !void {

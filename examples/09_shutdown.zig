@@ -44,7 +44,7 @@ pub fn main() !void {
     try server.listen();
 }
 
-fn shutdown(_: c_int) callconv(.C) void {
+fn shutdown(_: c_int) callconv(.c) void {
     if (server_instance) |server| {
         server_instance = null;
         server.stop();
