@@ -380,12 +380,9 @@ pub const Response = struct {
             return data.len;
         }
 
-        pub fn print(self: Writer, comptime format: []const u8, args: anytype) Allocator.Error!void {
+        pub fn print(self: Writer, comptime format: []const u8, args: anytype) std.Io.Writer.Error!void {
             var w = self;
-            return std.Io.Writer.print(&w.interface, format, args) catch {
-                return error.OutOfMemory;
-            };
-            // return std.fmt.format(self, format, args);
+            return std.Io.Writer.print(&w.interface, format, args);
         }
 
         fn ensureSpace(self: Writer, n: usize) !*Buffer {
