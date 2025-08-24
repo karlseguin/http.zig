@@ -116,9 +116,10 @@ fn formPost(req: *httpz.Request, res: *httpz.Response) !void {
 
     res.content_type = .TEXT;
 
-    const w = res.writer();
+    var w = res.writer();
+    var out = &w.interface;
     while (it.next()) |kv| {
-        try std.fmt.format(w, "{s}={s}\n", .{ kv.key, kv.value });
+        try out.print("{s}={s}\n", .{ kv.key, kv.value });
     }
 }
 
