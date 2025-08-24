@@ -32,7 +32,7 @@ const force_blocking: bool = if (@hasDecl(build, "httpz_blocking")) build.httpz_
 
 const MAX_REQUEST_COUNT = std.math.maxInt(usize);
 
-pub fn writeMetrics(writer: anytype) !void {
+pub fn writeMetrics(writer: *std.Io.Writer) !void {
     return @import("metrics.zig").write(writer);
 }
 

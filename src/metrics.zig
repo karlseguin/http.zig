@@ -1,3 +1,4 @@
+const std = @import("std");
 const m = @import("metrics");
 
 // This is an advanced usage of metrics.zig, largely done because we aren't
@@ -55,7 +56,7 @@ const Metrics = struct {
     body_too_big: m.Counter(usize).Impl,
 };
 
-pub fn write(writer: anytype) !void {
+pub fn write(writer: *std.Io.Writer) !void {
     try metrics.connections.write(writer);
     try metrics.requests.write(writer);
     try metrics.timeout_request.write(writer);

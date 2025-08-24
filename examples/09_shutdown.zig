@@ -44,7 +44,7 @@ pub fn main() !void {
     try server.listen();
 }
 
-fn shutdown(_: c_int) callconv(.C) void {
+fn shutdown(_: c_int) callconv(.c) void {
     if (server_instance) |server| {
         server_instance = null;
         server.stop();
@@ -52,6 +52,6 @@ fn shutdown(_: c_int) callconv(.C) void {
 }
 
 fn index(_: *httpz.Request, res: *httpz.Response) !void {
-    const writer = res.writer();
-    return std.fmt.format(writer, "To shutdown, run:\nkill -s int {d}", .{std.c.getpid()});
+    var writer = res.writer();
+    return writer.interface.print("To shutdown, run:\nkill -s int {d}", .{std.c.getpid()});
 }
