@@ -356,7 +356,8 @@ pub const Response = struct {
             return self.writeAll(data[0]) catch return error.WriteFailed;
         }
 
-        pub fn adaptToNewApi(self: Writer, _: []u8) Adapter {
+        pub fn adaptToNewApi(self: Writer, _opts: anytype) Adapter {
+            _ = _opts;
             return .{ .new_interface = self.interface };
         }
 
@@ -365,7 +366,7 @@ pub const Response = struct {
             new_interface: std.Io.Writer,
         };
 
-        fn writeAll(self: Writer, data: []const u8) !usize {
+        pub fn writeAll(self: Writer, data: []const u8) !usize {
             var buf = try self.ensureSpace(data.len);
             const pos = buf.pos;
             const end_pos = pos + data.len;
@@ -374,13 +375,17 @@ pub const Response = struct {
             return data.len;
         }
 
-        fn write(self: Writer, data: []const u8) Allocator.Error!usize {
+        pub fn write(self: Writer, data: []const u8) Allocator.Error!usize {
             try self.writeAll(data);
             return data.len;
         }
 
-        fn print(self: Writer, comptime format: []const u8, args: anytype) Allocator.Error!void {
-            return std.fmt.format(self, format, args);
+        pub fn print(self: Writer, comptime format: []const u8, args: anytype) Allocator.Error!void {
+            var w = self;
+            return std.Io.Writer.print(&w.interface, format, args) catch {
+                return error.OutOfMemory;
+            };
+            // return std.fmt.format(self, format, args);
         }
 
         fn ensureSpace(self: Writer, n: usize) !*Buffer {

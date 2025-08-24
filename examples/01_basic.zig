@@ -117,9 +117,8 @@ fn formPost(req: *httpz.Request, res: *httpz.Response) !void {
     res.content_type = .TEXT;
 
     var w = res.writer();
-    var out = &w.interface;
     while (it.next()) |kv| {
-        try out.print("{s}={s}\n", .{ kv.key, kv.value });
+        try w.print("{s}={s}\n", .{ kv.key, kv.value });
     }
 }
 
