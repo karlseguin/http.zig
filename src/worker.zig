@@ -233,7 +233,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                         // blocking read loop
                         // will close the connection
                         self.handleWebSocket(hc) catch |err| {
-                            log.err("({} websocket connection error: {}", .{ address, err });
+                            log.err("({f} websocket connection error: {}", .{ address, err });
                         };
                         return;
                     },
