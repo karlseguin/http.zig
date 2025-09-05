@@ -87,7 +87,7 @@ pub const Response = struct {
 
     pub fn json(self: *Response, value: anytype, options: std.json.Stringify.Options) !void {
         const json_formatter = std.json.fmt(value, options);
-        var w = Writer.init(self);
+        var w = Writer.init(self, &.{});
         try json_formatter.format(&w.interface);
         self.content_type = httpz.ContentType.JSON;
     }
@@ -730,11 +730,11 @@ test "response: multiple writers" {
     defer ctx.deinit();
     var res = ctx.response();
     {
-        var w = res.writer();
+        var w = res.writer(&.{});
         try w.interface.writeAll("a" ** 5000);
     }
     {
-        var w = res.writer();
+        var w = res.writer(&.{});
         try w.interface.writeAll("z" ** 10);
     }
     try res.write();
@@ -764,7 +764,7 @@ test "response: clearWriter" {
     defer ctx.deinit();
 
     var res = ctx.response();
-    var writer = res.writer();
+    var writer = res.writer(&.{});
 
     try writer.interface.writeAll("abc");
     res.clearWriter();

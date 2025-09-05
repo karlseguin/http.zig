@@ -312,13 +312,15 @@ fn arenaExample(req: *httpz.Request, res: *httpz.Response) !void {
 fn writerExample(req: *httpz.Request, res: *httpz.Response) !void {
     const query = try req.query();
     const name = query.get("name") orelse "stranger";
-    try std.fmt.format(res.writer(), "Hello {s}", .{name});
+    try std.fmt.format(res.writer(&.{}), "Hello {s}", .{name});
 }
 ```
 
 Alternatively, you can explicitly call `res.write()`. Once `res.write()` returns, the response is sent and your action can cleanup/release any resources.
 
 `res.arena` is actually a configurable-sized thread-local buffer that fallsback to an `std.heap.ArenaAllocator`. In other words, it's fast so it should be your first option for data that needs to live only until your action exits.
+
+To align the `Response.writer()` with the new `*std.Io.Writer` interface (Zig 0.15) , a buffer must be provided. For the most part, you should pass in an empty buffer (`&.{}`) as httpz does its own buffer (as I expect most network applications would do). Still, it appears that some parts of std require a writer buffer. This seems like a really bad design to me, but if you find yourself using code that requires a writer buffer, then, of course,  you'll have to provide one when creating the `response.writer(...)`.
 
 # httpz.Request
 The following fields are the most useful:
