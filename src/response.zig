@@ -176,8 +176,8 @@ pub const Response = struct {
         self.buffer.pos = 0;
     }
 
-    pub fn writer(self: *Response) Writer {
-        return Writer.init(self);
+    pub fn writer(self: *Response, buf: []u8) Writer {
+        return Writer.init(self, buf);
     }
 
     pub fn writeHeader(self: *Response) !void {
@@ -343,17 +343,30 @@ pub const Response = struct {
 
         pub const Error = Allocator.Error;
 
-        fn init(res: *Response) Writer {
+        fn init(res: *Response, buf: []u8) Writer {
             return .{ .res = res, .interface = .{
-                .buffer = &.{},
+                .buffer = buf,
                 .vtable = &.{ .drain = Writer.drain },
             } };
         }
 
         fn drain(io_w: *std.Io.Writer, data: []const []const u8, splat: usize) !usize {
-            _ = splat;
             const self: *@This() = @fieldParentPtr("interface", io_w);
-            return self.writeAll(data[0]) catch return error.WriteFailed;
+            const buffered = io_w.buffered();
+            var n: usize = 0;
+            if (buffered.len > 0)
+                n = self.writeAll(buffered) catch return error.WriteFailed;
+            for (data[0 .. data.len - 1]) |d| {
+                if (d.len == 0) continue;
+                n += (self.writeAll(d) catch return error.WriteFailed);
+            }
+            const pattern = data[data.len - 1];
+            if (splat > 0 and pattern.len > 0) {
+                for (0..splat) |_| {
+                    n += (self.writeAll(pattern) catch return error.WriteFailed);
+                }
+            }
+            return io_w.consume(n);
         }
 
         pub fn adaptToNewApi(self: Writer) Adapter {
