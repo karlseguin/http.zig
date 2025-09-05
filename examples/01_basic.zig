@@ -82,18 +82,16 @@ fn writer(req: *httpz.Request, res: *httpz.Response) !void {
 
     const name = req.param("name").?;
 
-    var w = res.writer();
     try std.json.Stringify.value(
         .{ .name = name },
         .{ .whitespace = .indent_4 },
-        &w.interface,
+        res.writer(),
     );
 }
 
 fn metrics(_: *httpz.Request, res: *httpz.Response) !void {
     // httpz exposes some prometheus-style metrics
-    var w = res.writer();
-    return httpz.writeMetrics(&w.interface);
+    return httpz.writeMetrics(res.writer());
 }
 
 fn formShow(_: *httpz.Request, res: *httpz.Response) !void {
@@ -112,9 +110,9 @@ fn formPost(req: *httpz.Request, res: *httpz.Response) !void {
 
     res.content_type = .TEXT;
 
-    var w = res.writer();
+    const w = res.writer();
     while (it.next()) |kv| {
-        try w.interface.print("{s}={s}\n", .{ kv.key, kv.value });
+        try w.print("{s}={s}\n", .{ kv.key, kv.value });
     }
 }
 
