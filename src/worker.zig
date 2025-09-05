@@ -591,6 +591,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                                     http_conn.requestDone(self.retain_allocated_bytes, false) catch unreachable;
                                     conn.close();
                                     self.disown(conn);
+                                    if (self.full) self.enableListener(listener);
                                     continue;
                                 };
 
@@ -1030,8 +1031,8 @@ fn KQueue(comptime WSH: type) type {
         }
 
         fn start(self: *Self) !void {
-            _ = self;
-            return;
+            try self.change(1, 1, posix.system.EVFILT.USER, posix.system.EV.ADD | posix.system.EV.CLEAR, posix.system.NOTE.FFNOP);
+            return self.change(2, 2, posix.system.EVFILT.USER, posix.system.EV.ADD | posix.system.EV.ONESHOT, posix.system.NOTE.FFNOP);
         }
 
         fn stop(self: *Self) void {
@@ -1040,7 +1041,7 @@ fn KQueue(comptime WSH: type) type {
                 .{
                     .ident = 2,
                     .filter = posix.system.EVFILT.USER,
-                    .flags = posix.system.EV.ADD | posix.system.EV.ONESHOT,
+                    .flags = 0,
                     .fflags = posix.system.NOTE.TRIGGER,
                     .data = 0,
                     .udata = 2,
@@ -1055,7 +1056,7 @@ fn KQueue(comptime WSH: type) type {
             _ = try posix.kevent(self.fd, &.{.{
                 .ident = 1,
                 .filter = posix.system.EVFILT.USER,
-                .flags = posix.system.EV.ADD | posix.system.EV.CLEAR,
+                .flags = 0,
                 .fflags = posix.system.NOTE.TRIGGER,
                 .data = 0,
                 .udata = 1,
@@ -1144,13 +1145,7 @@ fn KQueue(comptime WSH: type) type {
 
                 switch (event.udata) {
                     0 => return .{ .accept = {} },
-                    1 => {
-                        // rearm it
-                        self.loop.change(1, 1, posix.system.EVFILT.USER, posix.system.EV.ENABLE, posix.system.NOTE.FFNOP) catch |err| {
-                            log.err("failed to rearm signal: {}", .{err});
-                        };
-                        return .{ .signal = {} };
-                    },
+                    1 => return .{ .signal = {} },
                     2 => return .{ .shutdown = {} },
                     else => |nptr| return .{ .recv = @ptrFromInt(nptr) },
                 }
