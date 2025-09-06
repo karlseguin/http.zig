@@ -1671,8 +1671,8 @@ const TestDummyHandler = struct {
     }
 
     fn dispatchedAction(_: *Request, res: *Response) !void {
-        var writer = res.writer(&.{});
-        return writer.interface.writeAll("action");
+        const writer = res.writer();
+        return writer.writeAll("action");
     }
 
     fn middlewares(req: *Request, res: *Response) !void {
@@ -1804,8 +1804,8 @@ const TestHandlerDispatchContext = struct {
 const TestHandlerHandle = struct {
     pub fn handle(_: TestHandlerHandle, req: *Request, res: *Response) void {
         const query = req.query() catch unreachable;
-        var writer = res.writer(&.{});
-        writer.interface.print("hello {s}", .{query.get("name") orelse "world"}) catch unreachable;
+        const writer = res.writer();
+        writer.print("hello {s}", .{query.get("name") orelse "world"}) catch unreachable;
     }
 };
 
