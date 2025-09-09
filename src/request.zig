@@ -518,9 +518,9 @@ pub const Request = struct {
         buffer: []const u8,
         unread_body: *usize,
         socket: std.posix.socket_t,
-        interface: std.io.Reader,
+        interface: std.Io.Reader,
 
-        pub fn stream(io_r: *std.Io.Reader, w: *std.io.Writer, limit: std.io.Limit) std.io.Reader.StreamError!usize {
+        pub fn stream(io_r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
             const self: *Reader = @alignCast(@fieldParentPtr("interface", io_r));
             const buf = limit.slice(try w.writableSliceGreedy(1));
             const n = self.read(buf) catch return error.ReadFailed;
@@ -705,7 +705,7 @@ pub const State = struct {
     }
 
     // returns true if the header has been fully parsed
-    pub fn parse(self: *State, req_arena: Allocator, stream: anytype) !bool {
+    pub fn parse(self: *State, req_arena: Allocator, stream: *std.Io.Reader) !bool {
         if (self.body != null) {
             // if we have a body, then we've read the header. We want to read into
             // self.body, not self.buf.
@@ -714,9 +714,10 @@ pub const State = struct {
 
         var len = self.len;
         const buf = self.buf;
-        const n = try stream.read(buf[len..]);
+        var vecs: [1][]u8 = .{buf[len..]};
+        const n = try stream.readVec(&vecs);
         if (n == 0) {
-            return error.ConnectionClosed;
+            return false;
         }
         len = len + n;
         self.len = len;
@@ -1043,14 +1044,11 @@ pub const State = struct {
         return false;
     }
 
-    fn readBody(self: *State, stream: anytype) !bool {
+    fn readBody(self: *State, stream: *std.Io.Reader) !bool {
         const buf = self.body.?.data;
 
-        const n = try stream.read(buf[self.body_pos..]);
-        if (n == 0) {
-            return error.ConnectionClosed;
-        }
-        self.body_pos += n;
+        var vecs: [1][]u8 = .{buf[self.body_pos..]};
+        self.body_pos += try stream.readVec(&vecs);
         return (self.body_pos == self.body_len);
     }
 };
@@ -1706,8 +1704,9 @@ test "request: fuzz" {
 
             var conn = ctx.conn;
             var fake_reader = ctx.fakeReader();
+            const fr = &fake_reader.interface;
             while (true) {
-                const done = try conn.req_state.parse(conn.req_arena.allocator(), &fake_reader);
+                const done = try conn.req_state.parse(conn.req_arena.allocator(), fr);
                 if (done) break;
             }
 
@@ -1782,8 +1781,10 @@ test "request: cookie" {
 fn testParse(input: []const u8, config: Config) !Request {
     var ctx = t.Context.allocInit(t.arena.allocator(), .{ .request = config });
     ctx.write(input);
+    var reader = ctx.stream.reader(&.{});
+    const r = reader.interface();
     while (true) {
-        const done = try ctx.conn.req_state.parse(ctx.conn.req_arena.allocator(), ctx.stream);
+        const done = try ctx.conn.req_state.parse(ctx.conn.req_arena.allocator(), r);
         if (done) break;
     }
     return Request.init(ctx.conn.req_arena.allocator(), ctx.conn);
@@ -1793,8 +1794,10 @@ fn expectParseError(expected: anyerror, input: []const u8, config: Config) !void
     var ctx = t.Context.init(.{ .request = config });
     defer ctx.deinit();
 
+    var reader = ctx.stream.reader(&.{});
+    const r = reader.interface();
     ctx.write(input);
-    try t.expectError(expected, ctx.conn.req_state.parse(ctx.conn.req_arena.allocator(), ctx.stream));
+    try t.expectError(expected, ctx.conn.req_state.parse(ctx.conn.req_arena.allocator(), r));
 }
 
 fn randomMethod(random: std.Random) []const u8 {
