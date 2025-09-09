@@ -1411,14 +1411,27 @@ test "httpz: request body reader" {
         try res.expectJson(.{ .length = 4 });
     }
 
+    comptime var length = 4043;
+    {
+        // medium body
+        const stream = testStream(5992);
+        defer stream.close();
+        try stream.writeAll(std.fmt.comptimePrint("GET /test/req_reader HTTP/1.1\r\nContent-Length: {d}\r\n\r\n" ++ ("a" ** length), .{length}));
+
+        var res = testReadParsed(stream);
+        defer res.deinit();
+        try res.expectJson(.{ .length = length });
+    }
+
     var r = t.getRandom();
     const random = r.random();
+    length = 20000;
 
     // a bit of fuzzing
     for (0..10) |_| {
         const stream = testStream(5992);
         defer stream.close();
-        var req: []const u8 = "GET /test/req_reader HTTP/1.1\r\nContent-Length: 20000\r\n\r\n" ++ ("a" ** 20_000);
+        var req: []const u8 = std.fmt.comptimePrint("GET /test/req_reader HTTP/1.1\r\nContent-Length: {d}\r\n\r\n" ++ ("a" ** length), .{length});
         while (req.len > 0) {
             const len = random.uintAtMost(usize, req.len - 1) + 1;
             const n = stream.write(req[0..len]) catch |err| switch (err) {
@@ -1431,7 +1444,7 @@ test "httpz: request body reader" {
 
         var res = testReadParsed(stream);
         defer res.deinit();
-        try res.expectJson(.{ .length = 20_000 });
+        try res.expectJson(.{ .length = length });
     }
 }
 

@@ -184,8 +184,11 @@ pub const Request = struct {
     pub fn reader(self: *Request, timeout_ms: usize) !Reader {
         var buf: []const u8 = &.{};
         if (self.body_buffer) |bb| {
-            std.debug.assert(bb.type == .static);
-            buf = bb.data;
+            if (bb.type == .static) {
+                buf = bb.data;
+            } else {
+                buf = bb.data[0..self.body_len];
+            }
         }
 
         const conn = self.conn;
@@ -1041,19 +1044,14 @@ pub const State = struct {
     }
 
     fn readBody(self: *State, stream: anytype) !bool {
-        var pos = self.body_pos;
         const buf = self.body.?.data;
 
-        const n = try stream.read(buf[pos..]);
+        const n = try stream.read(buf[self.body_pos..]);
         if (n == 0) {
             return error.ConnectionClosed;
         }
-        pos += n;
-        if (pos == self.body_len) {
-            return true;
-        }
-        self.body_pos = pos;
-        return false;
+        self.body_pos += n;
+        return (self.body_pos == self.body_len);
     }
 };
 
