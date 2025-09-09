@@ -16,7 +16,7 @@ pub fn init(config: httpz.Config) Testing {
     // Parse a basic request. This will put our conn.req_state into a valid state
     // for creating a request. Application code can modify the request directly
     // thereafter to change whatever properties they want.
-    var base_request = std.io.fixedBufferStream("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    var base_request: std.Io.Reader = .fixed("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     while (true) {
         const done = conn.req_state.parse(conn.req_arena.allocator(), &base_request) catch unreachable;
         if (done) {
@@ -484,7 +484,7 @@ const JsonComparer = struct {
     }
 
     fn stringify(self: *JsonComparer, value: anytype) ![]const u8 {
-        var aw: std.io.Writer.Allocating = .init(self._arena.allocator());
+        var aw: std.Io.Writer.Allocating = .init(self._arena.allocator());
         const json_writer = std.json.fmt(value, .{});
         try json_writer.format(&aw.writer);
         return aw.written();
