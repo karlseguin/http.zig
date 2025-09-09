@@ -180,7 +180,11 @@ pub const Context = struct {
         if (self.fake) {
             self.to_read.appendSlice(self.arena.allocator(), data) catch unreachable;
         } else {
-            self.client.writeAll(data) catch unreachable;
+            var buf: [1024]u8 = undefined;
+            var writer = self.client.writer(&buf);
+            const w = &writer.interface;
+            w.writeAll(data) catch unreachable;
+            w.flush() catch unreachable;
         }
     }
 
@@ -188,11 +192,21 @@ pub const Context = struct {
         var buf: [1024]u8 = undefined;
         var arr: std.ArrayList(u8) = .empty;
 
+        var reader = self.client.reader(&.{});
+        const r = reader.interface();
         while (true) {
-            const n = self.client.read(&buf) catch |err| switch (err) {
-                error.WouldBlock => return arr,
-                else => return err,
-            };
+            const n = r.readSliceShort(&buf) catch |err|
+                switch (err) {
+                    error.ReadFailed => {
+                        if (reader.getError()) |e| {
+                            switch (e) {
+                                error.WouldBlock => return arr,
+                                else => return e,
+                            }
+                        }
+                        return err;
+                    },
+                };
             if (n == 0) return arr;
             try arr.appendSlice(a, buf[0..n]);
         }
@@ -203,8 +217,10 @@ pub const Context = struct {
         var pos: usize = 0;
         var buf = try allocator.alloc(u8, expected.len);
         defer allocator.free(buf);
+        var reader = self.client.reader(&.{});
+        const r = reader.interface();
         while (pos < buf.len) {
-            const n = try self.client.read(buf[pos..]);
+            const n = try r.readSliceShort(buf[pos..]);
             if (n == 0) break;
             pos += n;
         }
@@ -218,11 +234,16 @@ pub const Context = struct {
             .usec = 1_000,
         })) catch unreachable;
 
-        const n: usize = self.client.read(buf[0..]) catch |err| blk: {
-            switch (err) {
-                error.WouldBlock => break :blk 0,
-                else => @panic(@errorName(err)),
-            }
+        const n = r.readSliceShort(buf[0..]) catch |err| blk: switch (err) {
+            error.ReadFailed => {
+                if (reader.getError()) |e| {
+                    switch (e) {
+                        error.WouldBlock => break :blk 0,
+                        else => @panic(@errorName(e)),
+                    }
+                }
+                @panic(@errorName(err));
+            },
         };
         try expectEqual(0, n);
 
@@ -277,6 +298,15 @@ pub const Context = struct {
         pos: usize,
         buf: []const u8,
         random: std.Random,
+        interface: std.Io.Reader =
+            .{
+                .vtable = &.{
+                    .stream = FakeReader.stream,
+                },
+                .buffer = &.{},
+                .seek = 0,
+                .end = 0,
+            },
 
         pub fn read(
             self: *FakeReader,
@@ -292,6 +322,21 @@ pub const Context = struct {
             const to_read = self.random.intRangeAtMost(usize, 1, @min(data.len, buf.len));
             @memcpy(buf[0..to_read], data[0..to_read]);
             self.pos += to_read;
+            return to_read;
+        }
+
+        fn stream(io_reader: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
+            const r: *FakeReader = @alignCast(@fieldParentPtr("interface", io_reader));
+            const data = r.buf[r.pos..];
+
+            if (data.len == 0 or limit == .nothing) {
+                return 0;
+            }
+
+            // randomly fragment the data
+            const to_read = r.random.intRangeAtMost(usize, 1, @min(data.len, limit.toInt() orelse data.len));
+            try w.writeAll(data[0..to_read]);
+            r.pos += to_read;
             return to_read;
         }
     };
