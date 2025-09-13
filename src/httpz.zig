@@ -1741,7 +1741,7 @@ const TestHandlerDefaultDispatch = struct {
             .path = req.url.path,
         }, .{});
 
-        var aw: std.io.Writer.Allocating = .init(res.arena);
+        var aw: std.Io.Writer.Allocating = .init(res.arena);
         try json_writer.format(&aw.writer);
 
         res.body = aw.written();

@@ -484,7 +484,7 @@ const JsonComparer = struct {
     }
 
     fn stringify(self: *JsonComparer, value: anytype) ![]const u8 {
-        var aw: std.io.Writer.Allocating = .init(self._arena.allocator());
+        var aw: std.Io.Writer.Allocating = .init(self._arena.allocator());
         const json_writer = std.json.fmt(value, .{});
         try json_writer.format(&aw.writer);
         return aw.written();
