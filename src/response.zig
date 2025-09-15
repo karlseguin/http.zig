@@ -12,7 +12,7 @@ const mem = std.mem;
 const Stream = std.net.Stream;
 const Allocator = mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const Writer = std.io.Writer;
+const Writer = std.Io.Writer;
 
 const Self = @This();
 
@@ -383,7 +383,7 @@ pub fn serializeCookie(arena: Allocator, name: []const u8, value: []const u8, co
     if (cookie.max_age) |ma| {
         try buf.appendSlice(arena, "; Max-Age=");
         var cookie_buf: [20]u8 = undefined;
-        var cookie_writer = std.io.Writer.fixed(&cookie_buf);
+        var cookie_writer: std.Io.Writer = .fixed(&cookie_buf);
         try cookie_writer.printInt(ma, 10, .lower, .{});
         try buf.appendSlice(arena, cookie_writer.buffered());
     }

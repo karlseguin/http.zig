@@ -518,9 +518,9 @@ pub const Request = struct {
         buffer: []const u8,
         unread_body: *usize,
         socket: std.posix.socket_t,
-        interface: std.io.Reader,
+        interface: std.Io.Reader,
 
-        pub fn stream(io_r: *std.Io.Reader, w: *std.io.Writer, limit: std.io.Limit) std.io.Reader.StreamError!usize {
+        pub fn stream(io_r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
             const self: *Reader = @alignCast(@fieldParentPtr("interface", io_r));
             const buf = limit.slice(try w.writableSliceGreedy(1));
             const n = self.read(buf) catch return error.ReadFailed;
