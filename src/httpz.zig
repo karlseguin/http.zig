@@ -466,6 +466,11 @@ pub fn Server(comptime H: type) type {
             defer self._mut.unlock();
 
             for (self._workers) |*w| {
+                if (self._listener == null) {
+                    log.err("Cannot stop server, .listen() was never called", .{});
+                    break;
+                }
+
                 w.stop();
             }
 
@@ -927,6 +932,13 @@ test "httpz: quick shutdown" {
     const thrd = try server.listenInNewThread();
     server.stop();
     thrd.join();
+    server.deinit();
+}
+
+test "httpz: shutdown without listen" {
+    // Should not throw a .BADF (unreachable) error
+    var server = try Server(void).init(t.allocator, .{ .port = 6992 }, {});
+    server.stop();
     server.deinit();
 }
 
