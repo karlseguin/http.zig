@@ -81,12 +81,9 @@ fn writer(req: *httpz.Request, res: *httpz.Response) !void {
     res.content_type = httpz.ContentType.JSON;
 
     const name = req.param("name").?;
-
-    try std.json.Stringify.value(
-        .{ .name = name },
-        .{ .whitespace = .indent_4 },
-        res.writer(),
-    );
+    try std.json.Stringify.value(.{
+        .name = name
+    }, .{ .whitespace = .indent_4 }, res.writer());
 }
 
 fn metrics(_: *httpz.Request, res: *httpz.Response) !void {
@@ -110,7 +107,7 @@ fn formPost(req: *httpz.Request, res: *httpz.Response) !void {
 
     res.content_type = .TEXT;
 
-    const w = res.writer();
+    var w = res.writer();
     while (it.next()) |kv| {
         try w.print("{s}={s}\n", .{ kv.key, kv.value });
     }

@@ -5,12 +5,12 @@
     .fingerprint = 0x472add02ac73d53c,
     .dependencies = .{
         .metrics = .{
-            .url = "https://github.com/karlseguin/metrics.zig/archive/603954879849c331a26529b88254770089acac8b.tar.gz",
-            .hash = "metrics-0.0.0-W7G4eP2_AQAdJGKMonHeZFaY4oU4ZXPFFTqFCFXItX3O",
+            .url = "https://github.com/karlseguin/metrics.zig/archive/c22d4e6a4ad648b01ad05f07a3708ce9ddcfb864.tar.gz",
+            .hash = "metrics-0.0.0-W7G4eP2_AQBeD5YAEDBM9CMnB0XwUCHA_7FXZd27bz8l",
         },
         .websocket = .{
-            .url = "https://github.com/karlseguin/websocket.zig/archive/4deaaef2b4475a63f19c5e2f43e38fd55464b118.tar.gz",
-            .hash = "websocket-0.1.0-ZPISdZJxAwAt6Ys_JpoHQQV3NpWCof_N9Jg-Ul2g7OoV",
+            .url = "https://github.com/karlseguin/websocket.zig/archive/750f4489663f823bb1047b925da185dadf9f687f.tar.gz",
+            .hash = "websocket-0.1.0-ZPISdYRTAwAHq-BctQWo2H5_51JuCHNlzYVS0Cd7BNIe",
         },
         // .websocket = .{ .path = "../websocket.zig" },
     },

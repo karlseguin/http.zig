@@ -52,6 +52,5 @@ fn shutdown(_: c_int) callconv(.c) void {
 }
 
 fn index(_: *httpz.Request, res: *httpz.Response) !void {
-    const writer = res.writer();
-    return writer.print("To shutdown, run:\nkill -s int {d}", .{std.c.getpid()});
+    return res.writer().print("To shutdown, run:\nkill -s int {d}", .{std.c.getpid()});
 }

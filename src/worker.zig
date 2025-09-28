@@ -261,31 +261,40 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             }
 
             var is_first = true;
+            var reader = stream.reader(&.{}); // Request.State does its own buffering
             while (true) {
-                const done = conn.req_state.parse(conn.req_arena.allocator(), stream) catch |err| switch (err) {
-                    error.WouldBlock => {
-                        if (is_keepalive and is_first) {
-                            metrics.timeoutKeepalive(1);
-                        } else {
-                            metrics.timeoutRequest(1);
-                        }
-                        return .close;
-                    },
-                    error.NotOpenForReading => {
-                        // This can only happen when we're shutting down and our
-                        // listener has called posix.close(socket) to unblock
-                        // this thread. Using `.disown` is a bit of a hack, but
-                        // disown is handled in handleConnection the way we want
-                        // WE DO NOT WANT to return .close, else that would result
-                        // in posix.close(socket) being called on an already-closed
-                        // socket, which would panic.
-                        return .disown;
-                    },
-                    else => {
-                        requestError(conn, err) catch {};
-                        posix.close(stream.handle);
-                        return .disown;
-                    },
+                const done = conn.req_state.parse(conn.req_arena.allocator(), reader.interface()) catch |err| {
+                    switch (err) {
+                        error.ReadFailed => {
+                            if (reader.getError()) |e| {
+                                switch (e) {
+                                    error.WouldBlock => {
+                                        if (is_keepalive and is_first) {
+                                            metrics.timeoutKeepalive(1);
+                                        } else {
+                                            metrics.timeoutRequest(1);
+                                        }
+                                        return .close;
+                                    },
+                                    error.NotOpenForReading => {
+                                        // This can only happen when we're shutting down and our
+                                        // listener has called posix.close(socket) to unblock
+                                        // this thread. Using `.disown` is a bit of a hack, but
+                                        // disown is handled in handleConnection the way we want
+                                        // WE DO NOT WANT to return .close, else that would result
+                                        // in posix.close(socket) being called on an already-closed
+                                        // socket, which would panic.
+                                        return .disown;
+                                    },
+                                    else => {},
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                    requestError(conn, err) catch {};
+                    posix.close(stream.handle);
+                    return .disown;
                 };
 
                 if (done) {
@@ -583,9 +592,10 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                                 // can access _state directly.
 
                                 const stream = http_conn.stream;
-                                const done = http_conn.req_state.parse(http_conn.req_arena.allocator(), stream) catch |err| {
+                                var reader = stream.reader(&.{}); // Request.State does its own buffering
+                                const done = http_conn.req_state.parse(http_conn.req_arena.allocator(), reader.interface()) catch |err| {
                                     // maybe a write fail or something, doesn't matter, we're closing the connection
-                                    requestError(http_conn, err) catch {};
+                                    requestError(http_conn, reader.getError() orelse err) catch {};
 
                                     // impossible to fail when false is passed
                                     http_conn.requestDone(self.retain_allocated_bytes, false) catch unreachable;
@@ -1775,7 +1785,7 @@ fn requestError(conn: *HTTPConn, err: anyerror) !void {
             metrics.bodyTooBig();
             return writeError(handle, 413, "Request body is too big");
         },
-        error.BrokenPipe, error.ConnectionClosed, error.ConnectionResetByPeer => return,
+        error.BrokenPipe, error.ConnectionClosed, error.ConnectionResetByPeer, error.EndOfStream => return,
         else => {
             log.err("server error: {}", .{err});
             metrics.internalError();
