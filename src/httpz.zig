@@ -699,7 +699,11 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: an
 
     var reply_buf: [512]u8 = undefined;
     const reply = try websocket.Handshake.createReply(key, null, compression, &reply_buf);
-    try http_conn.stream.writeAll(reply);
+    var writer = http_conn.stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll(reply);
+    try w.flush();
+
     if (comptime std.meta.hasFn(H, "afterInit")) {
         const params = @typeInfo(@TypeOf(H.afterInit)).@"fn".params;
         try if (comptime params.len == 1) hc.handler.?.afterInit() else hc.handler.?.afterInit(ctx);
@@ -945,7 +949,10 @@ test "httpz: shutdown without listen" {
 test "httpz: invalid request" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("TEA HTTP/1.1\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("TEA HTTP/1.1\r\n\r\n");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
@@ -954,7 +961,10 @@ test "httpz: invalid request" {
 test "httpz: invalid request path" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("TEA /hello\rn\nWorld:test HTTP/1.1\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("TEA /hello\rn\nWorld:test HTTP/1.1\r\n\r\n");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
@@ -963,7 +973,10 @@ test "httpz: invalid request path" {
 test "httpz: invalid header name" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("GET / HTTP/1.1\r\nOver: 9000\r\nHel\tlo:World\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET / HTTP/1.1\r\nOver: 9000\r\nHel\tlo:World\r\n\r\n");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
@@ -972,7 +985,10 @@ test "httpz: invalid header name" {
 test "httpz: invalid content length value (1)" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("GET / HTTP/1.1\r\nContent-Length: HaHA\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET / HTTP/1.1\r\nContent-Length: HaHA\r\n\r\n");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
@@ -981,7 +997,10 @@ test "httpz: invalid content length value (1)" {
 test "httpz: invalid content length value (2)" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("GET / HTTP/1.1\r\nContent-Length: 1.0\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET / HTTP/1.1\r\nContent-Length: 1.0\r\n\r\n");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
@@ -990,7 +1009,10 @@ test "httpz: invalid content length value (2)" {
 test "httpz: body too big" {
     const stream = testStream(5993);
     defer stream.close();
-    try stream.writeAll("POST / HTTP/1.1\r\nContent-Length: 999999999999999999\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("POST / HTTP/1.1\r\nContent-Length: 999999999999999999\r\n\r\n");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 413 \r\nConnection: Close\r\nContent-Length: 23\r\n\r\nRequest body is too big", testReadAll(stream, &buf));
@@ -999,7 +1021,10 @@ test "httpz: body too big" {
 test "httpz: overflow content length" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("GET / HTTP/1.1\r\nContent-Length: 999999999999999999999999999\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET / HTTP/1.1\r\nContent-Length: 999999999999999999999999999\r\n\r\n");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
@@ -1008,7 +1033,10 @@ test "httpz: overflow content length" {
 test "httpz: no route" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("GET / HTTP/1.1\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET / HTTP/1.1\r\n\r\n");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 404 \r\nContent-Length: 9\r\n\r\nNot Found", testReadAll(stream, &buf));
@@ -1017,7 +1045,10 @@ test "httpz: no route" {
 test "httpz: no route with custom notFound handler" {
     const stream = testStream(5993);
     defer stream.close();
-    try stream.writeAll("GET /not_found HTTP/1.1\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /not_found HTTP/1.1\r\n\r\n");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 404 \r\nstate: 3\r\nContent-Length: 10\r\n\r\nwhere lah?", testReadAll(stream, &buf));
@@ -1029,7 +1060,10 @@ test "httpz: unhandled exception" {
 
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("GET /fail HTTP/1.1\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /fail HTTP/1.1\r\n\r\n");
+    try w.flush();
 
     var buf: [150]u8 = undefined;
     try t.expectString("HTTP/1.1 500 \r\nContent-Length: 21\r\n\r\nInternal Server Error", testReadAll(stream, &buf));
@@ -1041,7 +1075,10 @@ test "httpz: unhandled exception with custom error handler" {
 
     const stream = testStream(5993);
     defer stream.close();
-    try stream.writeAll("GET /fail HTTP/1.1\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /fail HTTP/1.1\r\n\r\n");
+    try w.flush();
 
     var buf: [150]u8 = undefined;
     try t.expectString("HTTP/1.1 500 \r\nstate: 3\r\nerr: TestUnhandledError\r\nContent-Length: 29\r\n\r\n#/why/arent/tags/hierarchical", testReadAll(stream, &buf));
@@ -1052,35 +1089,50 @@ test "httpz: custom methods" {
     defer stream.close();
 
     {
-        try stream.writeAll("GET /test/method HTTP/1.1\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("GET /test/method HTTP/1.1\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
         try res.expectJson(.{ .method = "GET", .string = "" });
     }
 
     {
-        try stream.writeAll("PUT /test/method HTTP/1.1\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("PUT /test/method HTTP/1.1\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
         try res.expectJson(.{ .method = "PUT", .string = "" });
     }
 
     {
-        try stream.writeAll("TEA /test/method HTTP/1.1\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("TEA /test/method HTTP/1.1\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
         try res.expectJson(.{ .method = "OTHER", .string = "TEA" });
     }
 
     {
-        try stream.writeAll("PING /test/method HTTP/1.1\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("PING /test/method HTTP/1.1\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
         try res.expectJson(.{ .method = "OTHER", .string = "PING" });
     }
 
     {
-        try stream.writeAll("TEA /test/other HTTP/1.1\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("TEA /test/other HTTP/1.1\r\n\r\n");
+        try w.flush();
         var buf: [100]u8 = undefined;
         try t.expectString("HTTP/1.1 404 \r\nContent-Length: 9\r\n\r\nNot Found", testReadAll(stream, &buf));
     }
@@ -1089,7 +1141,10 @@ test "httpz: custom methods" {
 test "httpz: route params" {
     const stream = testStream(5993);
     defer stream.close();
-    try stream.writeAll("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", testReadAll(stream, &buf));
@@ -1098,7 +1153,10 @@ test "httpz: route params" {
 test "httpz: request and response headers" {
     const stream = testStream(5993);
     defer stream.close();
-    try stream.writeAll("GET /test/headers HTTP/1.1\r\nHeader-Name: Header-Value\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /test/headers HTTP/1.1\r\nHeader-Name: Header-Value\r\n\r\n");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 200 \r\nstate: 3\r\nEcho: Header-Value\r\nother: test-value\r\nContent-Length: 0\r\n\r\n", testReadAll(stream, &buf));
@@ -1107,7 +1165,10 @@ test "httpz: request and response headers" {
 test "httpz: content-length body" {
     const stream = testStream(5993);
     defer stream.close();
-    try stream.writeAll("GET /test/body/cl HTTP/1.1\r\nHeader-Name: Header-Value\r\nContent-Length: 4\r\n\r\nabcz");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /test/body/cl HTTP/1.1\r\nHeader-Name: Header-Value\r\nContent-Length: 4\r\n\r\nabcz");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 200 \r\nEcho-Body: abcz\r\nContent-Length: 0\r\n\r\n", testReadAll(stream, &buf));
@@ -1116,7 +1177,10 @@ test "httpz: content-length body" {
 test "httpz: json response" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("GET /test/json HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /test/json HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    try w.flush();
 
     var buf: [200]u8 = undefined;
     try t.expectString("HTTP/1.1 201 \r\nContent-Type: application/json; charset=UTF-8\r\nContent-Length: 26\r\n\r\n{\"over\":9000,\"teg\":\"soup\"}", testReadAll(stream, &buf));
@@ -1125,7 +1189,10 @@ test "httpz: json response" {
 test "httpz: query" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("GET /test/query?fav=keemun%20te%61%21 HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /test/query?fav=keemun%20te%61%21 HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    try w.flush();
 
     var buf: [200]u8 = undefined;
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 11\r\n\r\nkeemun tea!", testReadAll(stream, &buf));
@@ -1134,7 +1201,10 @@ test "httpz: query" {
 test "httpz: chunked" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("GET /test/chunked HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /test/chunked HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    try w.flush();
 
     var buf: [1000]u8 = undefined;
     try t.expectString("HTTP/1.1 200 \r\nOver: 9000!\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nChunk 1\r\n11\r\nand another chunk\r\n0\r\n\r\n", testReadAll(stream, &buf));
@@ -1143,7 +1213,10 @@ test "httpz: chunked" {
 test "httpz: route-specific dispatcher" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("HEAD /test/dispatcher HTTP/1.1\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("HEAD /test/dispatcher HTTP/1.1\r\n\r\n");
+    try w.flush();
 
     var buf: [200]u8 = undefined;
     try t.expectString("HTTP/1.1 200 \r\ndispatcher: test-dispatcher-1\r\nContent-Length: 6\r\n\r\naction", testReadAll(stream, &buf));
@@ -1152,9 +1225,12 @@ test "httpz: route-specific dispatcher" {
 test "httpz: middlewares" {
     const stream = testStream(5992);
     defer stream.close();
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
 
     {
-        try stream.writeAll("GET /test/middlewares HTTP/1.1\r\n\r\n");
+        try w.writeAll("GET /test/middlewares HTTP/1.1\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
 
@@ -1168,7 +1244,10 @@ test "httpz: CORS" {
     defer stream.close();
 
     {
-        try stream.writeAll("GET /echo HTTP/1.1\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("GET /echo HTTP/1.1\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
         try t.expectEqual(null, res.headers.get("Access-Control-Max-Age"));
@@ -1179,7 +1258,10 @@ test "httpz: CORS" {
 
     {
         // cors endpoint but not cors options
-        try stream.writeAll("OPTIONS /test/cors HTTP/1.1\r\nSec-Fetch-Mode: navigate\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nSec-Fetch-Mode: navigate\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
 
@@ -1191,7 +1273,10 @@ test "httpz: CORS" {
 
     {
         // cors request
-        try stream.writeAll("OPTIONS /test/cors HTTP/1.1\r\nSec-Fetch-Mode: cors\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nSec-Fetch-Mode: cors\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
 
@@ -1203,7 +1288,10 @@ test "httpz: CORS" {
 
     {
         // cors request, non-options
-        try stream.writeAll("GET /test/cors HTTP/1.1\r\nSec-Fetch-Mode: cors\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("GET /test/cors HTTP/1.1\r\nSec-Fetch-Mode: cors\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
 
@@ -1219,7 +1307,10 @@ test "httpz: router groups" {
     defer stream.close();
 
     {
-        try stream.writeAll("GET / HTTP/1.1\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("GET / HTTP/1.1\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
 
@@ -1228,7 +1319,10 @@ test "httpz: router groups" {
     }
 
     {
-        try stream.writeAll("GET /admin/users HTTP/1.1\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("GET /admin/users HTTP/1.1\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
 
@@ -1237,7 +1331,10 @@ test "httpz: router groups" {
     }
 
     {
-        try stream.writeAll("PUT /admin/users/:id HTTP/1.1\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("PUT /admin/users/:id HTTP/1.1\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
 
@@ -1246,7 +1343,10 @@ test "httpz: router groups" {
     }
 
     {
-        try stream.writeAll("HEAD /debug/ping HTTP/1.1\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("HEAD /debug/ping HTTP/1.1\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
 
@@ -1255,7 +1355,10 @@ test "httpz: router groups" {
     }
 
     {
-        try stream.writeAll("OPTIONS /debug/stats HTTP/1.1\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("OPTIONS /debug/stats HTTP/1.1\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
 
@@ -1264,7 +1367,10 @@ test "httpz: router groups" {
     }
 
     {
-        try stream.writeAll("POST /login HTTP/1.1\r\n\r\n");
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("POST /login HTTP/1.1\r\n\r\n");
+        try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
 
@@ -1276,7 +1382,10 @@ test "httpz: router groups" {
 test "httpz: event stream" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("GET /test/stream HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /test/stream HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    try w.flush();
 
     var res = testReadParsed(stream);
     defer res.deinit();
@@ -1292,7 +1401,10 @@ test "httpz: event stream" {
 test "httpz: event stream sync" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("GET /test/streamsync HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /test/streamsync HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    try w.flush();
 
     var res = testReadParsed(stream);
     defer res.deinit();
@@ -1308,19 +1420,26 @@ test "httpz: event stream sync" {
 test "httpz: keepalive" {
     const stream = testStream(5993);
     defer stream.close();
-    try stream.writeAll("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 20\r\n\r\nversion=v2,user=9001", testReadAll(stream, &buf));
 
-    try stream.writeAll("GET /api/v2/users/123 HTTP/1.1\r\n\r\n");
+    try w.writeAll("GET /api/v2/users/123 HTTP/1.1\r\n\r\n");
+    try w.flush();
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 19\r\n\r\nversion=v2,user=123", testReadAll(stream, &buf));
 }
 
 test "httpz: route data" {
     const stream = testStream(5992);
     defer stream.close();
-    try stream.writeAll("GET /test/route_data HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /test/route_data HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    try w.flush();
 
     var res = testReadParsed(stream);
     defer res.deinit();
@@ -1330,21 +1449,29 @@ test "httpz: route data" {
 test "httpz: keepalive with explicit write" {
     const stream = testStream(5993);
     defer stream.close();
-    try stream.writeAll("GET /write/9001 HTTP/1.1\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /write/9001 HTTP/1.1\r\n\r\n");
+    try w.flush();
 
     var buf: [1000]u8 = undefined;
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 47\r\n\r\n{\"state\":3,\"method\":\"GET\",\"path\":\"/write/9001\"}", testReadAll(stream, &buf));
 
-    try stream.writeAll("GET /write/123 HTTP/1.1\r\n\r\n");
+    try w.writeAll("GET /write/123 HTTP/1.1\r\n\r\n");
+    try w.flush();
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 46\r\n\r\n{\"state\":3,\"method\":\"GET\",\"path\":\"/write/123\"}", testReadAll(stream, &buf));
 }
 
 test "httpz: request in chunks" {
     const stream = testStream(5993);
     defer stream.close();
-    try stream.writeAll("GET /api/v2/use");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /api/v2/use");
+    try w.flush();
     std.Thread.sleep(std.time.ns_per_ms * 10);
-    try stream.writeAll("rs/11 HTTP/1.1\r\n\r\n");
+    try w.writeAll("rs/11 HTTP/1.1\r\n\r\n");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 18\r\n\r\nversion=v2,user=11", testReadAll(stream, &buf));
@@ -1355,6 +1482,8 @@ test "httpz: writer re-use" {
 
     const stream = testStream(5996);
     defer stream.close();
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
 
     var expected: [10]TestUser = undefined;
 
@@ -1364,7 +1493,8 @@ test "httpz: writer re-use" {
             .id = try std.fmt.allocPrint(t.arena.allocator(), "id-{d}", .{i}),
             .power = i,
         };
-        try stream.writeAll(try std.fmt.bufPrint(&buf, "GET /test/writer?count={d} HTTP/1.1\r\nContent-Length: 0\r\n\r\n", .{i + 1}));
+        try w.writeAll(try std.fmt.bufPrint(&buf, "GET /test/writer?count={d} HTTP/1.1\r\nContent-Length: 0\r\n\r\n", .{i + 1}));
+        try w.flush();
 
         var res = testReadParsed(stream);
         defer res.deinit();
@@ -1376,7 +1506,10 @@ test "httpz: writer re-use" {
 test "httpz: custom dispatch without action context" {
     const stream = testStream(5994);
     defer stream.close();
-    try stream.writeAll("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    try w.flush();
 
     var buf: [200]u8 = undefined;
     try t.expectString("HTTP/1.1 200 \r\nContent-Type: application/json; charset=UTF-8\r\ndstate: 10\r\ndispatch: TestHandlerDispatch\r\nContent-Length: 12\r\n\r\n{\"state\":10}", testReadAll(stream, &buf));
@@ -1385,7 +1518,10 @@ test "httpz: custom dispatch without action context" {
 test "httpz: custom dispatch with action context" {
     const stream = testStream(5995);
     defer stream.close();
-    try stream.writeAll("GET /?name=teg HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /?name=teg HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    try w.flush();
 
     var buf: [200]u8 = undefined;
     try t.expectString("HTTP/1.1 200 \r\nContent-Type: application/json; charset=UTF-8\r\ndstate: 20\r\ndispatch: TestHandlerDispatchContext\r\nContent-Length: 12\r\n\r\n{\"other\":30}", testReadAll(stream, &buf));
@@ -1394,7 +1530,10 @@ test "httpz: custom dispatch with action context" {
 test "httpz: custom handle" {
     const stream = testStream(5997);
     defer stream.close();
-    try stream.writeAll("GET /whatever?name=teg HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /whatever?name=teg HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    try w.flush();
 
     var buf: [100]u8 = undefined;
     try t.expectString("HTTP/1.1 200 \r\nContent-Length: 9\r\n\r\nhello teg", testReadAll(stream, &buf));
@@ -1405,7 +1544,12 @@ test "httpz: request body reader" {
         // no body
         const stream = testStream(5992);
         defer stream.close();
-        try stream.writeAll("GET /test/req_reader HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+
+        try w.writeAll("GET /test/req_reader HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+        try w.flush();
 
         var res = testReadParsed(stream);
         defer res.deinit();
@@ -1416,7 +1560,12 @@ test "httpz: request body reader" {
         // small body
         const stream = testStream(5992);
         defer stream.close();
-        try stream.writeAll("GET /test/req_reader HTTP/1.1\r\nContent-Length: 4\r\n\r\n123z");
+
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+
+        try w.writeAll("GET /test/req_reader HTTP/1.1\r\nContent-Length: 4\r\n\r\n123z");
+        try w.flush();
 
         var res = testReadParsed(stream);
         defer res.deinit();
@@ -1428,7 +1577,12 @@ test "httpz: request body reader" {
         // medium body
         const stream = testStream(5992);
         defer stream.close();
-        try stream.writeAll(std.fmt.comptimePrint("GET /test/req_reader HTTP/1.1\r\nContent-Length: {d}\r\n\r\n" ++ ("a" ** length), .{length}));
+
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+
+        try w.writeAll(std.fmt.comptimePrint("GET /test/req_reader HTTP/1.1\r\nContent-Length: {d}\r\n\r\n" ++ ("a" ** length), .{length}));
+        try w.flush();
 
         var res = testReadParsed(stream);
         defer res.deinit();
@@ -1443,16 +1597,20 @@ test "httpz: request body reader" {
     for (0..10) |_| {
         const stream = testStream(5992);
         defer stream.close();
+
+        var buf: [1024]u8 = undefined;
+        var writer = stream.writer(&buf);
+        const w = &writer.interface;
+
         var req: []const u8 = std.fmt.comptimePrint("GET /test/req_reader HTTP/1.1\r\nContent-Length: {d}\r\n\r\n" ++ ("a" ** length), .{length});
         while (req.len > 0) {
             const len = random.uintAtMost(usize, req.len - 1) + 1;
-            const n = stream.write(req[0..len]) catch |err| switch (err) {
-                error.WouldBlock => 0,
-                else => return err,
-            };
+            try w.writeAll(req[0..len]);
             std.Thread.sleep(std.time.ns_per_ms * 2);
-            req = req[n..];
+            req = req[len..];
         }
+
+        try w.flush();
 
         var res = testReadParsed(stream);
         defer res.deinit();
@@ -1463,7 +1621,10 @@ test "httpz: request body reader" {
 test "websocket: invalid request" {
     const stream = testStream(5998);
     defer stream.close();
-    try stream.writeAll("GET /ws HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /ws HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+    try w.flush();
 
     var res = testReadParsed(stream);
     defer res.deinit();
@@ -1473,11 +1634,14 @@ test "websocket: invalid request" {
 test "websocket: upgrade" {
     const stream = testStream(5998);
     defer stream.close();
-    try stream.writeAll("GET /ws HTTP/1.1\r\nContent-Length: 0\r\n");
-    try stream.writeAll("upgrade: WEBsocket\r\n");
-    try stream.writeAll("Sec-Websocket-verSIon: 13\r\n");
-    try stream.writeAll("ConnectioN: abc,upgrade,123\r\n");
-    try stream.writeAll("SEC-WEBSOCKET-KeY: a-secret-key\r\n\r\n");
+    var writer = stream.writer(&.{});
+    const w = &writer.interface;
+    try w.writeAll("GET /ws HTTP/1.1\r\nContent-Length: 0\r\n");
+    try w.writeAll("upgrade: WEBsocket\r\n");
+    try w.writeAll("Sec-Websocket-verSIon: 13\r\n");
+    try w.writeAll("ConnectioN: abc,upgrade,123\r\n");
+    try w.writeAll("SEC-WEBSOCKET-KeY: a-secret-key\r\n\r\n");
+    try w.flush();
 
     var res = testReadHeader(stream);
     defer res.deinit();
@@ -1486,24 +1650,36 @@ test "websocket: upgrade" {
     try t.expectString("upgrade", res.headers.get("Connection").?);
     try t.expectString("55eM2SNGu+68v5XXrr982mhPFkU=", res.headers.get("Sec-Websocket-Accept").?);
 
-    try stream.writeAll(&websocket.frameText("over 9000!"));
-    try stream.writeAll(&websocket.frameText("close"));
+    try w.writeAll(&websocket.frameText("over 9000!"));
+    try w.writeAll(&websocket.frameText("close"));
+    try w.flush();
 
     var pos: usize = 0;
     var buf: [100]u8 = undefined;
     var wait_count: usize = 0;
+    var reader = stream.reader(&.{});
+    const r = reader.interface();
     while (pos < 16) {
-        const n = stream.read(buf[pos..]) catch |err| switch (err) {
-            error.WouldBlock => {
-                if (wait_count == 100) {
-                    break;
-                }
-                wait_count += 1;
-                std.Thread.sleep(std.time.ns_per_ms);
-                continue;
-            },
-            else => return err,
-        };
+        const n = r.readSliceShort(buf[pos..]) catch |err|
+            switch (err) {
+                error.ReadFailed => {
+                    if (reader.getError()) |e| {
+                        switch (e) {
+                            error.WouldBlock => {
+                                if (wait_count == 100) {
+                                    break;
+                                }
+                                wait_count += 1;
+                                std.Thread.sleep(std.time.ns_per_ms);
+                                continue;
+                            },
+                            else => {},
+                        }
+                    }
+                    return err;
+                },
+            };
+
         if (n == 0) {
             break;
         }
@@ -1553,18 +1729,31 @@ fn testStream(port: u16) std.net.Stream {
 fn testReadAll(stream: std.net.Stream, buf: []u8) []u8 {
     var pos: usize = 0;
     var blocked = false;
+    var reader = stream.reader(&.{});
+    const r = reader.interface();
     while (true) {
         std.debug.assert(pos < buf.len);
-        const n = stream.read(buf[pos..]) catch |err| switch (err) {
-            error.WouldBlock => {
-                if (blocked) return buf[0..pos];
-                blocked = true;
-                std.Thread.sleep(std.time.ns_per_ms);
-                continue;
-            },
-            error.ConnectionResetByPeer => return buf[0..pos],
-            else => @panic(@errorName(err)),
-        };
+        var vecs: [1][]u8 = .{buf[pos..]};
+        const n = r.readVec(&vecs) catch |err|
+            switch (err) {
+                error.ReadFailed => {
+                    if (reader.getError()) |e| {
+                        switch (e) {
+                            error.WouldBlock => {
+                                if (blocked) return buf[0..pos];
+                                blocked = true;
+                                std.Thread.sleep(std.time.ns_per_ms);
+                                continue;
+                            },
+                            error.ConnectionResetByPeer => return buf[0..pos],
+                            else => @panic(@errorName(e)),
+                        }
+                    }
+                    @panic(@errorName(err));
+                },
+                error.EndOfStream => 0,
+            };
+
         if (n == 0) {
             return buf[0..pos];
         }
@@ -1584,17 +1773,29 @@ fn testReadHeader(stream: std.net.Stream) testing.Testing.Response {
     var pos: usize = 0;
     var blocked = false;
     var buf: [1024]u8 = undefined;
+    var reader = stream.reader(&.{});
+    const r = reader.interface();
     while (true) {
         std.debug.assert(pos < buf.len);
-        const n = stream.read(buf[pos..]) catch |err| switch (err) {
-            error.WouldBlock => {
-                if (blocked) unreachable;
-                blocked = true;
-                std.Thread.sleep(std.time.ns_per_ms);
-                continue;
-            },
-            else => @panic(@errorName(err)),
-        };
+        var vecs: [1][]u8 = .{buf[pos..]};
+        const n = r.readVec(&vecs) catch |err|
+            switch (err) {
+                error.ReadFailed => {
+                    if (reader.getError()) |e| {
+                        switch (e) {
+                            error.WouldBlock => {
+                                if (blocked) unreachable;
+                                blocked = true;
+                                std.Thread.sleep(std.time.ns_per_ms);
+                                continue;
+                            },
+                            else => @panic(@errorName(e)),
+                        }
+                    }
+                    @panic(@errorName(err));
+                },
+                error.EndOfStream => 0,
+            };
 
         if (n == 0) unreachable;
 
@@ -1685,8 +1886,11 @@ const TestDummyHandler = struct {
         data: []const u8,
 
         fn handle(self: StreamContext, stream: std.net.Stream) void {
-            stream.writeAll(self.data) catch unreachable;
-            stream.writeAll("a message") catch unreachable;
+            var writer = stream.writer(&.{});
+            const w = &writer.interface;
+            w.writeAll(self.data) catch unreachable;
+            w.writeAll("a message") catch unreachable;
+            w.flush() catch unreachable;
         }
     };
 
