@@ -160,10 +160,7 @@ pub const Response = struct {
         buf[len] = '\r';
         buf[len + 1] = '\n';
 
-        var vec = [2]std.posix.iovec_const{
-            .{ .len = len + 2, .base = &buf },
-            .{ .len = data.len, .base = data.ptr },
-        };
+        var vec = [2][]const u8{buf[0..len+2], data};
         try conn.writeAllIOVec(&vec);
     }
 
@@ -199,10 +196,7 @@ pub const Response = struct {
         const buffered = self.buffer.writer.buffered();
         const body = if (buffered.len > 0) buffered else self.body;
 
-        var vec = [2]std.posix.iovec_const{
-            .{ .len = header_buf.len, .base = header_buf.ptr },
-            .{ .len = body.len, .base = body.ptr },
-        };
+        var vec = [2][]const u8{header_buf, body};
         return conn.writeAllIOVec(&vec);
     }
 

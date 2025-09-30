@@ -1687,28 +1687,31 @@ pub const HTTPConn = struct {
         }
     }
 
-    pub fn writeAllIOVec(self: *HTTPConn, vec: []posix.iovec_const) !void {
-        const socket = self.stream.handle;
-
+    pub fn writeAllIOVec(self: *HTTPConn, vec: [][]const u8) !void {
+        var buf: [4096]u8 = undefined;
+        var writer = self.stream.writer(&buf);
         var i: usize = 0;
         while (true) {
-            var n = posix.writev(socket, vec[i..]) catch |err| switch (err) {
-                error.WouldBlock => {
-                    try self.blockingMode();
-                    continue;
-                },
-                else => return err,
+            var n = writer.interface.writeVec(vec[i..]) catch |err| {
+                if (writer.err) |socket_err| {
+                    switch (socket_err) {
+                        error.WouldBlock => {
+                            try self.blockingMode();
+                            continue;
+                        },
+                        else => return err,
+                    }
+                }
+                return err;
             };
-
             while (n >= vec[i].len) {
                 n -= vec[i].len;
                 i += 1;
                 if (i >= vec.len) {
-                    return;
+                    return writer.interface.flush();
                 }
             }
-            vec[i].base += n;
-            vec[i].len -= n;
+            vec[i] = vec[i][n..];
         }
     }
 
