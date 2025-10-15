@@ -54,7 +54,7 @@ fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
 * [Websocket](#websocket)
 
 # Versions
-The `master` branch targets Zig 0.14. The `dev` branch targets the latest version of Zig.
+The `master` branch targets the latest stable of Zig (0.15.1). The `dev` branch targets the latest version of Zig. If you're looking for an older version, look for an zig-X.YZ branches.
 
 # Examples
 See the [examples](https://github.com/karlseguin/http.zig/tree/master/examples) folder for examples. If you clone this repository, you can run `zig build example_#` to run a specific example:
