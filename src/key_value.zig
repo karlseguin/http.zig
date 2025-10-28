@@ -107,7 +107,12 @@ inline fn strHash(key: []const u8) u8 {
     if (key.len == 0) {
         return 0;
     }
-    return @as(u8, @truncate(key.len)) | (key[0]) ^ (key[key.len - 1]);
+
+    var h: u8 = 5;
+    for (key) |c| {
+        h = h *% 31 +% c;
+    }
+    return h;
 }
 
 pub const StringKeyValue = KeyValue([]const u8, strHash);
