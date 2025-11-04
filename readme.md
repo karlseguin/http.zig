@@ -75,7 +75,7 @@ listening http://localhost:8800/
 zig fetch --save "git+https://github.com/karlseguin/http.zig#master"
 ```
 
-2. In your `build.zig`, add the `httpz` module as a dependency you your program:
+2. In your `build.zig`, add the `httpz` module as a dependency to your program:
 
 ```zig
 const httpz = b.dependency("httpz", .{

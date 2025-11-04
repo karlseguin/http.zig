@@ -39,25 +39,20 @@ pub fn execute(self: *const Cors, req: *httpz.Request, res: *httpz.Response, exe
         return executor.next();
     };
 
-    const includes_origin = switch (self.origin) {
-        .wildcard => true,
-        .list => |allowed_origins| blk: {
-            for (allowed_origins) |allowed_origin| {
-                if (std.mem.eql(u8, origin, allowed_origin)) {
-                    break :blk true;
-                }
-            }
-            break :blk false;
-        },
-    };
-
-    if (!includes_origin) {
-        return executor.next();
-    }
-
     switch (self.origin) {
         .wildcard => res.header("Access-Control-Allow-Origin", "*"),
-        .list => res.header("Access-Control-Allow-Origin", origin),
+        .list => |allowed_origins| {
+            for (allowed_origins) |allowed_origin| {
+                if (std.mem.eql(u8, origin, allowed_origin)) {
+                    res.header("Access-Control-Allow-Origin", origin);
+                    break;
+                }
+            } else {
+                // The requested origin isn't in our list, we won't include any
+                // CORS headers, but we'll continue on to the next middleware.
+                return executor.next();
+            }
+        },
     }
 
     if (self.credentials) |credentials| {
@@ -97,30 +92,22 @@ fn parseOrigin(origin_str: []const u8, arena: std.mem.Allocator) !Origin {
         return .wildcard;
     }
 
-    // Check if it contains commas (multiple origins)
-    if (std.mem.indexOf(u8, trimmed, ",")) |_| {
-        // Count how many origins we have
-        var count: usize = 0;
-        var it = std.mem.splitSequence(u8, trimmed, ",");
-        while (it.next()) |_| {
-            count += 1;
-        }
-
-        // Allocate array for origins
-        const origins = try arena.alloc([]const u8, count);
-
-        // Parse and trim each origin
-        it.reset();
-        var i: usize = 0;
-        while (it.next()) |origin| : (i += 1) {
-            origins[i] = std.mem.trim(u8, origin, " \t");
-        }
-
-        return .{ .list = origins };
+    // Count how many origins we have
+    var count: usize = 0;
+    var it = std.mem.splitScalar(u8, trimmed, ',');
+    while (it.next()) |_| {
+        count += 1;
     }
 
-    // Single origin
-    const single_origin = try arena.alloc([]const u8, 1);
-    single_origin[0] = trimmed;
-    return .{ .list = single_origin };
+    // Allocate array for origins
+    const origins = try arena.alloc([]const u8, count);
+
+    // Parse and trim each origin
+    it.reset();
+    var i: usize = 0;
+    while (it.next()) |origin| : (i += 1) {
+        origins[i] = std.mem.trim(u8, origin, " \t");
+    }
+
+    return .{ .list = origins };
 }
