@@ -798,8 +798,11 @@ var dispatch_action_context_server: Server(*TestHandlerDispatchContext) = undefi
 var reuse_server: Server(void) = undefined;
 var handle_server: Server(TestHandlerHandle) = undefined;
 var websocket_server: Server(TestWebsocketHandler) = undefined;
+var cors_wildcard_server: Server(void) = undefined;
+var cors_single_server: Server(void) = undefined;
+var cors_multiple_server: Server(void) = undefined;
 
-var test_server_threads: [7]Thread = undefined;
+var test_server_threads: [10]Thread = undefined;
 
 test "tests:beforeAll" {
     // this will leak since the server will run until the process exits. If we use
@@ -904,6 +907,47 @@ test "tests:beforeAll" {
         test_server_threads[6] = try websocket_server.listenInNewThread();
     }
 
+    {
+        cors_wildcard_server = try Server(void).init(ga, .{ .port = 5999 }, {});
+        var cors_wildcard = try cors_wildcard_server.arena.alloc(Middleware(void), 1);
+        cors_wildcard[0] = try cors_wildcard_server.middleware(middleware.Cors, .{
+            .origin = "*",
+            .max_age = "600",
+            .methods = "GET,POST,PUT",
+            .headers = "authorization,content-type",
+        });
+        var router = try cors_wildcard_server.router(.{});
+        router.all("/test/cors", TestDummyHandler.jsonRes, .{ .middlewares = cors_wildcard });
+        test_server_threads[7] = try cors_wildcard_server.listenInNewThread();
+    }
+
+    {
+        cors_single_server = try Server(void).init(ga, .{ .port = 6000 }, {});
+        var cors_single = try cors_single_server.arena.alloc(Middleware(void), 1);
+        cors_single[0] = try cors_single_server.middleware(middleware.Cors, .{
+            .origin = "https://example.com",
+            .credentials = "true",
+            .max_age = "3600",
+        });
+        var router = try cors_single_server.router(.{});
+        router.all("/test/cors", TestDummyHandler.jsonRes, .{ .middlewares = cors_single });
+        test_server_threads[8] = try cors_single_server.listenInNewThread();
+    }
+
+    {
+        cors_multiple_server = try Server(void).init(ga, .{ .port = 6001 }, {});
+        var cors_multiple = try cors_multiple_server.arena.alloc(Middleware(void), 1);
+        cors_multiple[0] = try cors_multiple_server.middleware(middleware.Cors, .{
+            .origin = "https://example.com, https://api.example.com, https://test.local",
+            .credentials = "true",
+            .methods = "GET,POST,DELETE",
+            .headers = "x-custom-header",
+        });
+        var router = try cors_multiple_server.router(.{});
+        router.all("/test/cors", TestDummyHandler.jsonRes, .{ .middlewares = cors_multiple });
+        test_server_threads[9] = try cors_multiple_server.listenInNewThread();
+    }
+
     std.testing.refAllDecls(@This());
 }
 
@@ -915,6 +959,9 @@ test "tests:afterAll" {
     reuse_server.stop();
     handle_server.stop();
     websocket_server.stop();
+    cors_wildcard_server.stop();
+    cors_single_server.stop();
+    cors_multiple_server.stop();
 
     for (test_server_threads) |thread| {
         thread.join();
@@ -927,6 +974,9 @@ test "tests:afterAll" {
     reuse_server.deinit();
     handle_server.deinit();
     websocket_server.deinit();
+    cors_wildcard_server.deinit();
+    cors_single_server.deinit();
+    cors_multiple_server.deinit();
 
     try t.expectEqual(false, global_test_allocator.detectLeaks());
 }
@@ -1229,7 +1279,7 @@ test "httpz: middlewares" {
     const w = &writer.interface;
 
     {
-        try w.writeAll("GET /test/middlewares HTTP/1.1\r\n\r\n");
+        try w.writeAll("GET /test/middlewares HTTP/1.1\r\nOrigin: httpz.local\r\n\r\n");
         try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
@@ -1260,7 +1310,7 @@ test "httpz: CORS" {
         // cors endpoint but not cors options
         var writer = stream.writer(&.{});
         const w = &writer.interface;
-        try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nSec-Fetch-Mode: navigate\r\n\r\n");
+        try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nOrigin: httpz.local\r\nSec-Fetch-Mode: navigate\r\n\r\n");
         try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
@@ -1275,7 +1325,7 @@ test "httpz: CORS" {
         // cors request
         var writer = stream.writer(&.{});
         const w = &writer.interface;
-        try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nSec-Fetch-Mode: cors\r\n\r\n");
+        try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nOrigin: httpz.local\r\nSec-Fetch-Mode: cors\r\n\r\n");
         try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
@@ -1290,7 +1340,7 @@ test "httpz: CORS" {
         // cors request, non-options
         var writer = stream.writer(&.{});
         const w = &writer.interface;
-        try w.writeAll("GET /test/cors HTTP/1.1\r\nSec-Fetch-Mode: cors\r\n\r\n");
+        try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: httpz.local\r\nSec-Fetch-Mode: cors\r\n\r\n");
         try w.flush();
         var res = testReadParsed(stream);
         defer res.deinit();
@@ -1299,6 +1349,193 @@ test "httpz: CORS" {
         try t.expectEqual(null, res.headers.get("Access-Control-Allow-Methods"));
         try t.expectEqual(null, res.headers.get("Access-Control-Allow-Headers"));
         try t.expectString("httpz.local", res.headers.get("Access-Control-Allow-Origin").?);
+    }
+}
+
+test "httpz: CORS wildcard origin" {
+    const stream = testStream(5999);
+    defer stream.close();
+
+    {
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://example.com\r\n\r\n");
+        try w.flush();
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try t.expectString("*", res.headers.get("Access-Control-Allow-Origin").?);
+    }
+
+    {
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://any-domain.com\r\n\r\n");
+        try w.flush();
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try t.expectString("*", res.headers.get("Access-Control-Allow-Origin").?);
+    }
+
+    {
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nOrigin: https://test.com\r\nSec-Fetch-Mode: cors\r\n\r\n");
+        try w.flush();
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try t.expectString("*", res.headers.get("Access-Control-Allow-Origin").?);
+        try t.expectString("600", res.headers.get("Access-Control-Max-Age").?);
+        try t.expectString("GET,POST,PUT", res.headers.get("Access-Control-Allow-Methods").?);
+        try t.expectString("authorization,content-type", res.headers.get("Access-Control-Allow-Headers").?);
+        try t.expectEqual(@as(u16, 204), res.status);
+    }
+
+    {
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("GET /test/cors HTTP/1.1\r\n\r\n");
+        try w.flush();
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try t.expectEqual(null, res.headers.get("Access-Control-Allow-Origin"));
+    }
+}
+
+test "httpz: CORS single origin" {
+    const stream = testStream(6000);
+    defer stream.close();
+
+    {
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://example.com\r\n\r\n");
+        try w.flush();
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try t.expectString("https://example.com", res.headers.get("Access-Control-Allow-Origin").?);
+        try t.expectString("true", res.headers.get("Access-Control-Allow-Credentials").?);
+    }
+
+    {
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://attacker.com\r\n\r\n");
+        try w.flush();
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try t.expectEqual(null, res.headers.get("Access-Control-Allow-Origin"));
+        try t.expectEqual(null, res.headers.get("Access-Control-Allow-Credentials"));
+    }
+
+    {
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nOrigin: https://example.com\r\nSec-Fetch-Mode: cors\r\n\r\n");
+        try w.flush();
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try t.expectString("https://example.com", res.headers.get("Access-Control-Allow-Origin").?);
+        try t.expectString("true", res.headers.get("Access-Control-Allow-Credentials").?);
+        try t.expectString("3600", res.headers.get("Access-Control-Max-Age").?);
+        try t.expectEqual(@as(u16, 204), res.status);
+    }
+
+    {
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nOrigin: https://wrong.com\r\nSec-Fetch-Mode: cors\r\n\r\n");
+        try w.flush();
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try t.expectEqual(null, res.headers.get("Access-Control-Allow-Origin"));
+        try t.expectEqual(null, res.headers.get("Access-Control-Allow-Credentials"));
+    }
+}
+
+test "httpz: CORS multiple origins" {
+    const stream = testStream(6001);
+    defer stream.close();
+
+    {
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://example.com\r\n\r\n");
+        try w.flush();
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try t.expectString("https://example.com", res.headers.get("Access-Control-Allow-Origin").?);
+        try t.expectString("true", res.headers.get("Access-Control-Allow-Credentials").?);
+    }
+
+    {
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://api.example.com\r\n\r\n");
+        try w.flush();
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try t.expectString("https://api.example.com", res.headers.get("Access-Control-Allow-Origin").?);
+        try t.expectString("true", res.headers.get("Access-Control-Allow-Credentials").?);
+    }
+
+    {
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://test.local\r\n\r\n");
+        try w.flush();
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try t.expectString("https://test.local", res.headers.get("Access-Control-Allow-Origin").?);
+        try t.expectString("true", res.headers.get("Access-Control-Allow-Credentials").?);
+    }
+
+    {
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://attacker.com\r\n\r\n");
+        try w.flush();
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try t.expectEqual(null, res.headers.get("Access-Control-Allow-Origin"));
+        try t.expectEqual(null, res.headers.get("Access-Control-Allow-Credentials"));
+    }
+
+    {
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nOrigin: https://api.example.com\r\nSec-Fetch-Mode: cors\r\n\r\n");
+        try w.flush();
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try t.expectString("https://api.example.com", res.headers.get("Access-Control-Allow-Origin").?);
+        try t.expectString("true", res.headers.get("Access-Control-Allow-Credentials").?);
+        try t.expectString("GET,POST,DELETE", res.headers.get("Access-Control-Allow-Methods").?);
+        try t.expectString("x-custom-header", res.headers.get("Access-Control-Allow-Headers").?);
+        try t.expectEqual(@as(u16, 204), res.status);
+    }
+
+    {
+        var writer = stream.writer(&.{});
+        const w = &writer.interface;
+        try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nOrigin: https://not-in-list.com\r\nSec-Fetch-Mode: cors\r\n\r\n");
+        try w.flush();
+        var res = testReadParsed(stream);
+        defer res.deinit();
+
+        try t.expectEqual(null, res.headers.get("Access-Control-Allow-Origin"));
     }
 }
 
