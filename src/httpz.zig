@@ -959,6 +959,9 @@ test "tests:afterAll" {
     reuse_server.stop();
     handle_server.stop();
     websocket_server.stop();
+    cors_wildcard_server.stop();
+    cors_single_server.stop();
+    cors_multiple_server.stop();
 
     for (test_server_threads) |thread| {
         thread.join();
@@ -971,6 +974,9 @@ test "tests:afterAll" {
     reuse_server.deinit();
     handle_server.deinit();
     websocket_server.deinit();
+    cors_wildcard_server.deinit();
+    cors_single_server.deinit();
+    cors_multiple_server.deinit();
 
     try t.expectEqual(false, global_test_allocator.detectLeaks());
 }
