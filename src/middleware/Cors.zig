@@ -100,7 +100,7 @@ fn parseOrigin(origin_str: []const u8, arena: std.mem.Allocator) !Origin {
     // Check if it contains commas (multiple origins)
     if (std.mem.indexOf(u8, trimmed, ",")) |_| {
         // Count how many origins we have
-        var count: usize = 1;
+        var count: usize = 0;
         var it = std.mem.splitSequence(u8, trimmed, ",");
         while (it.next()) |_| {
             count += 1;
