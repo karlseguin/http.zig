@@ -70,6 +70,7 @@ pub fn build(b: *std.Build) !void {
         .{ .file = "examples/08_websocket.zig", .name = "example_8" },
         .{ .file = "examples/09_shutdown.zig", .name = "example_9", .libc = true },
         .{ .file = "examples/10_file_upload.zig", .name = "example_10" },
+        .{ .file = "examples/11_html_streaming.zig", .name = "example_11" },
     };
 
     {
@@ -81,8 +82,8 @@ pub fn build(b: *std.Build) !void {
                     .target = target,
                     .optimize = optimize,
                     .imports = &.{
-                        .{.name = "httpz", .module = httpz_module},
-                    }
+                        .{ .name = "httpz", .module = httpz_module },
+                    },
                 }),
             });
             if (ex.libc) {
