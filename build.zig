@@ -10,6 +10,13 @@ pub fn build(b: *std.Build) !void {
 
     const enable_tsan = b.option(bool, "tsan", "Enable ThreadSanitizer");
 
+    const graphql_module = b.addModule("graphql", .{
+        .root_source_file = b.path("src/graphql.zig"),
+        .target = target,
+        .optimize = optimize,
+        .sanitize_thread = enable_tsan,
+    });
+
     const httpz_module = b.addModule("httpz", .{
         .root_source_file = b.path("src/httpz.zig"),
         .target = target,
@@ -25,6 +32,9 @@ pub fn build(b: *std.Build) !void {
         options.addOption(bool, "httpz_blocking", false);
         httpz_module.addOptions("build", options);
     }
+    
+    // Add graphql module to httpz for internal use
+    graphql_module.addImport("httpz", httpz_module);
 
     {
         const test_filter = b.option([]const []const u8, "test-filter", "Filters for test: specify multiple times for multiple filters");
@@ -71,6 +81,8 @@ pub fn build(b: *std.Build) !void {
         .{ .file = "examples/09_shutdown.zig", .name = "example_9", .libc = true },
         .{ .file = "examples/10_file_upload.zig", .name = "example_10" },
         .{ .file = "examples/11_html_streaming.zig", .name = "example_11" },
+        .{ .file = "examples/12_graphql.zig", .name = "example_12" },
+        .{ .file = "examples/13_auth_graphql.zig", .name = "example_13" },
     };
 
     {
@@ -83,6 +95,7 @@ pub fn build(b: *std.Build) !void {
                     .optimize = optimize,
                     .imports = &.{
                         .{ .name = "httpz", .module = httpz_module },
+                        .{ .name = "graphql", .module = graphql_module },
                     },
                 }),
             });
