@@ -1303,3 +1303,6 @@ fn ws(req: *httpz.Request, res: *httpz.Response) !void {
 In websocket.zig, `init` is passed a `websocket.Handshake`. This is not the case with the httpz integration - you are expected to do any necessary validation of the request in the action.
 
 It is an undefined behavior if `Handler.WebsocketHandler` is not the same type passed to `httpz.upgradeWebsocket`.
+
+# GraphQL
+For GraphQL support, you might want to consider [yousif-wali/grapzig](https://github.com/yousif-wali/grapzig) which can been integrated with http.zig.
