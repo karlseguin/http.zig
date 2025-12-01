@@ -88,6 +88,7 @@ pub const Response = struct {
     }
 
     pub fn header(self: *Response, name: []const u8, value: []const u8) void {
+        std.debug.assert(self.written == false);
         self.headers.add(name, value);
     }
 
