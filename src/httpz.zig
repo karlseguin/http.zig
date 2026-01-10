@@ -344,6 +344,7 @@ pub fn Server(comptime H: type) type {
             // incase "stop" is waiting
             defer self._cond.signal();
             self._mut.lock();
+            errdefer self._mut.unlock();
 
             const config = self.config;
 
@@ -987,6 +988,28 @@ test "httpz: quick shutdown" {
     server.stop();
     thrd.join();
     server.deinit();
+}
+
+test "httpz: bind failure releases mutex" {
+    // Start a server to occupy the port
+    var server1 = try Server(void).init(t.allocator, .{ .port = 6993 }, {});
+    const thrd1 = try server1.listenInNewThread();
+    defer {
+        server1.stop();
+        thrd1.join();
+        server1.deinit();
+    }
+
+    // Try to start another server on the same port - will fail to bind
+    var server2 = try Server(void).init(t.allocator, .{ .port = 6993 }, {});
+    defer server2.deinit();
+
+    // First call fails with AddressInUse
+    try t.expectError(error.AddressInUse, server2.listen());
+
+    // Before fix: second call would deadlock because mutex left locked
+    // After fix: errdefer releases mutex, so second call can proceed
+    try t.expectError(error.AddressInUse, server2.listen());
 }
 
 test "httpz: shutdown without listen" {
