@@ -6,7 +6,7 @@ const response = @import("response.zig");
 const Address = std.net.Address;
 
 pub const Config = struct {
-    address: AddressConfig = .default,
+    address: AddressConfig = .localhost(5882),
     workers: Worker = .{},
     request: Request = .{},
     response: Response = .{},
@@ -15,7 +15,6 @@ pub const Config = struct {
     websocket: Websocket = .{},
 
     pub const AddressConfig = union(enum) {
-        default, // Default is 127.0.0.1:5882.
         ip: IpAddress,
         unix: []const u8,
         addr: Address,
@@ -79,7 +78,6 @@ pub const Config = struct {
 
     pub fn parseAddress(self: *const Config) !Address {
         return switch (self.address) {
-            .default => .initIp4(.{ 127, 0, 0, 1 }, 5882),
             .ip => |i| try .parseIp(i.host, i.port),
             .unix => |unix_path| b: {
                 if (comptime std.net.has_unix_sockets == false) {
@@ -95,7 +93,7 @@ pub const Config = struct {
     pub fn isUnixAddress(config: *const Config) bool {
         return switch (config.address) {
             .unix => true,
-            .ip, .default => false,
+            .ip => false,
             .addr => |a| a.any.family == std.posix.AF.UNIX,
         };
     }
