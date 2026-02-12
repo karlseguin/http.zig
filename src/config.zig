@@ -18,9 +18,10 @@ pub const Config = struct {
         default, // Default is 127.0.0.1:5882.
         ip: IpAddress,
         unix: []const u8,
+        addr: Address,
 
         pub fn localhost(port: u16) AddressConfig {
-            return .{ .ip = .{ .host = "127.0.0.1", .port = port } };
+            return .{ .addr = .initIp4(.{ 127, 0, 0, 1 }, port) };
         }
     };
 
@@ -87,13 +88,15 @@ pub const Config = struct {
                 std.fs.deleteFileAbsolute(unix_path) catch {};
                 break :b try .initUnix(unix_path);
             },
+            .addr => |a| a,
         };
     }
 
     pub fn isUnixAddress(config: *const Config) bool {
         return switch (config.address) {
             .unix => true,
-            else => false,
+            .ip, .default => false,
+            .addr => |a| a.any.family == std.posix.AF.UNIX,
         };
     }
 
