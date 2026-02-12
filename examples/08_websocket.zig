@@ -19,7 +19,7 @@ pub fn main() !void {
 
     // For websocket support, you _must_ define a Handler, and your Handler _must_
     // have a WebsocketHandler declaration
-    var server = try httpz.Server(Handler).init(allocator, .{.port = PORT}, Handler{});
+    var server = try httpz.Server(Handler).init(allocator, .{ .address = .localhost(PORT) }, Handler{});
 
     defer server.deinit();
 

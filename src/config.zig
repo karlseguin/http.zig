@@ -1,17 +1,33 @@
+const std = @import("std");
 const httpz = @import("httpz.zig");
 const request = @import("request.zig");
 const response = @import("response.zig");
 
+const Address = std.net.Address;
+
 pub const Config = struct {
-    port: ?u16 = null,
-    address: ?[]const u8 = null,
-    unix_path: ?[]const u8 = null,
+    address: AddressConfig = .default,
     workers: Worker = .{},
     request: Request = .{},
     response: Response = .{},
     timeout: Timeout = .{},
     thread_pool: ThreadPool = .{},
     websocket: Websocket = .{},
+
+    pub const AddressConfig = union(enum) {
+        default, // Default is 127.0.0.1:5882.
+        ip: IpAddress,
+        unix: []const u8,
+
+        pub fn localhost(port: u16) AddressConfig {
+            return .{ .ip = .{ .host = "127.0.0.1", .port = port } };
+        }
+    };
+
+    pub const IpAddress = struct {
+        host: []const u8,
+        port: u16,
+    };
 
     pub const ThreadPool = struct {
         count: ?u16 = null,
@@ -59,6 +75,27 @@ pub const Config = struct {
         compression_retain_writer: bool = true,
         compression_write_treshold: ?usize = null,
     };
+
+    pub fn parseAddress(self: *const Config) !Address {
+        return switch (self.address) {
+            .default => .initIp4(.{ 127, 0, 0, 1 }, 5882),
+            .ip => |i| try .parseIp(i.host, i.port),
+            .unix => |unix_path| b: {
+                if (comptime std.net.has_unix_sockets == false) {
+                    break :b error.UnixPathNotSupported;
+                }
+                std.fs.deleteFileAbsolute(unix_path) catch {};
+                break :b try .initUnix(unix_path);
+            },
+        };
+    }
+
+    pub fn isUnixAddress(config: *const Config) bool {
+        return switch (config.address) {
+            .unix => true,
+            else => false,
+        };
+    }
 
     pub fn threadPoolCount(self: *const Config) u32 {
         return self.thread_pool.count orelse 32;

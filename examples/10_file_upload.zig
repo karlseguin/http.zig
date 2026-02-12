@@ -16,7 +16,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     var server = try httpz.Server(void).init(allocator, .{
-        .port = PORT,
+        .address = .localhost(PORT),
         .request = .{
             // Configure the maximum number of multipart form fields
             // This must be > 0 to use req.multiFormData()
