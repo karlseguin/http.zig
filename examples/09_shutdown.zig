@@ -31,7 +31,7 @@ pub fn main() !void {
         .flags = 0,
     }, null);
 
-    var server = try httpz.Server(void).init(allocator, .{ .port = PORT }, {});
+    var server = try httpz.Server(void).init(allocator, .{ .address = .localhost(PORT) }, {});
     defer server.deinit();
 
     var router = try server.router(.{});

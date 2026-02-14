@@ -15,7 +15,7 @@ pub fn main() !void {
     // The last parameter is an instance of our handler. Since we have
     // a void handler, we pass a void value: i.e. {}.
     var server = try httpz.Server(void).init(allocator, .{
-        .port = PORT,
+        .address = .localhost(PORT),
         .request = .{
             // httpz has a number of tweakable configuration settings (see readme)
             // by default, it won't read form data. We need to configure a max
