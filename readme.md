@@ -11,7 +11,7 @@ pub fn main() !void {
   // More advance cases will use a custom "Handler" instead of "void".
   // The last parameter is our handler instance, since we have a "void"
   // handler, we passed a void ({}) value.
-  var server = try httpz.Server(void).init(allocator, .{.port = 5882}, {});
+  var server = try httpz.Server(void).init(allocator, .{.address = .localhost(5882)}, {});
   defer {
     // clean shutdown, finishes serving any live request
     server.stop();
@@ -126,7 +126,7 @@ pub fn main() !void {
     .db = db,
   };
 
-  var server = try httpz.Server(*App).init(allocator, .{.port = 5882}, &app);
+  var server = try httpz.Server(*App).init(allocator, .{.address = .localhost(5882)}, &app);
   var router = try server.router(.{});
   router.get("/api/user/:id", getUser, .{});
   try server.listen();
@@ -266,7 +266,7 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var server = try httpz.Server().init(allocator, .{.port = 5882});
+    var server = try httpz.Server(void).init(allocator, .{.address = .localhost(5882)}, {});
 
     // overwrite the default notFound handler
     server.notFound(notFound);
@@ -697,7 +697,7 @@ The last parameter to the various `router` methods is a route configuration. In 
 You can specify a separate configuration for each route. To change the configuration for a group of routes, you have two options. The first, is to directly change the router's `handler`, `dispatcher` and `middlewares` field. Any subsequent routes will use these values:
 
 ```zig
-var server = try httpz.Server(Handler).init(allocator, .{.port = 5882}, &handler);
+var server = try httpz.Server(Handler).init(allocator, .{.address = .localhost(5882)}, &handler);
 
 var router = try server.router(.{});
 
@@ -800,7 +800,7 @@ A middleware is a struct which exposes a nested `Config` type, a public `init` f
 A middleware instance is created using `server.middleware()` and can then be used with the router:
 
 ```zig
-var server = try httpz.Server(void).init(allocator, .{.port = 5882}, {});
+var server = try httpz.Server(void).init(allocator, .{.address = .localhost(5882)}, {});
 
 // the middleware method takes the struct name and its configuration
 const cors = try server.middleware(httpz.middleware.Cors, .{
@@ -926,14 +926,17 @@ Possible values, along with their default, are:
 
 ```zig
 try httpz.listen(allocator, &router, .{
-    // Port to listen on
-    .port = 5882,
+    // Listen on a localhost port.
+    .address = .localhost(5882)
 
-    // Interface address to bind to
-    .address = "127.0.0.1",
+    // Listen on all addresses.
+    // .address = .{ .ip = .{ .host = "0.0.0.0", .port = 5882 } },
 
     // unix socket to listen on (mutually exclusive with host&port)
-    .unix_path = null,
+    // .address = .{ .unix = "http.sock" },
+
+    // Listen on a std.net.Address.
+    // .address = .{ .addr = .initIp4(.{ 0, 0, 0, 0 }, 5882) },
 
     // configure the workers which are responsible for:
     // 1 - accepting connections

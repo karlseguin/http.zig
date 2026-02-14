@@ -17,7 +17,7 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
 
-    var server = try httpz.Server(void).init(allocator, .{ .port = PORT }, {});
+    var server = try httpz.Server(void).init(allocator, .{ .address = .localhost(PORT) }, {});
 
     defer server.deinit();
 

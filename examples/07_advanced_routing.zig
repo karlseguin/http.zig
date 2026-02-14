@@ -21,7 +21,7 @@ pub fn main() !void {
         .log = false,
     };
 
-    var server = try httpz.Server(*Handler).init(allocator, .{ .port = PORT }, &default_handler);
+    var server = try httpz.Server(*Handler).init(allocator, .{ .address = .localhost(PORT) }, &default_handler);
 
     defer server.deinit();
 

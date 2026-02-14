@@ -348,21 +348,8 @@ pub fn Server(comptime H: type) type {
 
             const config = self.config;
 
-            var no_delay = true;
-            const address = blk: {
-                if (config.unix_path) |unix_path| {
-                    if (comptime std.net.has_unix_sockets == false) {
-                        return error.UnixPathNotSupported;
-                    }
-                    no_delay = false;
-                    std.fs.deleteFileAbsolute(unix_path) catch {};
-                    break :blk try net.Address.initUnix(unix_path);
-                } else {
-                    const listen_port = config.port orelse 5882;
-                    const listen_address = config.address orelse "127.0.0.1";
-                    break :blk try net.Address.parseIp(listen_address, listen_port);
-                }
-            };
+            const no_delay = config.isUnixAddress();
+            const address = try config.parseAddress();
 
             const listener = blk: {
                 var sock_flags: u32 = posix.SOCK.STREAM | posix.SOCK.CLOEXEC;
@@ -383,7 +370,7 @@ pub fn Server(comptime H: type) type {
 
             try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
 
-            if (config.unix_path == null and self._workers.len > 1) {
+            if (!config.isUnixAddress() and self._workers.len > 1) {
                 if (@hasDecl(posix.SO, "REUSEPORT_LB")) {
                     try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEPORT_LB, &std.mem.toBytes(@as(c_int, 1)));
                 } else if (@hasDecl(posix.SO, "REUSEPORT")) {
@@ -811,10 +798,10 @@ test "tests:beforeAll" {
     const ga = global_test_allocator.allocator();
 
     {
-        default_server = try Server(void).init(ga, .{ .port = 5992, .request = .{
-            .lazy_read_size = 4_096,
-            .max_body_size = 1_048_576,
-        } }, {});
+        default_server = try Server(void).init(ga, .{
+            .address = .localhost(5992),
+            .request = .{ .lazy_read_size = 4_096, .max_body_size = 1_048_576, },
+        }, {});
 
         // only need to do this because we're using listenInNewThread instead
         // of blocking here. So the array to hold the middleware needs to outlive
@@ -852,7 +839,7 @@ test "tests:beforeAll" {
     }
 
     {
-        dispatch_default_server = try Server(*TestHandlerDefaultDispatch).init(ga, .{ .port = 5993 }, &test_handler_default_dispatch1);
+        dispatch_default_server = try Server(*TestHandlerDefaultDispatch).init(ga, .{ .address = .localhost(5993) }, &test_handler_default_dispatch1);
         var router = try dispatch_default_server.router(.{});
         router.get("/", TestHandlerDefaultDispatch.echo, .{});
         router.get("/write/*", TestHandlerDefaultDispatch.echoWrite, .{});
@@ -874,14 +861,14 @@ test "tests:beforeAll" {
     }
 
     {
-        dispatch_server = try Server(*TestHandlerDispatch).init(ga, .{ .port = 5994 }, &test_handler_dispatch);
+        dispatch_server = try Server(*TestHandlerDispatch).init(ga, .{ .address = .localhost(5994) }, &test_handler_dispatch);
         var router = try dispatch_server.router(.{});
         router.get("/", TestHandlerDispatch.root, .{});
         test_server_threads[2] = try dispatch_server.listenInNewThread();
     }
 
     {
-        dispatch_action_context_server = try Server(*TestHandlerDispatchContext).init(ga, .{ .port = 5995 }, &test_handler_disaptch_context);
+        dispatch_action_context_server = try Server(*TestHandlerDispatchContext).init(ga, .{ .address = .localhost(5995) }, &test_handler_disaptch_context);
         var router = try dispatch_action_context_server.router(.{});
         router.get("/", TestHandlerDispatchContext.root, .{});
         test_server_threads[3] = try dispatch_action_context_server.listenInNewThread();
@@ -890,26 +877,26 @@ test "tests:beforeAll" {
     {
         // with only 1 worker, and a min/max conn of 1, each request should
         // hit our reset path.
-        reuse_server = try Server(void).init(ga, .{ .port = 5996, .workers = .{ .count = 1, .min_conn = 1, .max_conn = 1 } }, {});
+        reuse_server = try Server(void).init(ga, .{ .address = .localhost(5996), .workers = .{ .count = 1, .min_conn = 1, .max_conn = 1 } }, {});
         var router = try reuse_server.router(.{});
         router.get("/test/writer", TestDummyHandler.reuseWriter, .{});
         test_server_threads[4] = try reuse_server.listenInNewThread();
     }
 
     {
-        handle_server = try Server(TestHandlerHandle).init(ga, .{ .port = 5997 }, TestHandlerHandle{});
+        handle_server = try Server(TestHandlerHandle).init(ga, .{ .address = .localhost(5997) }, TestHandlerHandle{});
         test_server_threads[5] = try handle_server.listenInNewThread();
     }
 
     {
-        websocket_server = try Server(TestWebsocketHandler).init(ga, .{ .port = 5998 }, TestWebsocketHandler{});
+        websocket_server = try Server(TestWebsocketHandler).init(ga, .{ .address = .localhost(5998) }, TestWebsocketHandler{});
         var router = try websocket_server.router(.{});
         router.get("/ws", TestWebsocketHandler.upgrade, .{});
         test_server_threads[6] = try websocket_server.listenInNewThread();
     }
 
     {
-        cors_wildcard_server = try Server(void).init(ga, .{ .port = 5999 }, {});
+        cors_wildcard_server = try Server(void).init(ga, .{ .address = .localhost(5999) }, {});
         var cors_wildcard = try cors_wildcard_server.arena.alloc(Middleware(void), 1);
         cors_wildcard[0] = try cors_wildcard_server.middleware(middleware.Cors, .{
             .origin = "*",
@@ -923,7 +910,7 @@ test "tests:beforeAll" {
     }
 
     {
-        cors_single_server = try Server(void).init(ga, .{ .port = 6000 }, {});
+        cors_single_server = try Server(void).init(ga, .{ .address = .localhost(6000) }, {});
         var cors_single = try cors_single_server.arena.alloc(Middleware(void), 1);
         cors_single[0] = try cors_single_server.middleware(middleware.Cors, .{
             .origin = "https://example.com",
@@ -936,7 +923,7 @@ test "tests:beforeAll" {
     }
 
     {
-        cors_multiple_server = try Server(void).init(ga, .{ .port = 6001 }, {});
+        cors_multiple_server = try Server(void).init(ga, .{ .address = .localhost(6001) }, {});
         var cors_multiple = try cors_multiple_server.arena.alloc(Middleware(void), 1);
         cors_multiple[0] = try cors_multiple_server.middleware(middleware.Cors, .{
             .origin = "https://example.com, https://api.example.com, https://test.local",
@@ -983,7 +970,7 @@ test "tests:afterAll" {
 }
 
 test "httpz: quick shutdown" {
-    var server = try Server(void).init(t.allocator, .{ .port = 6992 }, {});
+    var server = try Server(void).init(t.allocator, .{ .address = .localhost(6992) }, {});
     const thrd = try server.listenInNewThread();
     server.stop();
     thrd.join();
@@ -992,7 +979,7 @@ test "httpz: quick shutdown" {
 
 test "httpz: bind failure releases mutex" {
     // Start a server to occupy the port
-    var server1 = try Server(void).init(t.allocator, .{ .port = 6993 }, {});
+    var server1 = try Server(void).init(t.allocator, .{ .address = .localhost(6993) }, {});
     const thrd1 = try server1.listenInNewThread();
     defer {
         server1.stop();
@@ -1001,7 +988,7 @@ test "httpz: bind failure releases mutex" {
     }
 
     // Try to start another server on the same port - will fail to bind
-    var server2 = try Server(void).init(t.allocator, .{ .port = 6993 }, {});
+    var server2 = try Server(void).init(t.allocator, .{ .address = .localhost(6993) }, {});
     defer server2.deinit();
 
     // First call fails with AddressInUse
@@ -1014,7 +1001,7 @@ test "httpz: bind failure releases mutex" {
 
 test "httpz: shutdown without listen" {
     // Should not throw a .BADF (unreachable) error
-    var server = try Server(void).init(t.allocator, .{ .port = 6992 }, {});
+    var server = try Server(void).init(t.allocator, .{ .address = .localhost(6992) }, {});
     server.stop();
     server.deinit();
 }
