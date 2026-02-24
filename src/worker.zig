@@ -1215,14 +1215,16 @@ fn EPoll(comptime WSH: type) type {
         }
 
         fn stop(self: *Self) void {
-            const increment: usize = 1;
+            // eventfd requires exactly 8 bytes; use u64 so 32-bit (e.g. Linux ARM) does not get EINVAL.
+            const increment: u64 = 1;
             _ = posix.write(self.close_fd, std.mem.asBytes(&increment)) catch |err| {
                 log.err("Failed to write to closefd: {}", .{err});
             };
         }
 
         fn signal(self: *const Self) !void {
-            const increment: usize = 1;
+            // eventfd requires exactly 8 bytes; use u64 so 32-bit (e.g. Linux ARM) does not get EINVAL.
+            const increment: u64 = 1;
             _ = try posix.write(self.event_fd, std.mem.asBytes(&increment));
         }
 
