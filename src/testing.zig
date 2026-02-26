@@ -9,6 +9,22 @@ const Conn = @import("worker.zig").HTTPConn;
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 
+/// Waits until a TCP port is accepting connections (e.g. after starting a server in another thread).
+/// Tries up to 100 times with 20ms sleep between attempts.
+pub fn waitForPort(port: u16) !void {
+    const address = std.net.Address.parseIp("127.0.0.1", port) catch unreachable;
+    for (0..100) |_| {
+        if (std.net.tcpConnectToAddress(address)) |stream| {
+            stream.close();
+            return;
+        } else |err| {
+            if (err != error.ConnectionRefused) return err;
+            std.Thread.sleep(20 * std.time.ns_per_ms);
+        }
+    }
+    return error.ConnectionRefused;
+}
+
 pub fn init(config: httpz.Config) Testing {
     const ctx = t.Context.init(config);
     var conn = ctx.conn;

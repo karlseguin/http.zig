@@ -800,7 +800,10 @@ test "tests:beforeAll" {
     {
         default_server = try Server(void).init(ga, .{
             .address = .localhost(5992),
-            .request = .{ .lazy_read_size = 4_096, .max_body_size = 1_048_576, },
+            .request = .{
+                .lazy_read_size = 4_096,
+                .max_body_size = 1_048_576,
+            },
         }, {});
 
         // only need to do this because we're using listenInNewThread instead
@@ -1937,6 +1940,71 @@ test "websocket: upgrade" {
     try t.expectEqual(10, buf[1]);
     try t.expectString("over 9000!", buf[2..12]);
     try t.expectString(&.{ 136, 2, 3, 232 }, buf[12..16]);
+}
+
+// Stress test: multiple concurrent websocket clients sending many messages each.
+// Run repeatedly (e.g. zig build test -Dtest-filter="websocket: stress" or run 50x)
+// to verify no race in reader.done() / allocator free when using thread pool.
+test "websocket: stress" {
+    if (force_blocking) return; // non-blocking mode only (thread pool)
+    const num_clients = 8;
+    const messages_per_client = 150;
+
+    // When run with -Dtest-filter="websocket: stress", tests:beforeAll may not run,
+    // so nothing is listening on 5998. Wait for port and start our own server if needed.
+    var stress_server: ?Server(TestWebsocketHandler) = null;
+    var stress_listen_thread: ?Thread = null;
+    testing.waitForPort(5998) catch {
+        stress_server = try Server(TestWebsocketHandler).init(t.allocator, .{ .address = .localhost(5998) }, TestWebsocketHandler{});
+        var router = try stress_server.?.router(.{});
+        router.get("/ws", TestWebsocketHandler.upgrade, .{});
+        stress_listen_thread = try stress_server.?.listenInNewThread();
+        try testing.waitForPort(5998);
+    };
+    defer if (stress_server) |*srv| {
+        srv.stop();
+        if (stress_listen_thread) |thrd| thrd.join();
+        srv.deinit();
+    };
+
+    var threads: [num_clients]Thread = undefined;
+    for (0..num_clients) |i| {
+        threads[i] = Thread.spawn(.{}, struct {
+            fn run(_: usize) void {
+                const stream = testStream(5998);
+                defer stream.close();
+                var writer = stream.writer(&.{});
+                const w = &writer.interface;
+                w.writeAll("GET /ws HTTP/1.1\r\nContent-Length: 0\r\n") catch return;
+                w.writeAll("upgrade: WEBsocket\r\n") catch return;
+                w.writeAll("Sec-Websocket-verSIon: 13\r\n") catch return;
+                w.writeAll("ConnectioN: upgrade\r\n") catch return;
+                w.writeAll("SEC-WEBSOCKET-KeY: a-secret-key\r\n\r\n") catch return;
+                w.flush() catch return;
+
+                var buf: [1024]u8 = undefined;
+                var pos: usize = 0;
+                var reader = stream.reader(&.{});
+                const r = reader.interface();
+                while (!std.mem.endsWith(u8, buf[0..pos], "\r\n\r\n")) {
+                    if (pos >= buf.len) return;
+                    var vecs: [1][]u8 = .{buf[pos..]};
+                    const n = r.readVec(&vecs) catch return;
+                    if (n == 0) return;
+                    pos += n;
+                }
+                if (pos < 12 or !std.mem.startsWith(u8, buf[0..12], "HTTP/1.1 101")) return;
+
+                for (0..messages_per_client) |_| {
+                    const frame = websocket.frameText("stress");
+                    w.writeAll(&frame) catch return;
+                }
+                w.writeAll(&websocket.frameText("close")) catch return;
+                w.flush() catch return;
+            }
+        }.run, .{i}) catch return;
+    }
+    for (&threads) |*th| th.join();
 }
 
 test "ContentType: forX" {

@@ -411,6 +411,13 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         // that alone) and the worker thread will process it.
         handover_list: ConcurrentList(Conn(WSH)),
 
+        // WebSocket connections currently being processed by the thread pool.
+        // At most one task per *HandlerConn is allowed; this set ensures we
+        // never spawn two tasks for the same hc (prevents double cleanupConn
+        // and concurrent dataAvailable/reader.done races).
+        ws_in_flight_mut: Thread.Mutex,
+        ws_in_flight: std.AutoHashMap(*ws.HandlerConn(WSH), void),
+
         // A pool of HTTPConn objects. The pool maintains a configured min # of these.
         // An HTTPConn is relatively expensive, since we pre-allocate all types
         // of things (a Request.State and Response.State).
@@ -490,6 +497,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 .request_list = .{},
                 .handover_list = .{},
                 .keepalive_list = .{},
+                .ws_in_flight_mut = .{},
+                .ws_in_flight = std.AutoHashMap(*ws.HandlerConn(WSH), void).init(allocator),
                 .buffer_pool = buffer_pool,
                 .conn_mem_pool = conn_mem_pool,
                 .http_conn_pool = http_conn_pool,
@@ -508,6 +517,10 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
             self.thread_pool.deinit();
 
+            self.ws_in_flight_mut.lock();
+            self.ws_in_flight.deinit();
+            self.ws_in_flight_mut.unlock();
+
             self.shutdownList(&self.request_list);
             self.shutdownConcurrentList(&self.active_list);
             self.shutdownConcurrentList(&self.handover_list);
@@ -522,6 +535,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         }
 
         pub fn stop(self: *Self) void {
+            // Stop thread pool first so its threads exit before we might deinit the worker.
+            self.thread_pool.stop();
             // causes run to break out of its loop
             self.loop.stop();
         }
@@ -613,7 +628,20 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                                 self.swapList(conn, .active);
                                 thread_pool.spawn(.{ self, now, conn });
                             },
-                            .websocket => thread_pool.spawn(.{ self, now, conn }),
+                            .websocket => |hc| {
+                                self.ws_in_flight_mut.lock();
+                                const already = self.ws_in_flight.contains(hc);
+                                if (!already) {
+                                    self.ws_in_flight.put(hc, {}) catch {
+                                        self.ws_in_flight_mut.unlock();
+                                        continue;
+                                    };
+                                }
+                                self.ws_in_flight_mut.unlock();
+                                if (!already) {
+                                    thread_pool.spawn(.{ self, now, conn });
+                                }
+                            },
                         },
                         .shutdown => return,
                     }
@@ -838,17 +866,28 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             var ws_conn = &hc.conn;
             const success = self.websocket.worker.dataAvailable(hc, thread_buf);
             if (success == false) {
+                self.removeWsInFlight(hc);
                 ws_conn.close(.{ .code = 4997, .reason = "wsz" }) catch {};
                 self.websocket.cleanupConn(hc);
             } else if (ws_conn.isClosed()) {
+                self.removeWsInFlight(hc);
                 self.websocket.cleanupConn(hc);
             } else {
                 self.loop.rearmRead(conn) catch |err| {
                     log.debug("({f}) failed to add read event monitor: {}", .{ ws_conn.address, err });
+                    self.removeWsInFlight(hc);
                     ws_conn.close(.{ .code = 4998, .reason = "wsz" }) catch {};
                     self.websocket.cleanupConn(hc);
+                    return;
                 };
+                self.removeWsInFlight(hc);
             }
+        }
+
+        fn removeWsInFlight(self: *Self, hc: *ws.HandlerConn(WSH)) void {
+            self.ws_in_flight_mut.lock();
+            defer self.ws_in_flight_mut.unlock();
+            _ = self.ws_in_flight.remove(hc);
         }
 
         fn disown(self: *Self, conn: *Conn(WSH)) void {
