@@ -25,14 +25,14 @@ fn KeyValue(V: type, hashFn: fn (key: []const u8) callconv(.@"inline") u8) type 
             const allocation = try allocator.alignedAlloc(u8, std.mem.Alignment.fromByteUnits(alignment), max * size);
             return .{
                 .len = 0,
-                .keys = @as([*][]const u8, @alignCast(@ptrCast(if (kFirst) allocation.ptr else allocation[max * @sizeOf(V) ..].ptr)))[0..max],
-                .values = @as([*]V, @alignCast(@ptrCast(if (kFirst) allocation[max * @sizeOf([]const u8) ..].ptr else allocation.ptr)))[0..max],
+                .keys = @as([*][]const u8, @ptrCast(@alignCast(if (kFirst) allocation.ptr else allocation[max * @sizeOf(V) ..].ptr)))[0..max],
+                .values = @as([*]V, @ptrCast(@alignCast(if (kFirst) allocation[max * @sizeOf([]const u8) ..].ptr else allocation.ptr)))[0..max],
                 .hashes = allocation[max * @sizeOf([]const u8) + max * @sizeOf(V) ..],
             };
         }
 
         pub fn deinit(self: *Self, allocator: Allocator) void {
-            const allocation = @as([*]align(alignment) u8, @alignCast(@ptrCast(if (kFirst) self.keys.ptr else self.values.ptr)));
+            const allocation = @as([*]align(alignment) u8, @ptrCast(@alignCast(if (kFirst) self.keys.ptr else self.values.ptr)));
             allocator.free(allocation[0 .. self.keys.len * size]);
         }
 
