@@ -563,6 +563,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     std.Thread.sleep(std.time.ns_per_s);
                     continue;
                 };
+
                 now = timestamp(now);
                 var closed_conn = false;
 
@@ -588,7 +589,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                                 // At this point, the connection is either in
                                 // keepalive or request. Either way, we know no
-                                // other thread is access the connection, so we
+                                // other thread is accessing the connection, so we
                                 // can access _state directly.
 
                                 const stream = http_conn.stream;
@@ -613,7 +614,15 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                                 self.swapList(conn, .active);
                                 thread_pool.spawn(.{ self, now, conn });
                             },
-                            .websocket => thread_pool.spawn(.{ self, now, conn }),
+                            .websocket => {
+                                if (conn.acquireProcessing() == false) {
+                                    // Connection is already being processed. We need
+                                    // to wait for the current processing to complete.
+                                    // See the processing field in Conn
+                                    continue;
+                                }
+                                thread_pool.spawn(.{ self, now, conn });
+                            },
                         },
                         .shutdown => return,
                     }
@@ -806,7 +815,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             var handover = http_conn.handover;
             http_conn.requestDone(self.retain_allocated_bytes, handover == .keepalive or handover == .websocket) catch {
                 // This means we failed to put the connection into
-                // nonblocking mode. Rare, but safer to clos the connection
+                // nonblocking mode. Rare, but safer to close the connection
                 // at this point.
                 handover = .close;
             };
@@ -835,6 +844,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         }
 
         pub fn processWebsocketData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, hc: *ws.HandlerConn(WSH)) void {
+            defer conn.releaseProcessing();
+
             var ws_conn = &hc.conn;
             const success = self.websocket.worker.dataAvailable(hc, thread_buf);
             if (success == false) {
@@ -1090,7 +1101,7 @@ fn KQueue(comptime WSH: type) type {
             _ = try posix.kevent(self.fd, &.{.{
                 .ident = @intCast(conn.getSocket()),
                 .filter = posix.system.EVFILT.READ,
-                .flags = posix.system.EV.ENABLE,
+                .flags = posix.system.EV.ADD,
                 .fflags = 0,
                 .data = 0,
                 .udata = @intFromPtr(conn),
@@ -1458,6 +1469,22 @@ pub fn Conn(comptime WSH: type) type {
         next: ?*Conn(WSH),
         prev: ?*Conn(WSH),
 
+        // Used exclusively in the websocket path. In the HTTP Path, the
+        // HTTPConn's state is used to prevent 2 requests on the same socket
+        // from being processed at the same time. This is 100% necessary because
+        // our event loop will keep emitting events for new data. For HTTP, this
+        // is OK, because a "health" flow is REQ->RES - there shouldn't be
+        // multiple inflight requests. NOT using ONESHOT/EV_DISPATCH is more
+        // efficient because it avoids a bunch of system calls.
+        // But for WebSockets, it's normal to have multiple incoming messages.
+        // So we switch the event notifier to be ONESHOT/DISPATCH. And, that
+        // SHOULD be enough to stop 2 concurrent messages from being processed
+        // at the same time. And on Linux, it seems to work fine. But on MacOS,
+        // there's a window where we might get 2 messages across 2 different
+        // wait calls as we're switching to DISPATCH. So this guard is there just
+        // for thar narrow window.
+        processing: bool = false,
+
         const Self = @This();
 
         fn close(self: *Self) void {
@@ -1472,6 +1499,15 @@ pub fn Conn(comptime WSH: type) type {
                 .http => |hc| hc.stream.handle,
                 .websocket => |hc| hc.socket,
             };
+        }
+
+        pub fn acquireProcessing(self: *Self) bool {
+            // returns true if it was previously false
+            return @atomicRmw(bool, &self.processing, .Xchg, true, .monotonic) == false;
+        }
+
+        pub fn releaseProcessing(self: *Self) void {
+            return @atomicStore(bool, &self.processing, false, .release);
         }
     };
 }
