@@ -22,6 +22,10 @@ pub const Config = struct {
         pub fn localhost(port: u16) AddressConfig {
             return .{ .addr = .initIp4(.{ 127, 0, 0, 1 }, port) };
         }
+
+        pub fn all(port: u16) AddressConfig {
+            return .{ .addr = .initIp4(.{ 0, 0, 0, 0 }, port) };
+        }
     };
 
     pub const IpAddress = struct {
