@@ -11,7 +11,10 @@ pub fn main() !void {
   // More advance cases will use a custom "Handler" instead of "void".
   // The last parameter is our handler instance, since we have a "void"
   // handler, we passed a void ({}) value.
-  var server = try httpz.Server(void).init(allocator, .{.address = .localhost(5882)}, {});
+  var server = try httpz.Server(void).init(allocator, .{
+    // use .all(5882) to bind to all interfaces, i.e. 0.0.0.0
+    .address = .localhost(5882),
+  }, {});
   defer {
     // clean shutdown, finishes serving any live request
     server.stop();
@@ -927,10 +930,10 @@ Possible values, along with their default, are:
 ```zig
 try httpz.listen(allocator, &router, .{
     // Listen on a localhost port.
-    .address = .localhost(5882)
+    .address = .localhost(5882),
 
     // Listen on all addresses.
-    // .address = .{ .ip = .{ .host = "0.0.0.0", .port = 5882 } },
+    // .address = .all(5882),
 
     // unix socket to listen on (mutually exclusive with host&port)
     // .address = .{ .unix = "http.sock" },
