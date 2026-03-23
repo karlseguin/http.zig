@@ -18,7 +18,7 @@ pub fn init(config: httpz.Config) Testing {
     // thereafter to change whatever properties they want.
     var base_request: std.Io.Reader = .fixed("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     while (true) {
-        const done = conn.req_state.parse(conn.req_arena.allocator(), &base_request) catch unreachable;
+        const done = conn.req_state.parse(conn, &base_request) catch unreachable;
         if (done) {
             break;
         }

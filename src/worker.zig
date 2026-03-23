@@ -263,7 +263,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             var is_first = true;
             var reader = stream.reader(&.{}); // Request.State does its own buffering
             while (true) {
-                const done = conn.req_state.parse(conn.req_arena.allocator(), reader.interface()) catch |err| {
+                const done = conn.req_state.parse(conn, reader.interface()) catch |err| {
                     switch (err) {
                         error.ReadFailed => {
                             if (reader.getError()) |e| {
@@ -594,7 +594,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                                 const stream = http_conn.stream;
                                 var reader = stream.reader(&.{}); // Request.State does its own buffering
-                                const done = http_conn.req_state.parse(http_conn.req_arena.allocator(), reader.interface()) catch |err| {
+                                const done = http_conn.req_state.parse(http_conn, reader.interface()) catch |err| {
                                     // maybe a write fail or something, doesn't matter, we're closing the connection
                                     requestError(http_conn, reader.getError() orelse err) catch {};
 

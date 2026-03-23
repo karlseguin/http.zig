@@ -705,7 +705,7 @@ pub const State = struct {
     }
 
     // returns true if the header has been fully parsed
-    pub fn parse(self: *State, req_arena: Allocator, stream: *std.Io.Reader) !bool {
+    pub fn parse(self: *State, conn: *HTTPConn, stream: *std.Io.Reader) !bool {
         if (self.body != null) {
             // if we have a body, then we've read the header. We want to read into
             // self.body, not self.buf.
@@ -734,7 +734,7 @@ pub const State = struct {
             if (try self.parseProtocol(buf[self.pos..len]) == false) {
                 return false;
             }
-            if (try self.parseHeaders(req_arena, buf[self.pos..len]) == true) {
+            if (try self.parseHeaders(conn, buf[self.pos..len]) == true) {
                 return true;
             }
         } else if (self.url == null) {
@@ -744,18 +744,18 @@ pub const State = struct {
             if (try self.parseProtocol(buf[self.pos..len]) == false) {
                 return false;
             }
-            if (try self.parseHeaders(req_arena, buf[self.pos..len]) == true) {
+            if (try self.parseHeaders(conn, buf[self.pos..len]) == true) {
                 return true;
             }
         } else if (self.protocol == null) {
             if (try self.parseProtocol(buf[self.pos..len]) == false) {
                 return false;
             }
-            if (try self.parseHeaders(req_arena, buf[self.pos..len]) == true) {
+            if (try self.parseHeaders(conn, buf[self.pos..len]) == true) {
                 return true;
             }
         } else {
-            if (try self.parseHeaders(req_arena, buf[self.pos..len]) == true) {
+            if (try self.parseHeaders(conn, buf[self.pos..len]) == true) {
                 return true;
             }
         }
@@ -894,9 +894,11 @@ pub const State = struct {
         return true;
     }
 
-    fn parseHeaders(self: *State, req_arena: Allocator, full: []u8) !bool {
+    fn parseHeaders(self: *State, conn: *HTTPConn, full: []u8) !bool {
         var buf = full;
         var headers = &self.headers;
+        const req_arena = conn.req_arena.allocator();
+
         line: while (buf.len > 0) {
             for (buf, 0..) |bn, i| {
                 switch (bn) {
@@ -965,7 +967,7 @@ pub const State = struct {
                         if (buf[1] == '\n') {
                             // we have \r\n at the start of a line, we're done
                             self.pos += 2;
-                            return try self.prepareForBody(req_arena);
+                            return try self.prepareForBody(conn, req_arena);
                         }
                         // we have a \r followed by something that isn't a \n, can't be right
                         return error.InvalidHeaderLine;
@@ -981,9 +983,16 @@ pub const State = struct {
     }
 
     // we've finished reading the header
-    fn prepareForBody(self: *State, req_arena: Allocator) !bool {
+    fn prepareForBody(self: *State, conn: *HTTPConn, req_arena: Allocator) !bool {
         const str = self.headers.get("content-length") orelse return true;
         const cl = atoi(str) orelse return error.InvalidContentLength;
+
+        if (self.headers.get("expect")) |expect| {
+            if (std.ascii.eqlIgnoreCase(expect, "100-continue")) {
+                // TODO: Maybe support an application-defined handler for this
+                try conn.writeAll("HTTP/1.1 100 Continue\r\n\r\n");
+            }
+        }
 
         self.body_len = cl;
         if (cl == 0) return true;
@@ -1706,7 +1715,7 @@ test "request: fuzz" {
             var fake_reader = ctx.fakeReader();
             const fr = &fake_reader.interface;
             while (true) {
-                const done = try conn.req_state.parse(conn.req_arena.allocator(), fr);
+                const done = try conn.req_state.parse(conn, fr);
                 if (done) break;
             }
 
@@ -1784,7 +1793,7 @@ fn testParse(input: []const u8, config: Config) !Request {
     var reader = ctx.stream.reader(&.{});
     const r = reader.interface();
     while (true) {
-        const done = try ctx.conn.req_state.parse(ctx.conn.req_arena.allocator(), r);
+        const done = try ctx.conn.req_state.parse(ctx.conn, r);
         if (done) break;
     }
     return Request.init(ctx.conn.req_arena.allocator(), ctx.conn);
@@ -1797,7 +1806,7 @@ fn expectParseError(expected: anyerror, input: []const u8, config: Config) !void
     var reader = ctx.stream.reader(&.{});
     const r = reader.interface();
     ctx.write(input);
-    try t.expectError(expected, ctx.conn.req_state.parse(ctx.conn.req_arena.allocator(), r));
+    try t.expectError(expected, ctx.conn.req_state.parse(ctx.conn, r));
 }
 
 fn randomMethod(random: std.Random) []const u8 {
