@@ -1098,14 +1098,23 @@ fn KQueue(comptime WSH: type) type {
 
         fn rearmRead(self: *Self, conn: *Conn(WSH)) !void {
             // called from the worker thread, can't use change_buffer
-            _ = try posix.kevent(self.fd, &.{.{
-                .ident = @intCast(conn.getSocket()),
+            // must remove then re-add for macOS
+            const socket = conn.getSocket();
+            _ = try posix.kevent(self.fd, &.{ .{
+                .ident = @intCast(socket),
                 .filter = posix.system.EVFILT.READ,
-                .flags = posix.system.EV.ADD,
+                .flags = posix.system.EV.DELETE,
+                .fflags = 0,
+                .data = 0,
+                .udata = 0,
+            }, .{
+                .ident = @intCast(socket),
+                .filter = posix.system.EVFILT.READ,
+                .flags = posix.system.EV.ADD | posix.system.EV.DISPATCH,
                 .fflags = 0,
                 .data = 0,
                 .udata = @intFromPtr(conn),
-            }}, &.{}, null);
+            } }, &.{}, null);
         }
 
         fn switchToOneShot(self: *Self, conn: *Conn(WSH)) !void {
