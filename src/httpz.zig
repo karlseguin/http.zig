@@ -1901,6 +1901,11 @@ test "websocket: upgrade" {
     try t.expectString("55eM2SNGu+68v5XXrr982mhPFkU=", res.headers.get("Sec-Websocket-Accept").?);
 
     try w.writeAll(&websocket.frameText("over 9000!"));
+
+    // https://github.com/karlseguin/http.zig/pull/188
+    try w.flush();
+    std.Thread.sleep(std.time.ns_per_ms * 5);
+
     try w.writeAll(&websocket.frameText("close"));
     try w.flush();
 
