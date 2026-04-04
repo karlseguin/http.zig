@@ -687,7 +687,7 @@ router.get("/", index, .{
 });
 ```
 
-## Configuration
+## Router Configuration
 
 The last parameter to the various `router` methods is a route configuration. In many cases, you'll probably use an empty configuration (`.{}`). The route configuration has three fields:
 
