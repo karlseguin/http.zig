@@ -681,13 +681,13 @@ The 3rd parameter is a route configuration. It allows you to speficy a different
 ```zig
 // this can panic if it fails to create the route
 router.get("/", index, .{
-  .dispatcher = Handler.dispathAuth,
+  .dispatcher = Handler.dispatchAuth,
   .handler = &auth_handler,
   .middlewares = &.{cors_middleware},
 });
 ```
 
-## Configuration
+## Router Configuration
 
 The last parameter to the various `router` methods is a route configuration. In many cases, you'll probably use an empty configuration (`.{}`). The route configuration has three fields:
 
@@ -708,13 +708,13 @@ var router = try server.router(.{});
 // No middleware
 router.get("/route1", route1, .{});
 
-router.dispatcher = Handler.dispathAuth;
+router.dispatcher = Handler.dispatchAuth;
 // uses the new dispatcher
 router.get("/route2", route2, .{});
 
 router.handler = &Handler{.public = true};
 // uses the new dispatcher + new handler
-router.get("/route3", route3, .{.handler = Handler.dispathAuth});
+router.get("/route3", route3, .{.handler = Handler.dispatchAuth});
 ```
 
 This approach is error prone though. New routes need to be carefully added in the correct order so that the desired handler, dispatcher and middlewares are used.
@@ -728,7 +728,7 @@ Defining a custom dispatcher or custom global data on each route can be tedious.
 ```zig
 var admin_routes = router.group("/admin", .{
   .handler = &auth_handler,
-  .dispatcher = Handler.dispathAuth,
+  .dispatcher = Handler.dispatchAuth,
   .middlewares = &.{cors_middleware},
 });
 admin_routes.get("/users", listUsers, .{});
