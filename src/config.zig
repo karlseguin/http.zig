@@ -2,8 +2,13 @@ const std = @import("std");
 const httpz = @import("httpz.zig");
 const request = @import("request.zig");
 const response = @import("response.zig");
+const posix_shim = @import("posix_shim.zig");
+const io_shim = @import("io_shim.zig");
 
-const Address = std.net.Address;
+/// Caller-supplied parsed address variant (0.16's `std.Io.net.IpAddress`).
+/// Kept as the public `.addr` variant type so existing user literals like
+/// `.addr = .{ .ip4 = .{ .bytes = ..., .port = ... } }` continue to compile.
+const IpAddr = std.Io.net.IpAddress;
 
 pub const Config = struct {
     address: AddressConfig = .localhost(5882),
@@ -17,14 +22,14 @@ pub const Config = struct {
     pub const AddressConfig = union(enum) {
         ip: IpAddress,
         unix: []const u8,
-        addr: Address,
+        addr: IpAddr,
 
         pub fn localhost(port: u16) AddressConfig {
-            return .{ .addr = .initIp4(.{ 127, 0, 0, 1 }, port) };
+            return .{ .addr = .{ .ip4 = .{ .bytes = .{ 127, 0, 0, 1 }, .port = port } } };
         }
 
         pub fn all(port: u16) AddressConfig {
-            return .{ .addr = .initIp4(.{ 0, 0, 0, 0 }, port) };
+            return .{ .addr = .{ .ip4 = .{ .bytes = .{ 0, 0, 0, 0 }, .port = port } } };
         }
     };
 
@@ -80,25 +85,26 @@ pub const Config = struct {
         compression_write_treshold: ?usize = null,
     };
 
-    pub fn parseAddress(self: *const Config) !Address {
+    pub fn parseAddress(self: *const Config) !posix_shim.Address {
         return switch (self.address) {
-            .ip => |i| try .parseIp(i.host, i.port),
+            .ip => |i| try posix_shim.Address.parseIp(i.host, i.port),
             .unix => |unix_path| b: {
-                if (comptime std.net.has_unix_sockets == false) {
+                if (comptime std.Io.net.has_unix_sockets == false) {
                     break :b error.UnixPathNotSupported;
                 }
-                std.fs.deleteFileAbsolute(unix_path) catch {};
-                break :b try .initUnix(unix_path);
+                // Best-effort cleanup of a stale socket file; ignore errors
+                // (file may not exist yet).
+                std.Io.Dir.deleteFileAbsolute(io_shim.stdio(), unix_path) catch {};
+                break :b try posix_shim.Address.initUnix(unix_path);
             },
-            .addr => |a| a,
+            .addr => |a| posix_shim.Address.fromIpAddress(a),
         };
     }
 
     pub fn isUnixAddress(config: *const Config) bool {
         return switch (config.address) {
             .unix => true,
-            .ip => false,
-            .addr => |a| a.any.family == std.posix.AF.UNIX,
+            .ip, .addr => false,
         };
     }
 

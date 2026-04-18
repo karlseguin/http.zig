@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_shim = @import("io_shim.zig");
 
 const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
@@ -141,9 +142,9 @@ fn Worker(comptime F: anytype) type {
         buffer: []u8,
 
         stopped: bool,
-        mutex: Thread.Mutex,
-        read_cond: Thread.Condition,
-        write_cond: Thread.Condition,
+        mutex: std.Io.Mutex,
+        read_cond: std.Io.Condition,
+        write_cond: std.Io.Condition,
         peer: *Worker(F),
 
         const Self = @This();
@@ -157,11 +158,11 @@ fn Worker(comptime F: anytype) type {
                 .tail = 0,
                 .head = 0,
                 .peer = peer,
-                .mutex = .{},
+                .mutex = .init,
                 .stopped = false,
                 .queue = queue,
-                .read_cond = .{},
-                .write_cond = .{},
+                .read_cond = .init,
+                .write_cond = .init,
                 .buffer = buffer,
             };
         }
@@ -170,19 +171,19 @@ fn Worker(comptime F: anytype) type {
             {
                 // allow stop to be called as part of server.stop()
                 // but also in server.deinit(), or in both.
-                self.mutex.lock();
-                defer self.mutex.unlock();
+                self.mutex.lockUncancelable(io_shim.stdio());
+                defer self.mutex.unlock(io_shim.stdio());
                 if (self.stopped) {
                     return;
                 }
                 self.stopped = true;
             }
-            self.read_cond.broadcast();
+            self.read_cond.broadcast(io_shim.stdio());
         }
 
         pub fn empty(self: *Self) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            self.mutex.lockUncancelable(io_shim.stdio());
+            defer self.mutex.unlock(io_shim.stdio());
             return self.head == self.tail;
         }
 
@@ -194,7 +195,7 @@ fn Worker(comptime F: anytype) type {
             const queue_end = queue.len - 1;
 
             while (true) {
-                self.mutex.lock();
+                self.mutex.lockUncancelable(io_shim.stdio());
                 var head = self.head;
                 var tail = self.tail;
                 while (true) {
@@ -202,7 +203,7 @@ fn Worker(comptime F: anytype) type {
                     if (capacity > 0) {
                         break;
                     }
-                    self.write_cond.wait(&self.mutex);
+                    self.write_cond.wait(io_shim.stdio(), &self.mutex) catch {};
                     head = self.head;
                     tail = self.tail;
                 }
@@ -213,8 +214,8 @@ fn Worker(comptime F: anytype) type {
                     head = if (head == queue_end) 0 else head + 1;
                 }
                 self.head = head;
-                self.mutex.unlock();
-                self.read_cond.signal();
+                self.mutex.unlock(io_shim.stdio());
+                self.read_cond.signal(io_shim.stdio());
                 if (ready.len == pending.len) {
                     break;
                 }
@@ -249,20 +250,20 @@ fn Worker(comptime F: anytype) type {
             const queue = self.queue;
             const queue_end = queue.len - 1;
 
-            self.mutex.lock();
+            self.mutex.lockUncancelable(io_shim.stdio());
             while (self.tail == self.head) {
                 if (block == false or self.stopped) {
-                    self.mutex.unlock();
+                    self.mutex.unlock(io_shim.stdio());
                     return null;
                 }
 
-                self.mutex.unlock();
+                self.mutex.unlock(io_shim.stdio());
                 if (self.peer.getNext(false)) |args| {
                     return args;
                 }
-                self.mutex.lock();
+                self.mutex.lockUncancelable(io_shim.stdio());
                 if (self.tail == self.head) {
-                    self.read_cond.wait(&self.mutex);
+                    self.read_cond.wait(io_shim.stdio(), &self.mutex) catch {};
                 } else {
                     break;
                 }
@@ -271,8 +272,8 @@ fn Worker(comptime F: anytype) type {
             const tail = self.tail;
             const args = queue[tail];
             self.tail = if (tail == queue_end) 0 else tail + 1;
-            self.mutex.unlock();
-            self.write_cond.signal();
+            self.mutex.unlock(io_shim.stdio());
+            self.write_cond.signal(io_shim.stdio());
             return args;
         }
     };
@@ -292,17 +293,10 @@ fn SpawnArgs(FullArgs: anytype) type {
     // []u8. But this ThreadPool is private and being used for 2 specific cases
     // that we control.
 
-    var fields: [ARG_COUNT]std.builtin.Type.StructField = undefined;
-    inline for (full_fields[0..ARG_COUNT], 0..) |field, index| fields[index] = field;
+    var types: [ARG_COUNT]type = undefined;
+    inline for (full_fields[0..ARG_COUNT], 0..) |field, index| types[index] = field.type;
 
-    return @Type(.{
-        .@"struct" = .{
-            .layout = .auto,
-            .is_tuple = true,
-            .fields = &fields,
-            .decls = &.{},
-        },
-    });
+    return @Tuple(&types);
 }
 
 const t = @import("t.zig");
@@ -331,7 +325,7 @@ test "ThreadPool: batch add" {
                 tp.spawn(.{4});
             }
             while (tp.empty() == false) {
-                std.Thread.sleep(std.time.ns_per_ms);
+                std.Io.sleep(io_shim.stdio(), .{ .nanoseconds = std.time.ns_per_ms }, .awake) catch {};
             }
             tp.stop();
             try t.expectEqual(10_000, testSum);
@@ -367,7 +361,7 @@ test "ThreadPool: small fuzz" {
         tp.spawn(.{3});
     }
     while (tp.empty() == false) {
-        std.Thread.sleep(std.time.ns_per_ms);
+        std.Io.sleep(io_shim.stdio(), .{ .nanoseconds = std.time.ns_per_ms }, .awake) catch {};
     }
     tp.stop();
     try t.expectEqual(60_000, testSum);
@@ -403,7 +397,7 @@ test "ThreadPool: large fuzz" {
         tp.spawn(.{6});
     }
     while (tp.empty() == false) {
-        std.Thread.sleep(std.time.ns_per_ms);
+        std.Io.sleep(io_shim.stdio(), .{ .nanoseconds = std.time.ns_per_ms }, .awake) catch {};
     }
     tp.stop();
     try t.expectEqual(210_000, testSum);
@@ -438,5 +432,5 @@ fn testIncr(c: u64, buf: []u8) void {
         else => unreachable,
     }
     // let the threadpool queue get backed up
-    std.Thread.sleep(std.time.ns_per_us * 20);
+    std.Io.sleep(io_shim.stdio(), .{ .nanoseconds = std.time.ns_per_us * 20 }, .awake) catch {};
 }

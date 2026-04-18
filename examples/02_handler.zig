@@ -10,7 +10,7 @@ const PORT = 8802;
 // handlers.
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
 
     // We specify our "Handler" and, as the last parameter to init, pass an

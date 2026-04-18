@@ -8,7 +8,7 @@ const PORT = 8804;
 // state can be a different type than the handler.
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
 
     var handler = Handler{};

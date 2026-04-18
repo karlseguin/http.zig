@@ -14,7 +14,7 @@ const PORT = 8806;
 // See middleware/Logger.zig for an example of how to write a middleware
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
 
     var server = try httpz.Server(void).init(allocator, .{ .address = .localhost(PORT) }, {});

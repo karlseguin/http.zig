@@ -6,7 +6,7 @@ const PORT = 8801;
 
 /// This example demonstrates HTML streaming.
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
 
     var server = try httpz.Server(void).init(allocator, .{

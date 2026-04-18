@@ -33,7 +33,7 @@ pub fn build(b: *std.Build) !void {
             .filters = test_filter orelse &.{},
             .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
         });
-        tests.linkLibC();
+        tests.root_module.link_libc = true;
         const force_blocking = b.option(bool, "force_blocking", "Force blocking mode") orelse false;
         {
             const options = b.addOptions();
@@ -87,7 +87,7 @@ pub fn build(b: *std.Build) !void {
                 }),
             });
             if (ex.libc) {
-                exe.linkLibC();
+                exe.root_module.link_libc = true;
             }
             b.installArtifact(exe);
 

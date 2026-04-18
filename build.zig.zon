@@ -4,14 +4,14 @@
     .version = "0.0.0",
     .fingerprint = 0x472add02ac73d53c,
     .dependencies = .{
+        // Sibling 0.16-ported fork of karlseguin/websocket.zig. Will switch to
+        // a pinned URL once that PR merges.
+        .websocket = .{ .path = "../websocket.zig" },
+        // karlseguin/metrics.zig master as of 2026-04-17 — 0.16-compatible
+        // (PR #14 merged today).
         .metrics = .{
-            .url = "https://github.com/karlseguin/metrics.zig/archive/c22d4e6a4ad648b01ad05f07a3708ce9ddcfb864.tar.gz",
-            .hash = "metrics-0.0.0-W7G4eP2_AQBeD5YAEDBM9CMnB0XwUCHA_7FXZd27bz8l",
+            .url = "https://github.com/karlseguin/metrics.zig/archive/6de29b83a750a06c438d268543e0e3c3c1b309da.tar.gz",
+            .hash = "metrics-0.0.0-W7G4eIegAQD4XxA9Co7Atbw59u_2zvxYf406AZuoAHPM",
         },
-        .websocket = .{
-            .url = "https://github.com/karlseguin/websocket.zig/archive/40a00e93c5d85efb7594ed1d5ec88725cb8d29e1.tar.gz",
-            .hash = "websocket-0.1.0-ZPISdZNTAwDkIX8-QZlfsrRbuMD5wrItjMYR8XVVnd2b",
-        },
-        // .websocket = .{ .path = "../websocket.zig" },
     },
 }

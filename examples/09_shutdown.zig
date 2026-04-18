@@ -15,7 +15,7 @@ pub fn main() !void {
         return error.PlatformNotSupported;
     }
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
 
     // call our shutdown function (below) when

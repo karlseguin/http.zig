@@ -1,4 +1,6 @@
 const std = @import("std");
+const posix_shim = @import("posix_shim.zig");
+const io_shim = @import("io_shim.zig");
 
 const os = std.os;
 const http = @import("httpz.zig");
@@ -14,7 +16,7 @@ const StringKeyValue = @import("key_value.zig").StringKeyValue;
 const MultiFormKeyValue = @import("key_value.zig").MultiFormKeyValue;
 const Config = @import("config.zig").Config.Request;
 
-const Address = std.net.Address;
+const Address = posix_shim.Address;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
@@ -543,7 +545,7 @@ pub const Request = struct {
             }
 
             const buf = if (into.len > unread) into[0..unread] else into;
-            const n = try std.posix.read(self.socket, buf);
+            const n = try posix_shim.read(self.socket, buf);
             self.unread_body.* = unread - n;
             return n;
         }
@@ -555,7 +557,7 @@ pub const Request = struct {
         pub fn get(self: Cookie, name: []const u8) ?[]const u8 {
             var it = std.mem.splitScalar(u8, self.header, ';');
             while (it.next()) |kv| {
-                const trimmed = std.mem.trimLeft(u8, kv, " ");
+                const trimmed = std.mem.trimStart(u8, kv, " ");
                 if (name.len >= trimmed.len) {
                     // need at least an '=' beyond the name
                     continue;
@@ -1791,7 +1793,7 @@ fn testParse(input: []const u8, config: Config) !Request {
     var ctx = t.Context.allocInit(t.arena.allocator(), .{ .request = config });
     ctx.write(input);
     var reader = ctx.stream.reader(&.{});
-    const r = reader.interface();
+    const r = &reader.interface;
     while (true) {
         const done = try ctx.conn.req_state.parse(ctx.conn, r);
         if (done) break;
@@ -1804,7 +1806,7 @@ fn expectParseError(expected: anyerror, input: []const u8, config: Config) !void
     defer ctx.deinit();
 
     var reader = ctx.stream.reader(&.{});
-    const r = reader.interface();
+    const r = &reader.interface;
     ctx.write(input);
     try t.expectError(expected, ctx.conn.req_state.parse(ctx.conn, r));
 }

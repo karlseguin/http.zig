@@ -1,8 +1,19 @@
-// in your build.zig, you can specify a custom test runner:
-// const tests = b.addTest(.{
-//    .root_module = $MODULE_BEING_TESTED,
-//    .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
-// });
+// Custom test runner — ported to Zig 0.16.
+//
+// Usage in build.zig:
+//   const tests = b.addTest(.{
+//      .root_module = $MODULE_BEING_TESTED,
+//      .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
+//   });
+//
+// 0.16 changes from the 0.15 version of this runner:
+//   * `main` now takes `std.process.Init.Minimal` (entry-point signature).
+//   * Env var reads go through `init.environ.block.view()` — `std.process.getEnvVarOwned`
+//     was removed.
+//   * Timer replaced with `std.Io.Timestamp` — `std.time.Timer` was removed.
+//   * `PriorityDequeue.init(alloc, {})` → `.empty` + allocator threaded through method calls.
+//   * `std.debug.dumpStackTrace` signature changed to take a `*const std.debug.StackTrace`
+//     rather than a `*builtin.StackTrace`.
 
 pub const std_options = std.Options{ .log_scope_levels = &[_]std.log.ScopeLevel{
     .{ .scope = .websocket, .level = .warn },
@@ -15,20 +26,31 @@ const Allocator = std.mem.Allocator;
 
 const BORDER = "=" ** 80;
 
-// use in custom panic handler
+// used in the custom panic handler
 var current_test: ?[]const u8 = null;
 
-pub fn main() !void {
+// Process-wide Io for the runner. Initialized once from main's Init.Minimal;
+// used by CompatTimer and by any test code that pulls io via io_shim.
+var runner_threaded: std.Io.Threaded = undefined;
+var runner_io_set: bool = false;
+fn runnerIo() std.Io {
+    std.debug.assert(runner_io_set);
+    return runner_threaded.io();
+}
+
+pub fn main(init: std.process.Init.Minimal) !void {
+    runner_threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    runner_io_set = true;
+
     var mem: [8192]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&mem);
-
     const allocator = fba.allocator();
 
-    const env = Env.init(allocator);
+    const env = Env.init(allocator, &init.environ);
     defer env.deinit(allocator);
 
     var slowest = SlowTracker.init(allocator, 5);
-    defer slowest.deinit();
+    defer slowest.deinit(allocator);
 
     var pass: usize = 0;
     var fail: usize = 0;
@@ -78,7 +100,7 @@ pub fn main() !void {
         const result = t.func();
         current_test = null;
 
-        const ns_taken = slowest.endTiming(friendly_name);
+        const ns_taken = slowest.endTiming(allocator, friendly_name);
 
         if (std.testing.allocator_instance.deinit() == .leak) {
             leak += 1;
@@ -97,7 +119,11 @@ pub fn main() !void {
                 fail += 1;
                 Printer.status(.fail, "\n{s}\n\"{s}\" - {s}\n{s}\n", .{ BORDER, friendly_name, @errorName(err), BORDER });
                 if (@errorReturnTrace()) |trace| {
-                    std.debug.dumpStackTrace(trace);
+                    // 0.16: use `dumpErrorReturnTrace` which accepts the
+                    // `*builtin.StackTrace` returned by `@errorReturnTrace()`
+                    // directly. The older `dumpStackTrace` now takes a
+                    // `*const std.debug.StackTrace` with a different layout.
+                    std.debug.dumpErrorReturnTrace(trace);
                 }
                 if (env.fail_first) {
                     break;
@@ -134,7 +160,9 @@ pub fn main() !void {
     Printer.fmt("\n", .{});
     try slowest.display();
     Printer.fmt("\n", .{});
-    std.posix.exit(if (fail == 0) 0 else 1);
+    // 0.16: std.posix.exit was removed. Use std.process.exit which wraps
+    // the underlying syscall via std.c.exit / std.os.linux.exit_group.
+    std.process.exit(if (fail == 0) 0 else 1);
 }
 
 const Printer = struct {
@@ -160,19 +188,42 @@ const Status = enum {
     text,
 };
 
+// 0.16 removed `std.time.Timer`. Replacement uses `std.Io.Timestamp`, which
+// reads the monotonic clock via the process Io. Same semantics as the old
+// Timer: `start` captures a start instant, `reset` re-captures it, `lap`
+// returns ns since last reset and re-captures.
+const CompatTimer = struct {
+    start_ns: i96,
+
+    fn start() CompatTimer {
+        return .{ .start_ns = std.Io.Timestamp.now(runnerIo(), .awake).nanoseconds };
+    }
+
+    fn reset(self: *CompatTimer) void {
+        self.start_ns = std.Io.Timestamp.now(runnerIo(), .awake).nanoseconds;
+    }
+
+    fn lap(self: *CompatTimer) u64 {
+        const now_ns = std.Io.Timestamp.now(runnerIo(), .awake).nanoseconds;
+        const delta = now_ns - self.start_ns;
+        self.start_ns = now_ns;
+        return if (delta < 0) 0 else @intCast(delta);
+    }
+};
+
 const SlowTracker = struct {
+    // 0.16 PriorityDequeue is now unmanaged; allocator is passed to methods.
     const SlowestQueue = std.PriorityDequeue(TestInfo, void, compareTiming);
     max: usize,
     slowest: SlowestQueue,
-    timer: std.time.Timer,
+    timer: CompatTimer,
 
     fn init(allocator: Allocator, count: u32) SlowTracker {
-        const timer = std.time.Timer.start() catch @panic("failed to start timer");
-        var slowest = SlowestQueue.init(allocator, {});
-        slowest.ensureTotalCapacity(count) catch @panic("OOM");
+        var slowest = SlowestQueue.empty;
+        slowest.ensureTotalCapacity(allocator, count) catch @panic("OOM");
         return .{
             .max = count,
-            .timer = timer,
+            .timer = CompatTimer.start(),
             .slowest = slowest,
         };
     }
@@ -182,40 +233,34 @@ const SlowTracker = struct {
         name: []const u8,
     };
 
-    fn deinit(self: SlowTracker) void {
-        self.slowest.deinit();
+    fn deinit(self: *SlowTracker, allocator: Allocator) void {
+        self.slowest.deinit(allocator);
     }
 
     fn startTiming(self: *SlowTracker) void {
         self.timer.reset();
     }
 
-    fn endTiming(self: *SlowTracker, test_name: []const u8) u64 {
+    fn endTiming(self: *SlowTracker, allocator: Allocator, test_name: []const u8) u64 {
         var timer = self.timer;
         const ns = timer.lap();
 
         var slowest = &self.slowest;
 
         if (slowest.count() < self.max) {
-            // Capacity is fixed to the # of slow tests we want to track
-            // If we've tracked fewer tests than this capacity, than always add
-            slowest.add(TestInfo{ .ns = ns, .name = test_name }) catch @panic("failed to track test timing");
+            slowest.push(allocator, TestInfo{ .ns = ns, .name = test_name }) catch @panic("failed to track test timing");
             return ns;
         }
 
         {
-            // Optimization to avoid shifting the dequeue for the common case
-            // where the test isn't one of our slowest.
             const fastest_of_the_slow = slowest.peekMin() orelse unreachable;
             if (fastest_of_the_slow.ns > ns) {
-                // the test was faster than our fastest slow test, don't add
                 return ns;
             }
         }
 
-        // the previous fastest of our slow tests, has been pushed off.
-        _ = slowest.removeMin();
-        slowest.add(TestInfo{ .ns = ns, .name = test_name }) catch @panic("failed to track test timing");
+        _ = slowest.popMin();
+        slowest.push(allocator, TestInfo{ .ns = ns, .name = test_name }) catch @panic("failed to track test timing");
         return ns;
     }
 
@@ -223,7 +268,7 @@ const SlowTracker = struct {
         var slowest = self.slowest;
         const count = slowest.count();
         Printer.fmt("Slowest {d} test{s}: \n", .{ count, if (count != 1) "s" else "" });
-        while (slowest.removeMinOrNull()) |info| {
+        while (slowest.popMin()) |info| {
             const ms = @as(f64, @floatFromInt(info.ns)) / 1_000_000.0;
             Printer.fmt("  {d:.2}ms\t{s}\n", .{ ms, info.name });
         }
@@ -240,11 +285,11 @@ const Env = struct {
     fail_first: bool,
     filter: ?[]const u8,
 
-    fn init(allocator: Allocator) Env {
+    fn init(allocator: Allocator, environ: *const std.process.Environ) Env {
         return .{
-            .verbose = readEnvBool(allocator, "TEST_VERBOSE", true),
-            .fail_first = readEnvBool(allocator, "TEST_FAIL_FIRST", false),
-            .filter = readEnv(allocator, "TEST_FILTER"),
+            .verbose = readEnvBool(allocator, environ, "TEST_VERBOSE", true),
+            .fail_first = readEnvBool(allocator, environ, "TEST_FAIL_FIRST", false),
+            .filter = readEnv(allocator, environ, "TEST_FILTER"),
         };
     }
 
@@ -254,19 +299,25 @@ const Env = struct {
         }
     }
 
-    fn readEnv(allocator: Allocator, key: []const u8) ?[]const u8 {
-        const v = std.process.getEnvVarOwned(allocator, key) catch |err| {
-            if (err == error.EnvironmentVariableNotFound) {
-                return null;
-            }
-            std.log.warn("failed to get env var {s} due to err {}", .{ key, err });
-            return null;
-        };
-        return v;
+    // 0.16: look up via Init.Minimal.environ rather than the removed
+    // `std.process.getEnvVarOwned`. Returned slice is duped into `allocator`
+    // so the caller can free without aliasing process-lifetime memory.
+    fn readEnv(allocator: Allocator, environ: *const std.process.Environ, key: []const u8) ?[]const u8 {
+        if (comptime builtin.os.tag == .windows) return null;
+        const view = environ.block.view();
+        for (view.slice) |entry_ptr| {
+            const entry = std.mem.span(entry_ptr);
+            if (entry.len <= key.len) continue;
+            if (entry[key.len] != '=') continue;
+            if (!std.mem.eql(u8, entry[0..key.len], key)) continue;
+            const value = entry[key.len + 1 ..];
+            return allocator.dupe(u8, value) catch null;
+        }
+        return null;
     }
 
-    fn readEnvBool(allocator: Allocator, key: []const u8, deflt: bool) bool {
-        const value = readEnv(allocator, key) orelse return deflt;
+    fn readEnvBool(allocator: Allocator, environ: *const std.process.Environ, key: []const u8, deflt: bool) bool {
+        const value = readEnv(allocator, environ, key) orelse return deflt;
         defer allocator.free(value);
         return std.ascii.eqlIgnoreCase(value, "true");
     }

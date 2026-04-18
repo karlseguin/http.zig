@@ -1,4 +1,6 @@
 const std = @import("std");
+const posix_shim = @import("posix_shim.zig");
+const io_shim = @import("io_shim.zig");
 const builtin = @import("builtin");
 
 pub const testing = @import("testing.zig");
@@ -13,6 +15,9 @@ pub const middleware = @import("middleware/middleware.zig");
 pub const Router = routing.Router;
 pub const Request = request.Request;
 pub const Response = response.Response;
+/// Public alias for the 0.16-compat socket-fd wrapper used in SSE handler
+/// signatures: `fn startEventStream(ctx, fn(T, httpz.Stream) void)`.
+pub const Stream = posix_shim.Stream;
 pub const Url = @import("url.zig").Url;
 pub const Config = @import("config.zig").Config;
 
@@ -257,9 +262,9 @@ pub fn Server(comptime H: type) type {
         arena: Allocator,
         allocator: Allocator,
         _router: Router(H, ActionArg),
-        _mut: Thread.Mutex,
+        _mut: std.Io.Mutex,
         _workers: []Worker,
-        _cond: Thread.Condition,
+        _cond: std.Io.Condition,
         _listener: ?posix.socket_t,
         _max_request_per_connection: usize,
         _middlewares: []const Middleware(H),
@@ -313,8 +318,8 @@ pub fn Server(comptime H: type) type {
                 .handler = handler,
                 .allocator = allocator,
                 .arena = arena.allocator(),
-                ._mut = .{},
-                ._cond = .{},
+                ._mut = .init,
+                ._cond = .init,
                 ._workers = workers,
                 ._listener = null,
                 ._middlewares = &.{},
@@ -342,9 +347,9 @@ pub fn Server(comptime H: type) type {
 
         pub fn listen(self: *Self) !void {
             // incase "stop" is waiting
-            defer self._cond.signal();
-            self._mut.lock();
-            errdefer self._mut.unlock();
+            defer self._cond.signal(io_shim.stdio());
+            self._mut.lockUncancelable(io_shim.stdio());
+            errdefer self._mut.unlock(io_shim.stdio());
 
             const config = self.config;
 
@@ -356,7 +361,7 @@ pub fn Server(comptime H: type) type {
                 if (blockingMode() == false) sock_flags |= posix.SOCK.NONBLOCK;
 
                 const proto = if (address.any.family == posix.AF.UNIX) @as(u32, 0) else posix.IPPROTO.TCP;
-                break :blk try posix.socket(address.any.family, sock_flags, proto);
+                break :blk try posix_shim.socket(address.any.family, sock_flags, proto);
             };
 
             if (no_delay) {
@@ -380,8 +385,8 @@ pub fn Server(comptime H: type) type {
 
             {
                 const socklen = address.getOsSockLen();
-                try posix.bind(listener, &address.any, socklen);
-                try posix.listen(listener, 1024); // kernel backlog
+                try posix_shim.bind(listener, &address.any, socklen);
+                try posix_shim.listen(listener, 1024); // kernel backlog
             }
 
             self._listener = listener;
@@ -396,8 +401,8 @@ pub fn Server(comptime H: type) type {
                 const thrd = try Thread.spawn(.{}, worker.Blocking(*Self, WebsocketHandler).listen, .{ &workers[0], listener });
 
                 // incase listenInNewThread was used and is waiting for us to start
-                self._cond.signal();
-                self._mut.unlock();
+                self._cond.signal(io_shim.stdio());
+                self._mut.unlock(io_shim.stdio());
 
                 // This will unblock when server.stop() is called and the listening
                 // socket is closed.
@@ -412,7 +417,7 @@ pub fn Server(comptime H: type) type {
                     workers[i].stop();
                 };
 
-                var ready_sem = std.Thread.Semaphore{};
+                var ready_sem: std.Io.Semaphore = .{};
                 const threads = try self.arena.alloc(Thread, workers.len);
                 for (0..workers.len) |i| {
                     workers[i] = try Worker.init(allocator, self, &config);
@@ -425,12 +430,12 @@ pub fn Server(comptime H: type) type {
                 }
 
                 for (0..workers.len) |_| {
-                    ready_sem.wait();
+                    ready_sem.waitUncancelable(io_shim.stdio());
                 }
 
                 // incase listenInNewThread was used and is waiting for us to start
-                self._cond.signal();
-                self._mut.unlock();
+                self._cond.signal(io_shim.stdio());
+                self._mut.unlock(io_shim.stdio());
 
                 for (threads) |thrd| {
                     thrd.join();
@@ -439,19 +444,19 @@ pub fn Server(comptime H: type) type {
         }
 
         pub fn listenInNewThread(self: *Self) !std.Thread {
-            self._mut.lock();
-            defer self._mut.unlock();
+            self._mut.lockUncancelable(io_shim.stdio());
+            defer self._mut.unlock(io_shim.stdio());
             const thrd = try std.Thread.spawn(.{}, listen, .{self});
 
             // we don't return until listen() signals us that the server is up
-            self._cond.wait(&self._mut);
+            self._cond.wait(io_shim.stdio(), &self._mut) catch {};
 
             return thrd;
         }
 
         pub fn stop(self: *Self) void {
-            self._mut.lock();
-            defer self._mut.unlock();
+            self._mut.lockUncancelable(io_shim.stdio());
+            defer self._mut.unlock(io_shim.stdio());
 
             for (self._workers) |*w| {
                 if (self._listener == null) {
@@ -467,9 +472,9 @@ pub fn Server(comptime H: type) type {
                     // necessary to unblock accept on linux
                     // (which might not be that necessary since, on Linux,
                     // NonBlocking should be used)
-                    posix.shutdown(l, .recv) catch {};
+                    posix_shim.shutdown(l, .recv) catch {};
                 }
-                posix.close(l);
+                _ = std.c.close(l);
             }
         }
 
@@ -673,7 +678,10 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: an
     const http_conn = res.conn;
     const ws_worker: *websocket.server.Worker(H) = @ptrCast(@alignCast(http_conn.ws_worker));
 
-    var hc = try ws_worker.createConn(http_conn.stream.handle, http_conn.address, worker.timestamp(0));
+    // posix_shim.Address and websocket's io_shim.Address are ABI-identical
+    // extern unions over posix.sockaddr. Cross-package type boundary requires
+    // an explicit bitcast.
+    var hc = try ws_worker.createConn(http_conn.stream.handle, @bitCast(http_conn.address), worker.timestamp(0));
     errdefer ws_worker.cleanupConn(hc);
 
     hc.handler = try H.init(&hc.conn, ctx);
@@ -771,7 +779,7 @@ fn drain(req: *Request) !void {
 }
 
 const t = @import("t.zig");
-var global_test_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+var global_test_allocator = std.heap.DebugAllocator(.{}){};
 
 var test_handler_dispatch = TestHandlerDispatch{ .state = 10 };
 var test_handler_disaptch_context = TestHandlerDispatchContext{ .state = 20 };
@@ -969,7 +977,7 @@ test "tests:afterAll" {
     cors_single_server.deinit();
     cors_multiple_server.deinit();
 
-    try t.expectEqual(false, global_test_allocator.detectLeaks());
+    try t.expectEqual(@as(usize, 0), global_test_allocator.detectLeaks());
 }
 
 test "httpz: quick shutdown" {
@@ -1719,7 +1727,7 @@ test "httpz: request in chunks" {
     const w = &writer.interface;
     try w.writeAll("GET /api/v2/use");
     try w.flush();
-    std.Thread.sleep(std.time.ns_per_ms * 10);
+    std.Io.sleep(io_shim.stdio(), .{ .nanoseconds = std.time.ns_per_ms * 10 }, .awake) catch {};
     try w.writeAll("rs/11 HTTP/1.1\r\n\r\n");
     try w.flush();
 
@@ -1856,7 +1864,7 @@ test "httpz: request body reader" {
         while (req.len > 0) {
             const len = random.uintAtMost(usize, req.len - 1) + 1;
             try w.writeAll(req[0..len]);
-            std.Thread.sleep(std.time.ns_per_ms * 2);
+            std.Io.sleep(io_shim.stdio(), .{ .nanoseconds = std.time.ns_per_ms * 2 }, .awake) catch {};
             req = req[len..];
         }
 
@@ -1904,7 +1912,7 @@ test "websocket: upgrade" {
 
     // https://github.com/karlseguin/http.zig/pull/188
     try w.flush();
-    std.Thread.sleep(std.time.ns_per_ms * 5);
+    std.Io.sleep(io_shim.stdio(), .{ .nanoseconds = std.time.ns_per_ms * 5 }, .awake) catch {};
 
     try w.writeAll(&websocket.frameText("close"));
     try w.flush();
@@ -1913,19 +1921,19 @@ test "websocket: upgrade" {
     var buf: [100]u8 = undefined;
     var wait_count: usize = 0;
     var reader = stream.reader(&.{});
-    const r = reader.interface();
+    const r = &reader.interface;
     while (pos < 16) {
         const n = r.readSliceShort(buf[pos..]) catch |err|
             switch (err) {
                 error.ReadFailed => {
-                    if (reader.getError()) |e| {
+                    if (reader.err) |e| {
                         switch (e) {
                             error.WouldBlock => {
                                 if (wait_count == 100) {
                                     break;
                                 }
                                 wait_count += 1;
-                                std.Thread.sleep(std.time.ns_per_ms);
+                                std.Io.sleep(io_shim.stdio(), .{ .nanoseconds = std.time.ns_per_ms }, .awake) catch {};
                                 continue;
                             },
                             else => {},
@@ -1991,7 +1999,7 @@ test "websocket: stress" {
                 var buf: [1024]u8 = undefined;
                 var pos: usize = 0;
                 var reader = stream.reader(&.{});
-                const r = reader.interface();
+                const r = &reader.interface;
                 while (!std.mem.endsWith(u8, buf[0..pos], "\r\n\r\n")) {
                     if (pos >= buf.len) return;
                     var vecs: [1][]u8 = .{buf[pos..]};
@@ -2034,36 +2042,36 @@ test "ContentType: forX" {
     try t.expectEqual(ContentType.UNKNOWN, ContentType.forFile("must.spice"));
 }
 
-fn testStream(port: u16) std.net.Stream {
+fn testStream(port: u16) posix_shim.Stream {
     const timeout = std.mem.toBytes(posix.timeval{
         .sec = 0,
         .usec = 20_000,
     });
 
-    const address = std.net.Address.parseIp("127.0.0.1", port) catch unreachable;
-    const stream = std.net.tcpConnectToAddress(address) catch unreachable;
+    const address = posix_shim.Address.parseIp("127.0.0.1", port) catch unreachable;
+    const stream = posix_shim.tcpConnectToAddress(address) catch unreachable;
     posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeout) catch unreachable;
     posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &timeout) catch unreachable;
     return stream;
 }
 
-fn testReadAll(stream: std.net.Stream, buf: []u8) []u8 {
+fn testReadAll(stream: posix_shim.Stream, buf: []u8) []u8 {
     var pos: usize = 0;
     var blocked = false;
     var reader = stream.reader(&.{});
-    const r = reader.interface();
+    const r = &reader.interface;
     while (true) {
         std.debug.assert(pos < buf.len);
         var vecs: [1][]u8 = .{buf[pos..]};
         const n = r.readVec(&vecs) catch |err|
             switch (err) {
                 error.ReadFailed => {
-                    if (reader.getError()) |e| {
+                    if (reader.err) |e| {
                         switch (e) {
                             error.WouldBlock => {
                                 if (blocked) return buf[0..pos];
                                 blocked = true;
-                                std.Thread.sleep(std.time.ns_per_ms);
+                                std.Io.sleep(io_shim.stdio(), .{ .nanoseconds = std.time.ns_per_ms }, .awake) catch {};
                                 continue;
                             },
                             error.ConnectionResetByPeer => return buf[0..pos],
@@ -2084,30 +2092,30 @@ fn testReadAll(stream: std.net.Stream, buf: []u8) []u8 {
     unreachable;
 }
 
-fn testReadParsed(stream: std.net.Stream) testing.Testing.Response {
+fn testReadParsed(stream: posix_shim.Stream) testing.Testing.Response {
     var buf: [4096]u8 = undefined;
     const data = testReadAll(stream, &buf);
     return testing.parse(data) catch unreachable;
 }
 
-fn testReadHeader(stream: std.net.Stream) testing.Testing.Response {
+fn testReadHeader(stream: posix_shim.Stream) testing.Testing.Response {
     var pos: usize = 0;
     var blocked = false;
     var buf: [1024]u8 = undefined;
     var reader = stream.reader(&.{});
-    const r = reader.interface();
+    const r = &reader.interface;
     while (true) {
         std.debug.assert(pos < buf.len);
         var vecs: [1][]u8 = .{buf[pos..]};
         const n = r.readVec(&vecs) catch |err|
             switch (err) {
                 error.ReadFailed => {
-                    if (reader.getError()) |e| {
+                    if (reader.err) |e| {
                         switch (e) {
                             error.WouldBlock => {
                                 if (blocked) unreachable;
                                 blocked = true;
-                                std.Thread.sleep(std.time.ns_per_ms);
+                                std.Io.sleep(io_shim.stdio(), .{ .nanoseconds = std.time.ns_per_ms }, .awake) catch {};
                                 continue;
                             },
                             else => @panic(@errorName(e)),
@@ -2206,7 +2214,7 @@ const TestDummyHandler = struct {
     const StreamContext = struct {
         data: []const u8,
 
-        fn handle(self: StreamContext, stream: std.net.Stream) void {
+        fn handle(self: StreamContext, stream: posix_shim.Stream) void {
             var writer = stream.writer(&.{});
             const w = &writer.interface;
             w.writeAll(self.data) catch unreachable;

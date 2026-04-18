@@ -14,7 +14,7 @@ pub const std_options = std.Options{ .log_scope_levels = &[_]std.log.ScopeLevel{
 
 // This example show how to upgrade a request to websocket.
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
 
     // For websocket support, you _must_ define a Handler, and your Handler _must_

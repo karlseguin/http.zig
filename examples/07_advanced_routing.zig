@@ -10,7 +10,7 @@ const PORT = 8807;
 // per-route configuration for middleware specifically).
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
 
     var default_handler = Handler{

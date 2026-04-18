@@ -8,7 +8,7 @@ const PORT = 8801;
 // httpz.Request and httpz.Response objects.
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
 
     // We pass a "void" handler. This is the simplest, but limits what we can do

@@ -3,6 +3,8 @@
 // httpz.Request and httpz.Response, checkout testing.zig
 // which is exposed as httpz.testing.
 const std = @import("std");
+const posix_shim = @import("posix_shim.zig");
+const io_shim = @import("io_shim.zig");
 const httpz = @import("httpz.zig");
 
 const posix = std.posix;
@@ -11,9 +13,7 @@ const Allocator = std.mem.Allocator;
 const Conn = @import("worker.zig").HTTPConn;
 const BufferPool = @import("buffer.zig").Pool;
 
-pub fn expectEqual(expected: anytype, actual: anytype) !void {
-    try std.testing.expectEqual(@as(@TypeOf(actual), expected), actual);
-}
+pub const expectEqual = std.testing.expectEqual;
 
 pub const expectError = std.testing.expectError;
 pub const expectString = std.testing.expectEqualStrings;
@@ -27,16 +27,16 @@ pub fn reset() void {
 
 pub fn getRandom() std.Random.DefaultPrng {
     var seed: u64 = undefined;
-    posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
+    posix_shim.getrandom(std.mem.asBytes(&seed)) catch unreachable;
     return std.Random.DefaultPrng.init(seed);
 }
 
 pub const Context = struct {
     // the stream that the server gets
-    stream: std.net.Stream,
+    stream: posix_shim.Stream,
 
     // the client (e.g. browser stream)
-    client: std.net.Stream,
+    client: posix_shim.Stream,
 
     closed: bool = false,
 
@@ -80,8 +80,8 @@ pub const Context = struct {
             posix.setsockopt(pair[1], posix.SOL.SOCKET, posix.SO.SNDBUF, &std.mem.toBytes(@as(c_int, 20_000))) catch unreachable;
         }
 
-        const server = std.net.Stream{ .handle = pair[0] };
-        const client = std.net.Stream{ .handle = pair[1] };
+        const server = posix_shim.Stream{ .handle = pair[0] };
+        const client = posix_shim.Stream{ .handle = pair[1] };
 
         var ctx_arena = ctx_allocator.create(std.heap.ArenaAllocator) catch unreachable;
         ctx_arena.* = std.heap.ArenaAllocator.init(ctx_allocator);
@@ -108,11 +108,11 @@ pub const Context = struct {
 
         const conn = aa.create(Conn) catch unreachable;
         conn.* = .{
-            ._mut = .{},
+            ._mut = .init,
             ._state = .request,
             .handover = .close,
             .stream = server,
-            .address = std.net.Address.initIp4([_]u8{ 127, 0, 0, 200 }, 0),
+            .address = posix_shim.Address.initIp4([_]u8{ 127, 0, 0, 200 }, 0),
             .req_state = req_state,
             .res_state = res_state,
             .timeout = 0,
@@ -145,25 +145,25 @@ pub const Context = struct {
     }
 
     fn setupFakeSocketPair(server: *posix.socket_t, client: *posix.socket_t) !void {
-        const listener = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch unreachable;
-        defer posix.close(listener);
+        const listener = posix_shim.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch unreachable;
+        defer posix_shim.close(listener);
 
-        var address = try std.net.Address.parseIp("127.0.0.1", 0);
+        var address = try posix_shim.Address.parseIp("127.0.0.1", 0);
         try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
-        try posix.bind(listener, &address.any, address.getOsSockLen());
-        try posix.listen(listener, 0);
+        try posix_shim.bind(listener, &address.any, address.getOsSockLen());
+        try posix_shim.listen(listener, 0);
 
-        var len: posix.socklen_t = @sizeOf(std.net.Address);
-        try posix.getsockname(listener, &address.any, &len);
+        var len: posix.socklen_t = @sizeOf(posix_shim.Address);
+        try posix_shim.getsockname(listener, &address.any, &len);
 
         var thread = try std.Thread.spawn(.{}, struct {
             fn accept(l: posix.socket_t, server_side: *posix.socket_t) !void {
-                server_side.* = try posix.accept(l, null, null, 0);
+                server_side.* = try posix_shim.accept(l, null, null, 0);
             }
         }.accept, .{ listener, server });
 
-        client.* = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch unreachable;
-        try posix.connect(client.*, &address.any, address.getOsSockLen());
+        client.* = posix_shim.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch unreachable;
+        try posix_shim.connect(client.*, &address.any, address.getOsSockLen());
         thread.join();
     }
 
@@ -193,12 +193,12 @@ pub const Context = struct {
         var arr: std.ArrayList(u8) = .empty;
 
         var reader = self.client.reader(&.{});
-        const r = reader.interface();
+        const r = &reader.interface;
         while (true) {
             const n = r.readSliceShort(&buf) catch |err|
                 switch (err) {
                     error.ReadFailed => {
-                        if (reader.getError()) |e| {
+                        if (reader.err) |e| {
                             switch (e) {
                                 error.WouldBlock => return arr,
                                 else => return e,
@@ -218,7 +218,7 @@ pub const Context = struct {
         var buf = try allocator.alloc(u8, expected.len);
         defer allocator.free(buf);
         var reader = self.client.reader(&.{});
-        const r = reader.interface();
+        const r = &reader.interface;
         while (pos < buf.len) {
             const n = try r.readSliceShort(buf[pos..]);
             if (n == 0) break;
@@ -236,7 +236,7 @@ pub const Context = struct {
 
         const n = r.readSliceShort(buf[0..]) catch |err| blk: switch (err) {
             error.ReadFailed => {
-                if (reader.getError()) |e| {
+                if (reader.err) |e| {
                     switch (e) {
                         error.WouldBlock => break :blk 0,
                         else => @panic(@errorName(e)),
@@ -256,7 +256,7 @@ pub const Context = struct {
     fn random(self: *Context) std.Random {
         if (self._random == null) {
             var seed: u64 = undefined;
-            posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
+            posix_shim.getrandom(std.mem.asBytes(&seed)) catch unreachable;
             self._random = std.Random.DefaultPrng.init(seed);
         }
         return self._random.?.random();
@@ -265,9 +265,16 @@ pub const Context = struct {
     pub fn fakeReader(self: *Context) FakeReader {
         std.debug.assert(self.fake);
 
+        // 0.16 changed `clearRetainingCapacity` to `@memset(items, undefined)`
+        // before zeroing the length — the backing memory is clobbered. We
+        // must dupe the bytes into arena-owned memory BEFORE clearing, so
+        // FakeReader's snapshot survives the clear (and any subsequent
+        // writes that reuse the same capacity).
+        const buf_copy = self.arena.allocator().dupe(u8, self.to_read.items) catch unreachable;
+
         const fr = FakeReader{
             .pos = self.to_read_pos,
-            .buf = self.to_read.items,
+            .buf = buf_copy,
             .random = self.random(),
         };
 

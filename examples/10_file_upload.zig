@@ -12,7 +12,7 @@ const PORT = 8810;
 // 4. Handle both file and regular form fields
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
 
     var server = try httpz.Server(void).init(allocator, .{

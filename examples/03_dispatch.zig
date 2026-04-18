@@ -8,7 +8,7 @@ const PORT = 8803;
 // in how actions are executed.
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     const allocator = gpa.allocator();
 
     var handler = Handler{};

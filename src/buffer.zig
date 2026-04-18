@@ -1,9 +1,10 @@
 const std = @import("std");
+const io_shim = @import("io_shim.zig");
 const metrics = @import("metrics.zig");
 
 const blockingMode = @import("httpz.zig").blockingMode;
 
-const Mutex = std.Thread.Mutex;
+const Mutex = std.Io.Mutex;
 const Allocator = std.mem.Allocator;
 
 pub const Buffer = struct {
@@ -68,9 +69,15 @@ pub const Pool = struct {
     }
 
     pub fn grow(self: *Pool, arena: Allocator, buffer: *Buffer, current_size: usize, new_size: usize) !Buffer {
-        if (buffer.type == .dynamic and arena.resize(buffer.data, new_size)) {
-            buffer.data = buffer.data.ptr[0..new_size];
-            return buffer.*;
+        // 0.16 ArenaAllocator.resize asserts a first-node exists; 0.15
+        // tolerated empty arenas. Touch the arena with a 1-byte alloc
+        // before attempting resize on a buffer that may not be from it.
+        if (buffer.type == .dynamic) {
+            _ = arena.alloc(u8, 1) catch {};
+            if (arena.resize(buffer.data, new_size)) {
+                buffer.data = buffer.data.ptr[0..new_size];
+                return buffer.*;
+            }
         }
         const new_buffer = try self.arenaAlloc(arena, new_size);
         @memcpy(new_buffer.data[0..current_size], buffer.data[0..current_size]);
@@ -145,12 +152,12 @@ pub const Pool = struct {
 
     inline fn lock(self: *Pool) void {
         if (comptime blockingMode()) {
-            self.mutex.lock();
+            self.mutex.lockUncancelable(io_shim.stdio());
         }
     }
     inline fn unlock(self: *Pool) void {
         if (comptime blockingMode()) {
-            self.mutex.unlock();
+            self.mutex.unlock(io_shim.stdio());
         }
     }
 };
