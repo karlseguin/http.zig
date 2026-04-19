@@ -13,13 +13,12 @@ pub const std_options = std.Options{ .log_scope_levels = &[_]std.log.ScopeLevel{
 } };
 
 // This example show how to upgrade a request to websocket.
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     // For websocket support, you _must_ define a Handler, and your Handler _must_
     // have a WebsocketHandler declaration
-    var server = try httpz.Server(Handler).init(allocator, .{ .address = .localhost(PORT) }, Handler{});
+    var server = try httpz.Server(Handler).init(init.io, allocator, .{ .address = .localhost(PORT) }, Handler{});
 
     defer server.deinit();
 

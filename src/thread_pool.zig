@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const Io = std.Io;
 const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
 
@@ -33,7 +34,7 @@ pub fn ThreadPool(comptime F: anytype) type {
         const Self = @This();
 
         // we expect allocator to be an Arena
-        pub fn init(allocator: Allocator, opts: Opts) !Self {
+        pub fn init(io: Io, allocator: Allocator, opts: Opts) !Self {
             var arena = std.heap.ArenaAllocator.init(allocator);
             errdefer arena.deinit();
 
@@ -49,7 +50,7 @@ pub fn ThreadPool(comptime F: anytype) type {
             };
 
             for (0..workers.len) |i| {
-                workers[i] = try Worker(F).init(aa, &workers[@mod(i + i, workers.len)], opts);
+                workers[i] = try Worker(F).init(io, aa, &workers[@mod(i + i, workers.len)], opts);
             }
             for (0..workers.len) |i| {
                 threads[i] = try Thread.spawn(.{}, Worker(F).run, .{&workers[i]});
@@ -129,6 +130,8 @@ fn Worker(comptime F: anytype) type {
     const Args = SpawnArgs(FullArgs);
 
     return struct {
+        io: Io,
+
         // position in queue to read from
         tail: usize,
 
@@ -141,52 +144,56 @@ fn Worker(comptime F: anytype) type {
         buffer: []u8,
 
         stopped: bool,
-        mutex: Thread.Mutex,
-        read_cond: Thread.Condition,
-        write_cond: Thread.Condition,
+        mutex: Io.Mutex,
+        read_cond: Io.Condition,
+        write_cond: Io.Condition,
         peer: *Worker(F),
 
         const Self = @This();
 
         // we expect allocator to be an Arena
-        pub fn init(allocator: Allocator, peer: *Worker(F), opts: Opts) !Self {
+        pub fn init(io: Io, allocator: Allocator, peer: *Worker(F), opts: Opts) !Self {
             const queue = try allocator.alloc(Args, if (opts.backlog == 0 or opts.backlog == 1) 2 else opts.backlog);
             const buffer = try allocator.alloc(u8, opts.buffer_size);
 
             return .{
+                .io = io,
                 .tail = 0,
                 .head = 0,
                 .peer = peer,
-                .mutex = .{},
+                .mutex = .init,
                 .stopped = false,
                 .queue = queue,
-                .read_cond = .{},
-                .write_cond = .{},
+                .read_cond = .init,
+                .write_cond = .init,
                 .buffer = buffer,
             };
         }
 
         pub fn stop(self: *Self) void {
+            const io = self.io;
             {
                 // allow stop to be called as part of server.stop()
                 // but also in server.deinit(), or in both.
-                self.mutex.lock();
-                defer self.mutex.unlock();
+                self.mutex.lockUncancelable(io);
+                defer self.mutex.unlock(io);
                 if (self.stopped) {
                     return;
                 }
                 self.stopped = true;
             }
-            self.read_cond.broadcast();
+            self.read_cond.broadcast(io);
         }
 
         pub fn empty(self: *Self) bool {
-            self.mutex.lock();
-            defer self.mutex.unlock();
+            const io = self.io;
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
             return self.head == self.tail;
         }
 
         pub fn spawn(self: *Self, args: []const Args) void {
+            const io = self.io;
             var pending = args;
             var capacity: usize = 0;
 
@@ -194,7 +201,7 @@ fn Worker(comptime F: anytype) type {
             const queue_end = queue.len - 1;
 
             while (true) {
-                self.mutex.lock();
+                self.mutex.lockUncancelable(io);
                 var head = self.head;
                 var tail = self.tail;
                 while (true) {
@@ -202,7 +209,7 @@ fn Worker(comptime F: anytype) type {
                     if (capacity > 0) {
                         break;
                     }
-                    self.write_cond.wait(&self.mutex);
+                    self.write_cond.waitUncancelable(io, &self.mutex);
                     head = self.head;
                     tail = self.tail;
                 }
@@ -213,8 +220,8 @@ fn Worker(comptime F: anytype) type {
                     head = if (head == queue_end) 0 else head + 1;
                 }
                 self.head = head;
-                self.mutex.unlock();
-                self.read_cond.signal();
+                self.mutex.unlock(io);
+                self.read_cond.signal(io);
                 if (ready.len == pending.len) {
                     break;
                 }
@@ -246,23 +253,24 @@ fn Worker(comptime F: anytype) type {
         }
 
         fn getNext(self: *Self, block: bool) ?Args {
+            const io = self.io;
             const queue = self.queue;
             const queue_end = queue.len - 1;
 
-            self.mutex.lock();
+            self.mutex.lockUncancelable(io);
             while (self.tail == self.head) {
                 if (block == false or self.stopped) {
-                    self.mutex.unlock();
+                    self.mutex.unlock(io);
                     return null;
                 }
 
-                self.mutex.unlock();
+                self.mutex.unlock(io);
                 if (self.peer.getNext(false)) |args| {
                     return args;
                 }
-                self.mutex.lock();
+                self.mutex.lockUncancelable(io);
                 if (self.tail == self.head) {
-                    self.read_cond.wait(&self.mutex);
+                    self.read_cond.waitUncancelable(io, &self.mutex);
                 } else {
                     break;
                 }
@@ -271,8 +279,8 @@ fn Worker(comptime F: anytype) type {
             const tail = self.tail;
             const args = queue[tail];
             self.tail = if (tail == queue_end) 0 else tail + 1;
-            self.mutex.unlock();
-            self.write_cond.signal();
+            self.mutex.unlock(io);
+            self.write_cond.signal(io);
             return args;
         }
     };
@@ -292,17 +300,11 @@ fn SpawnArgs(FullArgs: anytype) type {
     // []u8. But this ThreadPool is private and being used for 2 specific cases
     // that we control.
 
-    var fields: [ARG_COUNT]std.builtin.Type.StructField = undefined;
-    inline for (full_fields[0..ARG_COUNT], 0..) |field, index| fields[index] = field;
-
-    return @Type(.{
-        .@"struct" = .{
-            .layout = .auto,
-            .is_tuple = true,
-            .fields = &fields,
-            .decls = &.{},
-        },
-    });
+    var field_types: [ARG_COUNT]type = undefined;
+    inline for (full_fields[0..ARG_COUNT], 0..) |field, i| {
+        field_types[i] = field.type;
+    }
+    return @Tuple(&field_types);
 }
 
 const t = @import("t.zig");
@@ -321,7 +323,7 @@ test "ThreadPool: batch add" {
             testC4 = 0;
             testC5 = 0;
             testC6 = 0;
-            var tp = try ThreadPool(testIncr).init(t.arena.allocator(), .{ .count = count, .backlog = backlog, .buffer_size = 512 });
+            var tp = try ThreadPool(testIncr).init(t.io, t.arena.allocator(), .{ .count = count, .backlog = backlog, .buffer_size = 512 });
             defer tp.deinit();
 
             for (0..1_000) |_| {
@@ -331,7 +333,7 @@ test "ThreadPool: batch add" {
                 tp.spawn(.{4});
             }
             while (tp.empty() == false) {
-                std.Thread.sleep(std.time.ns_per_ms);
+                try t.io.sleep(.fromMilliseconds(1), .awake);
             }
             tp.stop();
             try t.expectEqual(10_000, testSum);
@@ -358,7 +360,7 @@ test "ThreadPool: small fuzz" {
     testC4 = 0;
     testC5 = 0;
     testC6 = 0;
-    var tp = try ThreadPool(testIncr).init(t.arena.allocator(), .{ .count = 3, .backlog = 3, .buffer_size = 512 });
+    var tp = try ThreadPool(testIncr).init(t.io, t.arena.allocator(), .{ .count = 3, .backlog = 3, .buffer_size = 512 });
     defer tp.deinit();
 
     for (0..10_000) |_| {
@@ -367,7 +369,7 @@ test "ThreadPool: small fuzz" {
         tp.spawn(.{3});
     }
     while (tp.empty() == false) {
-        std.Thread.sleep(std.time.ns_per_ms);
+        try t.io.sleep(.fromMilliseconds(1), .awake);
     }
     tp.stop();
     try t.expectEqual(60_000, testSum);
@@ -391,7 +393,7 @@ test "ThreadPool: large fuzz" {
     testC4 = 0;
     testC5 = 0;
     testC6 = 0;
-    var tp = try ThreadPool(testIncr).init(t.arena.allocator(), .{ .count = 50, .backlog = 1000, .buffer_size = 512 });
+    var tp = try ThreadPool(testIncr).init(t.io, t.arena.allocator(), .{ .count = 50, .backlog = 1000, .buffer_size = 512 });
     defer tp.deinit();
 
     for (0..10_000) |_| {
@@ -403,7 +405,7 @@ test "ThreadPool: large fuzz" {
         tp.spawn(.{6});
     }
     while (tp.empty() == false) {
-        std.Thread.sleep(std.time.ns_per_ms);
+        try t.io.sleep(.fromMilliseconds(1), .awake);
     }
     tp.stop();
     try t.expectEqual(210_000, testSum);
@@ -438,5 +440,5 @@ fn testIncr(c: u64, buf: []u8) void {
         else => unreachable,
     }
     // let the threadpool queue get backed up
-    std.Thread.sleep(std.time.ns_per_us * 20);
+    t.io.sleep(.fromMicroseconds(20), .awake) catch unreachable;
 }

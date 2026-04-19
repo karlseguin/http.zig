@@ -11,11 +11,10 @@ const PORT = 8810;
 // 3. Save uploaded files to disk
 // 4. Handle both file and regular form fields
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
-    var server = try httpz.Server(void).init(allocator, .{
+    var server = try httpz.Server(void).init(init.io, allocator, .{
         .address = .localhost(PORT),
         .request = .{
             // Configure the maximum number of multipart form fields

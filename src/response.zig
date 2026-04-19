@@ -8,11 +8,11 @@ const HTTPConn = @import("worker.zig").HTTPConn;
 const Config = @import("config.zig").Config.Response;
 const StringKeyValue = @import("key_value.zig").StringKeyValue;
 
+const Io = std.Io;
 const mem = std.mem;
-const Stream = std.net.Stream;
+const Writer = Io.Writer;
 const Allocator = mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
-const Writer = std.Io.Writer;
 
 const Self = @This();
 
@@ -112,7 +112,7 @@ pub const Response = struct {
         self.headers.add(n, v);
     }
 
-    pub fn startEventStream(self: *Response, ctx: anytype, comptime handler: fn (@TypeOf(ctx), std.net.Stream) void) !void {
+    pub fn startEventStream(self: *Response, ctx: anytype, comptime handler: fn (@TypeOf(ctx), Io.net.Stream) void) !void {
         self.content_type = .EVENTS;
         self.headers.add("Cache-Control", "no-cache");
         self.headers.add("Connection", "keep-alive");
@@ -129,7 +129,7 @@ pub const Response = struct {
         thread.detach();
     }
 
-    pub fn startEventStreamSync(self: *Response) !std.net.Stream {
+    pub fn startEventStreamSync(self: *Response) !Io.net.Stream {
         self.content_type = .EVENTS;
         self.headers.add("Cache-Control", "no-cache");
         self.headers.add("Connection", "keep-alive");
@@ -351,7 +351,7 @@ pub fn serializeCookie(arena: Allocator, name: []const u8, value: []const u8, co
     const domain = cookie.domain;
 
     const estimated_len = name.len + value.len + path.len + domain.len + 110;
-    var buf = std.ArrayListUnmanaged(u8){};
+    var buf: std.ArrayList(u8) = .empty;
 
     try buf.ensureTotalCapacity(arena, estimated_len);
     buf.appendSliceAssumeCapacity(name);

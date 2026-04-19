@@ -13,11 +13,10 @@ const PORT = 8806;
 
 // See middleware/Logger.zig for an example of how to write a middleware
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
-    var server = try httpz.Server(void).init(allocator, .{ .address = .localhost(PORT) }, {});
+    var server = try httpz.Server(void).init(init.io, allocator, .{ .address = .localhost(PORT) }, {});
 
     defer server.deinit();
 
@@ -27,7 +26,7 @@ pub fn main() !void {
 
     // creates an instance of the middleware with the given configuration
     // see example/middleware/Logger.zig
-    const logger = try server.middleware(Logger, .{ .query = true });
+    const logger = try server.middleware(Logger, .{ .io = init.io, .query = true });
 
     var router = try server.router(.{});
 

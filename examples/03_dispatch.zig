@@ -1,5 +1,7 @@
 const std = @import("std");
 const httpz = @import("httpz");
+
+const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const PORT = 8803;
@@ -7,12 +9,13 @@ const PORT = 8803;
 // This example uses a custom dispatch method on our handler for greater control
 // in how actions are executed.
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
-    var handler = Handler{};
-    var server = try httpz.Server(*Handler).init(allocator, .{ .address = .localhost(PORT) }, &handler);
+    var handler = Handler{
+        .io = init.io,
+    };
+    var server = try httpz.Server(*Handler).init(init.io, allocator, .{ .address = .localhost(PORT) }, &handler);
 
     defer server.deinit();
 
@@ -30,6 +33,8 @@ pub fn main() !void {
 }
 
 const Handler = struct {
+    io: Io,
+
     // In addition to the special "notFound" and "uncaughtError" shown in example 2
     // the special "dispatch" method can be used to gain more control over request handling.
     pub fn dispatch(self: *Handler, action: httpz.Action(*Handler), req: *httpz.Request, res: *httpz.Response) !void {
@@ -37,12 +42,13 @@ const Handler = struct {
         // httpz supports middlewares, but in many cases, having a dispatch is good
         // enough and is much more straightforward.
 
-        var start = try std.time.Timer.start();
+        var start = Io.Timestamp.now(self.io, .awake);
         // We don't _have_ to call the action if we don't want to. For example
         // we could do authentication and set the response directly on error.
         try action(self, req, res);
 
-        std.debug.print("ts={d} us={d} path={s}\n", .{ std.time.timestamp(), start.lap() / 1000, req.url.path });
+        const elapsed = start.untilNow(self.io, .awake);
+        std.debug.print("ts={d} us={d} path={s}\n", .{ start.toSeconds(), elapsed.toMicroseconds(), req.url.path });
     }
 };
 

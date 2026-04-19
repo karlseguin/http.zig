@@ -9,14 +9,12 @@ const PORT = 8809;
 
 var server_instance: ?*httpz.Server(void) = null;
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     if (comptime @import("builtin").os.tag == .windows) {
         std.debug.print("This example does not run on Windows. Sorry\n", .{});
         return error.PlatformNotSupported;
     }
-
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+    const allocator = init.gpa;
 
     // call our shutdown function (below) when
     // SIGINT or SIGTERM are received
@@ -31,7 +29,7 @@ pub fn main() !void {
         .flags = 0,
     }, null);
 
-    var server = try httpz.Server(void).init(allocator, .{ .address = .localhost(PORT) }, {});
+    var server = try httpz.Server(void).init(init.io, allocator, .{ .address = .localhost(PORT) }, {});
     defer server.deinit();
 
     var router = try server.router(.{});

@@ -9,14 +9,13 @@ const PORT = 8802;
 // including things such as a DB pool) and how to define not found and error
 // handlers.
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     // We specify our "Handler" and, as the last parameter to init, pass an
     // instance of it.
     var handler = Handler{};
-    var server = try httpz.Server(*Handler).init(allocator, .{ .address = .localhost(PORT) }, &handler);
+    var server = try httpz.Server(*Handler).init(init.io, allocator, .{ .address = .localhost(PORT) }, &handler);
 
     defer server.deinit();
 

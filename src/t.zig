@@ -4,8 +4,10 @@
 // which is exposed as httpz.testing.
 const std = @import("std");
 const httpz = @import("httpz.zig");
+const posix = @import("posix.zig");
 
-const posix = std.posix;
+const Io = std.Io;
+pub const io = std.testing.io;
 const Allocator = std.mem.Allocator;
 
 const Conn = @import("worker.zig").HTTPConn;
@@ -27,16 +29,16 @@ pub fn reset() void {
 
 pub fn getRandom() std.Random.DefaultPrng {
     var seed: u64 = undefined;
-    posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
+    io.random(std.mem.asBytes(&seed));
     return std.Random.DefaultPrng.init(seed);
 }
 
 pub const Context = struct {
     // the stream that the server gets
-    stream: std.net.Stream,
+    stream: Io.net.Stream,
 
     // the client (e.g. browser stream)
-    client: std.net.Stream,
+    client: Io.net.Stream,
 
     closed: bool = false,
 
@@ -80,8 +82,8 @@ pub const Context = struct {
             posix.setsockopt(pair[1], posix.SOL.SOCKET, posix.SO.SNDBUF, &std.mem.toBytes(@as(c_int, 20_000))) catch unreachable;
         }
 
-        const server = std.net.Stream{ .handle = pair[0] };
-        const client = std.net.Stream{ .handle = pair[1] };
+        const server = Io.net.Stream{ .socket = .{ .handle = pair[0], .address = .{ .ip4 = .{ .bytes = [4]u8{ 127, 0, 0, 1 }, .port = 0 } } } };
+        const client = Io.net.Stream{ .socket = .{ .handle = pair[1], .address = .{ .ip4 = .{ .bytes = [4]u8{ 127, 0, 0, 1 }, .port = 0 } } } };
 
         var ctx_arena = ctx_allocator.create(std.heap.ArenaAllocator) catch unreachable;
         ctx_arena.* = std.heap.ArenaAllocator.init(ctx_allocator);
@@ -89,7 +91,7 @@ pub const Context = struct {
         const aa = ctx_arena.allocator();
 
         const bp = aa.create(BufferPool) catch unreachable;
-        bp.* = BufferPool.init(aa, 2, 256) catch unreachable;
+        bp.* = BufferPool.init(io, aa, 2, 256) catch unreachable;
 
         var config = config_;
         {
@@ -108,11 +110,12 @@ pub const Context = struct {
 
         const conn = aa.create(Conn) catch unreachable;
         conn.* = .{
-            ._mut = .{},
+            .io = io,
+            ._mut = .init,
             ._state = .request,
             .handover = .close,
             .stream = server,
-            .address = std.net.Address.initIp4([_]u8{ 127, 0, 0, 200 }, 0),
+            .address = .{ .ip4 = .{ .bytes = [_]u8{ 127, 0, 0, 200 }, .port = 0 } },
             .req_state = req_state,
             .res_state = res_state,
             .timeout = 0,
@@ -135,9 +138,9 @@ pub const Context = struct {
     pub fn deinit(self: *Context) void {
         if (self.closed == false) {
             self.closed = true;
-            self.stream.close();
+            self.stream.close(io);
         }
-        self.client.close();
+        self.client.close(io);
 
         const ctx_allocator = arena.child_allocator;
         self.arena.deinit();
@@ -172,7 +175,7 @@ pub const Context = struct {
     pub fn close(self: *Context) void {
         if (self.closed == false) {
             self.closed = true;
-            self.stream.close();
+            self.stream.close(io);
         }
     }
 
@@ -181,7 +184,7 @@ pub const Context = struct {
             self.to_read.appendSlice(self.arena.allocator(), data) catch unreachable;
         } else {
             var buf: [1024]u8 = undefined;
-            var writer = self.client.writer(&buf);
+            var writer = self.client.writer(io, &buf);
             const w = &writer.interface;
             w.writeAll(data) catch unreachable;
             w.flush() catch unreachable;
@@ -192,18 +195,19 @@ pub const Context = struct {
         var buf: [1024]u8 = undefined;
         var arr: std.ArrayList(u8) = .empty;
 
-        var reader = self.client.reader(&.{});
-        const r = reader.interface();
+        var reader = self.client.reader(io, &.{});
+        const r = &reader.interface;
         while (true) {
             const n = r.readSliceShort(&buf) catch |err|
                 switch (err) {
                     error.ReadFailed => {
-                        if (reader.getError()) |e| {
-                            switch (e) {
-                                error.WouldBlock => return arr,
-                                else => return e,
-                            }
-                        }
+                        // @ZIG016
+                        // if (reader.err) |e| {
+                        //     switch (e) {
+                        //         error.WouldBlock => return arr,
+                        //         else => return e,
+                        //     }
+                        // }
                         return err;
                     },
                 };
@@ -217,10 +221,11 @@ pub const Context = struct {
         var pos: usize = 0;
         var buf = try allocator.alloc(u8, expected.len);
         defer allocator.free(buf);
-        var reader = self.client.reader(&.{});
-        const r = reader.interface();
+
+        const socket = self.client.socket.handle;
+
         while (pos < buf.len) {
-            const n = try r.readSliceShort(buf[pos..]);
+            const n = try posix.read(socket, buf[pos..]);
             if (n == 0) break;
             pos += n;
         }
@@ -229,25 +234,18 @@ pub const Context = struct {
         // should have no extra data
         // let's check, with a shor timeout, which could let things slip, but
         // else we slow down fuzz tests too much
-        posix.setsockopt(self.client.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(posix.timeval{
+        posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(posix.timeval{
             .sec = 0,
             .usec = 1_000,
         })) catch unreachable;
 
-        const n = r.readSliceShort(buf[0..]) catch |err| blk: switch (err) {
-            error.ReadFailed => {
-                if (reader.getError()) |e| {
-                    switch (e) {
-                        error.WouldBlock => break :blk 0,
-                        else => @panic(@errorName(e)),
-                    }
-                }
-                @panic(@errorName(err));
-            },
+        const n = posix.read(socket, buf[0..]) catch |err| blk: switch (err) {
+            error.WouldBlock => break :blk 0,
+            else => @panic(@errorName(err)),
         };
         try expectEqual(0, n);
 
-        posix.setsockopt(self.client.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(posix.timeval{
+        posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(posix.timeval{
             .sec = 0,
             .usec = 20_000,
         })) catch unreachable;
@@ -256,7 +254,7 @@ pub const Context = struct {
     fn random(self: *Context) std.Random {
         if (self._random == null) {
             var seed: u64 = undefined;
-            posix.getrandom(std.mem.asBytes(&seed)) catch unreachable;
+            io.random(std.mem.asBytes(&seed));
             self._random = std.Random.DefaultPrng.init(seed);
         }
         return self._random.?.random();
@@ -267,7 +265,7 @@ pub const Context = struct {
 
         const fr = FakeReader{
             .pos = self.to_read_pos,
-            .buf = self.to_read.items,
+            .buf = self.to_read.toOwnedSlice(self.arena.allocator()) catch unreachable,
             .random = self.random(),
         };
 
