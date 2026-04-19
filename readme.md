@@ -1,5 +1,10 @@
 # An HTTP/1.1 server for Zig.
 
+## Zig 0.16
+Support of Zig 0.16 is close. See the [zig-0.16 branch](https://github.com/karlseguin/http.zig/tree/zig-0.16). Current state is: working without websockets. Note that Zig 0.16's Io.Evented does not support networking, so, at least initially, httpz will continue to work like it always has (its own eventted I/O + a thread-pool).
+
+## Example
+
 ```zig
 const std = @import("std");
 const httpz = @import("httpz");
