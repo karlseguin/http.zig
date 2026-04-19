@@ -10,8 +10,11 @@
 const std = @import("std");
 const httpz = @import("httpz");
 
+const Io = std.Io;
+
 const Logger = @This();
 
+io: Io,
 query: bool,
 
 // Must define an `init` method, which will accept your Config
@@ -19,6 +22,7 @@ query: bool,
 // here mc will give you access to the server's allocator and arena
 pub fn init(config: Config) !Logger {
     return .{
+        .io = config.io,
         .query = config.query,
     };
 }
@@ -34,11 +38,11 @@ pub fn execute(self: *const Logger, req: *httpz.Request, res: *httpz.Response, e
     // Better to use an std.time.Timer to measure elapsed time
     // but we need the "start" time for our log anyways, so while this might occasionally
     // report wrong/strange "elapsed" time, it's simpler to do.
-    const start = std.time.microTimestamp();
+    const start = Io.Timestamp.now(self.io, .awake);
 
     defer {
-        const elapsed = std.time.microTimestamp() - start;
-        std.log.info("{d}\t{s}?{s}\t{d}\t{d}us", .{start, req.url.path, if (self.query) req.url.query else "", res.status, elapsed});
+        const elapsed = start.untilNow(self.io, .awake);
+        std.log.info("{d}\t{s}?{s}\t{d}\t{d}us", .{start, req.url.path, if (self.query) req.url.query else "", res.status, elapsed.toMicroseconds()});
     }
 
     // If you don't call executor.next(), there will be no further processing of
@@ -48,5 +52,6 @@ pub fn execute(self: *const Logger, req: *httpz.Request, res: *httpz.Response, e
 
 // Must defined a pub config structure, even if it's empty
 pub const Config = struct {
-   query: bool,
+    io: Io,
+    query: bool,
 };

@@ -1,6 +1,7 @@
 const std = @import("std");
 const httpz = @import("httpz");
 
+const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const PORT = 8807;
@@ -9,19 +10,20 @@ const PORT = 8807;
 // and route configuration. (The previous example, with middleware, also showed
 // per-route configuration for middleware specifically).
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     var default_handler = Handler{
+        .io = init.io,
         .log = true,
     };
 
     var nolog_handler = Handler{
+        .io = init.io,
         .log = false,
     };
 
-    var server = try httpz.Server(*Handler).init(allocator, .{ .address = .localhost(PORT) }, &default_handler);
+    var server = try httpz.Server(*Handler).init(init.io, allocator, .{ .address = .localhost(PORT) }, &default_handler);
 
     defer server.deinit();
 
@@ -48,6 +50,7 @@ pub fn main() !void {
 }
 
 const Handler = struct {
+    io: Io,
     log: bool,
 
     // special dispatch set in the info route
@@ -58,7 +61,7 @@ const Handler = struct {
     pub fn dispatch(h: *Handler, action: httpz.Action(*Handler), req: *httpz.Request, res: *httpz.Response) !void {
         try action(h, req, res);
         if (h.log) {
-            std.debug.print("ts={d} path={s} status={d}\n", .{ std.time.timestamp(), req.url.path, res.status });
+            std.debug.print("ts={d} path={s} status={d}\n", .{ Io.Timestamp.now(h.io, .real), req.url.path, res.status });
         }
     }
 };

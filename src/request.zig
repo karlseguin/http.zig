@@ -7,14 +7,15 @@ const metrics = @import("metrics.zig");
 
 const Self = @This();
 
+const posix = @import("posix.zig");
 const Url = @import("url.zig").Url;
-const HTTPConn = @import("worker.zig").HTTPConn;
 const Params = @import("params.zig").Params;
+const HTTPConn = @import("worker.zig").HTTPConn;
+const Config = @import("config.zig").Config.Request;
 const StringKeyValue = @import("key_value.zig").StringKeyValue;
 const MultiFormKeyValue = @import("key_value.zig").MultiFormKeyValue;
-const Config = @import("config.zig").Config.Request;
 
-const Address = std.net.Address;
+const Address = std.Io.net.IpAddress;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
@@ -194,16 +195,16 @@ pub const Request = struct {
         const conn = self.conn;
         if (self.unread_body > 0) {
             try conn.blockingMode();
-            const timeval = std.mem.toBytes(std.posix.timeval{
+            const timeval = std.mem.toBytes(posix.timeval{
                 .sec = @intCast(@divTrunc(timeout_ms, 1000)),
                 .usec = @intCast(@mod(timeout_ms, 1000) * 1000),
             });
-            try std.posix.setsockopt(conn.stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, &timeval);
+            try posix.setsockopt(conn.stream.socket.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeval);
         }
 
         return .{
             .buffer = buf,
-            .socket = conn.stream.handle,
+            .socket = conn.stream.socket.handle,
             .unread_body = &self.unread_body,
             .interface = .{
                 .end = 0,
@@ -517,7 +518,7 @@ pub const Request = struct {
     pub const Reader = struct {
         buffer: []const u8,
         unread_body: *usize,
-        socket: std.posix.socket_t,
+        socket: posix.socket_t,
         interface: std.Io.Reader,
 
         pub fn stream(io_r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
@@ -543,7 +544,7 @@ pub const Request = struct {
             }
 
             const buf = if (into.len > unread) into[0..unread] else into;
-            const n = try std.posix.read(self.socket, buf);
+            const n = try posix.read(self.socket, buf);
             self.unread_body.* = unread - n;
             return n;
         }
@@ -555,7 +556,7 @@ pub const Request = struct {
         pub fn get(self: Cookie, name: []const u8) ?[]const u8 {
             var it = std.mem.splitScalar(u8, self.header, ';');
             while (it.next()) |kv| {
-                const trimmed = std.mem.trimLeft(u8, kv, " ");
+                const trimmed = std.mem.trimStart(u8, kv, " ");
                 if (name.len >= trimmed.len) {
                     // need at least an '=' beyond the name
                     continue;
@@ -705,17 +706,16 @@ pub const State = struct {
     }
 
     // returns true if the header has been fully parsed
-    pub fn parse(self: *State, conn: *HTTPConn, stream: *std.Io.Reader) !bool {
+    pub fn parse(self: *State, conn: *HTTPConn, source: anytype) !bool {
         if (self.body != null) {
             // if we have a body, then we've read the header. We want to read into
             // self.body, not self.buf.
-            return self.readBody(stream);
+            return self.readBody(source);
         }
 
         var len = self.len;
         const buf = self.buf;
-        var vecs: [1][]u8 = .{buf[len..]};
-        const n = try stream.readVec(&vecs);
+        const n = try zig016HackRead(source, buf[len..]);
         if (n == 0) {
             return false;
         }
@@ -1053,14 +1053,28 @@ pub const State = struct {
         return false;
     }
 
-    fn readBody(self: *State, stream: *std.Io.Reader) !bool {
+    fn readBody(self: *State, source: anytype) !bool {
         const buf = self.body.?.data;
-
-        var vecs: [1][]u8 = .{buf[self.body_pos..]};
-        self.body_pos += try stream.readVec(&vecs);
+        self.body_pos += try zig016HackRead(source, buf[self.body_pos..]);
         return (self.body_pos == self.body_len);
     }
 };
+
+// Zig 0.16's Io.net.Stream doesn't expose WouldBlock. It just panics. I don't
+// understand why it's like that. But we're in a transition, and I just want to
+// make this work. So, in "real" code, `source` will be a socket_t. In tests,
+// `source` will be an Io.Reader.
+// In theory, I woulc wrap the `socket_t` in a `Io.Reader` that behaves like I
+// want it to, but this is _a lot_ easier, especially since all of this will
+// be re-worked when networking is fully working in Zig.
+fn zig016HackRead(source: anytype, buf: []u8) !usize {
+    if (@TypeOf(source) == posix.socket_t) {
+        return posix.read(source, buf);
+    }
+    // source is a reader
+    var vecs: [1][]u8 = .{buf};
+    return source.readVec(&vecs);
+}
 
 const allowedHeaderValueByte = blk: {
     var v = [_]bool{false} ** 256;
@@ -1790,8 +1804,8 @@ test "request: cookie" {
 fn testParse(input: []const u8, config: Config) !Request {
     var ctx = t.Context.allocInit(t.arena.allocator(), .{ .request = config });
     ctx.write(input);
-    var reader = ctx.stream.reader(&.{});
-    const r = reader.interface();
+    var reader = ctx.stream.reader(t.io, &.{});
+    const r = &reader.interface;
     while (true) {
         const done = try ctx.conn.req_state.parse(ctx.conn, r);
         if (done) break;
@@ -1803,8 +1817,8 @@ fn expectParseError(expected: anyerror, input: []const u8, config: Config) !void
     var ctx = t.Context.init(.{ .request = config });
     defer ctx.deinit();
 
-    var reader = ctx.stream.reader(&.{});
-    const r = reader.interface();
+    var reader = ctx.stream.reader(t.io, &.{});
+    const r = &reader.interface;
     ctx.write(input);
     try t.expectError(expected, ctx.conn.req_state.parse(ctx.conn, r));
 }

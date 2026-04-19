@@ -7,12 +7,11 @@ const PORT = 8805;
 // This example uses the Handler's "handle" function to completely takeover
 // request processing from httpz.
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     var handler = Handler{};
-    var server = try httpz.Server(*Handler).init(allocator, .{ .address = .localhost(PORT) }, &handler);
+    var server = try httpz.Server(*Handler).init(init.io, allocator, .{ .address = .localhost(PORT) }, &handler);
 
     defer server.deinit();
 

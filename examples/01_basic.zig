@@ -7,14 +7,13 @@ const PORT = 8801;
 // This example demonstrates basic httpz usage, with focus on using the
 // httpz.Request and httpz.Response objects.
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     // We pass a "void" handler. This is the simplest, but limits what we can do
     // The last parameter is an instance of our handler. Since we have
     // a void handler, we pass a void value: i.e. {}.
-    var server = try httpz.Server(void).init(allocator, .{
+    var server = try httpz.Server(void).init(init.io, allocator, .{
         .address = .localhost(PORT),
         .request = .{
             // httpz has a number of tweakable configuration settings (see readme)
