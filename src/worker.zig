@@ -4,8 +4,7 @@ const builtin = @import("builtin");
 const posix = @import("posix.zig");
 const httpz = @import("httpz.zig");
 const metrics = @import("metrics.zig");
-// @ZIG016
-// const ws = @import("websocket").server;
+const ws = @import("websocket").server;
 
 const Config = httpz.Config;
 const Request = httpz.Request;
@@ -26,8 +25,6 @@ const MAX_TIMEOUT = 2_147_483_647;
 // This is our Blocking worker. It's very different than NonBlocking and much
 // simpler. (WSH is our websocket handler, and can be void)
 pub fn Blocking(comptime S: type, comptime WSH: type) type {
-    // @ZIG016
-    _ = WSH;
     return struct {
         io: Io,
         server: S,
@@ -36,8 +33,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
         allocator: Allocator,
         buffer_pool: *BufferPool,
         http_conn_pool: HTTPConnPool,
-        // @ZIG016
-        // websocket: *ws.Worker(WSH),
+        websocket: *ws.Worker(WSH),
         timeout_request: ?Timeout,
         timeout_keepalive: ?Timeout,
         timeout_write_error: Timeout,
@@ -91,14 +87,12 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 timeout_keepalive = Timeout.init(0);
             }
 
-            // @ZIG016
-            // const websocket = try allocator.create(ws.Worker(WSH));
-            // errdefer allocator.destroy(websocket);
-            // websocket.* = try ws.Worker(WSH).init(allocator, &server._websocket_state);
-            // errdefer websocket.deinit();
+            const websocket = try allocator.create(ws.Worker(WSH));
+            errdefer allocator.destroy(websocket);
+            websocket.* = try ws.Worker(WSH).init(io, allocator, &server._websocket_state);
+            errdefer websocket.deinit();
 
-            // @ZIG016 undefined
-            var http_conn_pool = try HTTPConnPool.init(io, allocator, buffer_pool, undefined, 0, config);
+            var http_conn_pool = try HTTPConnPool.init(io, allocator, buffer_pool, websocket, 0, config);
             errdefer http_conn_pool.deinit();
 
             const retain_allocated_bytes_keepalive = config.workers.retain_allocated_bytes orelse 8192;
@@ -120,8 +114,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 .config = config,
                 .connections = .{},
                 .allocator = allocator,
-                // @ZIG016
-                // .websocket = websocket,
+                .websocket = websocket,
                 .buffer_pool = buffer_pool,
                 .thread_pool = thread_pool,
                 .http_conn_pool = http_conn_pool,
@@ -136,11 +129,9 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
         pub fn deinit(self: *Self) void {
             const allocator = self.allocator;
 
-            // @ZIG016
-            // self.websocket.deinit();
+            self.websocket.deinit();
             self.thread_pool.deinit();
-            // @ZIG016
-            // allocator.destroy(self.websocket);
+            allocator.destroy(self.websocket);
 
             self.http_conn_pool.deinit();
             self.conn_node_pool.deinit(allocator);
@@ -157,8 +148,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 var address_len: posix.socklen_t = @sizeOf(posix.Address);
                 const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
                     if (err == error.ConnectionAborted or err == error.SocketNotListening) {
-                        // @ZIG016
-                        // self.websocket.shutdown();
+                        self.websocket.shutdown();
                         break;
                     }
                     log.err("Failed to accept socket: {}", .{err});
@@ -182,10 +172,8 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
         }
 
         pub fn stop(self: *const Self) void {
-            _ = self;
             // The HTTP server will stop when the http.Server shutdown the listening socket.
-            // @ZIG016
-            // self.websocket.shutdown();
+            self.websocket.shutdown();
         }
 
         // Called in a worker thread. `thread_buf` is a thread-specific buffer that
@@ -239,20 +227,18 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                         self.http_conn_pool.release(conn);
                         return;
                     },
-                    .websocket => unreachable,
-                    // @ZIG016
-                    // .websocket => |ptr| {
-                    //     const hc: *ws.HandlerConn(WSH) = @ptrCast(@alignCast(ptr));
-                    //     // impossible for this to fail in blocking mode
-                    //     conn.requestDone(self.retain_allocated_bytes_keepalive, false) catch unreachable;
-                    //     self.http_conn_pool.release(conn);
-                    //     // blocking read loop
-                    //     // will close the connection
-                    //     self.handleWebSocket(hc) catch |err| {
-                    //         log.err("({f} websocket connection error: {}", .{ address, err });
-                    //     };
-                    //     return;
-                    // },
+                    .websocket => |ptr| {
+                        const hc: *ws.HandlerConn(WSH) = @ptrCast(@alignCast(ptr));
+                        // impossible for this to fail in blocking mode
+                        conn.requestDone(self.retain_allocated_bytes_keepalive, false) catch unreachable;
+                        self.http_conn_pool.release(conn);
+                        // blocking read loop
+                        // will close the connection
+                        self.handleWebSocket(hc) catch |err| {
+                            log.err("({f} websocket connection error: {}", .{ address, err });
+                        };
+                        return;
+                    },
                     .disown => {
                         // impossible for this to fail in blocking mode
                         conn.requestDone(self.retain_allocated_bytes_keepalive, false) catch unreachable;
@@ -338,15 +324,14 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             return conn.handover;
         }
 
-        // @ZIG016
-        // fn handleWebSocket(self: *const Self, hc: *ws.HandlerConn(WSH)) !void {
-        //     posix.setsockopt(hc.socket, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(posix.timeval{ .sec = 0, .usec = 0 })) catch |err| {
-        //         self.websocket.cleanupConn(hc);
-        //         return err;
-        //     };
-        //     // closes the connection before returning
-        //     return self.websocket.worker.readLoop(hc);
-        // }
+        fn handleWebSocket(self: *const Self, hc: *ws.HandlerConn(WSH)) !void {
+            posix.setsockopt(hc.socket, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &std.mem.toBytes(posix.timeval{ .sec = 0, .usec = 0 })) catch |err| {
+                self.websocket.cleanupConn(hc);
+                return err;
+            };
+            // closes the connection before returning
+            return self.websocket.worker.readLoop(hc);
+        }
     };
 }
 
@@ -388,8 +373,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
         config: *const Config,
 
-        // @ZIG016
-        // websocket: *ws.Worker(WSH),
+        websocket: *ws.Worker(WSH),
 
         // how many bytes should we retain in a connection's arena allocator
         retain_allocated_bytes: usize,
@@ -465,11 +449,10 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             const loop = try Loop.init();
             errdefer loop.deinit();
 
-            // @ZIG016
-            // const websocket = try allocator.create(ws.Worker(WSH));
-            // errdefer allocator.destroy(websocket);
-            // websocket.* = try ws.Worker(WSH).init(allocator, &server._websocket_state);
-            // errdefer websocket.deinit();
+            const websocket = try allocator.create(ws.Worker(WSH));
+            errdefer allocator.destroy(websocket);
+            websocket.* = try ws.Worker(WSH).init(io, allocator, &server._websocket_state);
+            errdefer websocket.deinit();
 
             var buffer_pool = try initializeBufferPool(io, allocator, config);
             errdefer buffer_pool.deinit();
@@ -477,8 +460,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             var conn_mem_pool: std.heap.MemoryPool(Conn(WSH)) = .empty;
             errdefer conn_mem_pool.deinit(allocator);
 
-            // @ZIG016 undefined!!
-            var http_conn_pool = try HTTPConnPool.init(io, allocator, buffer_pool, undefined, loop.fd, config);
+            var http_conn_pool = try HTTPConnPool.init(io, allocator, buffer_pool, websocket, loop.fd, config);
             errdefer http_conn_pool.deinit();
 
             const thread_pool = try ThreadPool(Self.processData).init(io, allocator, .{
@@ -500,8 +482,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 .config = config,
                 .server = server,
                 .allocator = allocator,
-                // @ZIG016
-                // .websocket = websocket,
+                .websocket = websocket,
                 .thread_pool = thread_pool,
                 .active_list = .{},
                 .request_list = .{},
@@ -520,9 +501,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         pub fn deinit(self: *Self) void {
             const allocator = self.allocator;
 
-            // @ZIG016
-            // self.websocket.deinit();
-            // allocator.destroy(self.websocket);
+            self.websocket.deinit();
+            allocator.destroy(self.websocket);
 
             self.thread_pool.deinit();
 
@@ -561,8 +541,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 return;
             };
             ready_sem.post(io);
-            // @ZIG016
-            // defer self.websocket.shutdown();
+            defer self.websocket.shutdown();
 
             var now = timestamp(io);
             var last_timeout = now;
@@ -638,16 +617,15 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                                 self.swapList(conn, .active);
                                 thread_pool.spawn(.{ self, now, conn });
                             },
-                            // @ZIG016
-                            // .websocket => {
-                            //     if (conn.acquireProcessing() == false) {
-                            //         // Connection is already being processed. We need
-                            //         // to wait for the current processing to complete.
-                            //         // See the processing field in Conn
-                            //         continue;
-                            //     }
-                            //     thread_pool.spawn(.{ self, now, conn });
-                            // },
+                            .websocket => {
+                                if (conn.acquireProcessing() == false) {
+                                    // Connection is already being processed. We need
+                                    // to wait for the current processing to complete.
+                                    // See the processing field in Conn
+                                    continue;
+                                }
+                                thread_pool.spawn(.{ self, now, conn });
+                            },
                         },
                         .shutdown => return,
                     }
@@ -760,7 +738,6 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         fn processSignal(self: *Self, closed_bool: *bool) void {
             const io = self.io;
             const loop = &self.loop;
-            _ = loop;
             var hl = &self.handover_list;
 
             // We take the handover list, and then re-initialize it. We do this
@@ -798,30 +775,28 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                         closed_bool.* = true;
                         self.disown(conn);
                     },
-                    .websocket => unreachable,
-                    // @ZIG016
-                    // .websocket => |ptr| {
-                    //     if (comptime WSH == httpz.DummyWebsocketHandler) {
-                    //         std.debug.print("Your httpz handler must have a `WebsocketHandler` declaration. This must be the same type passed to `httpz.upgradeWebsocket`. Closing the connection.\n", .{});
-                    //         closed_bool.* = true;
-                    //         conn.close();
-                    //         self.disown(conn);
-                    //         continue;
-                    //     }
+                    .websocket => |ptr| {
+                        if (comptime WSH == httpz.DummyWebsocketHandler) {
+                            std.debug.print("Your httpz handler must have a `WebsocketHandler` declaration. This must be the same type passed to `httpz.upgradeWebsocket`. Closing the connection.\n", .{});
+                            closed_bool.* = true;
+                            conn.close();
+                            self.disown(conn);
+                            continue;
+                        }
 
-                    //     self.http_conn_pool.release(http_conn);
+                        self.http_conn_pool.release(http_conn);
 
-                    //     const hc: *ws.HandlerConn(WSH) = @ptrCast(@alignCast(ptr));
-                    //     conn.protocol = .{ .websocket = hc };
+                        const hc: *ws.HandlerConn(WSH) = @ptrCast(@alignCast(ptr));
+                        conn.protocol = .{ .websocket = hc };
 
-                    //     loop.switchToOneShot(conn) catch {
-                    //         metrics.internalError();
-                    //         closed_bool.* = true;
-                    //         conn.close();
-                    //         self.disown(conn);
-                    //         continue;
-                    //     };
-                    // },
+                        loop.switchToOneShot(conn) catch {
+                            metrics.internalError();
+                            closed_bool.* = true;
+                            conn.close();
+                            self.disown(conn);
+                            continue;
+                        };
+                    },
                     .keepalive => unreachable,
                 }
             }
@@ -835,8 +810,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         pub fn processData(self: *Self, now: u32, conn: *Conn(WSH), thread_buf: []u8) void {
             switch (conn.protocol) {
                 .http => |http_conn| self.processHTTPData(now, conn, thread_buf, http_conn),
-                // @ZIG016
-                // .websocket => |hc| self.processWebsocketData(conn, thread_buf, hc),
+                .websocket => |hc| self.processWebsocketData(conn, thread_buf, hc),
             }
         }
 
@@ -876,25 +850,24 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             self.loop.signal() catch |err| log.err("failed to signal worker: {}", .{err});
         }
 
-        // @ZIG016
-        // pub fn processWebsocketData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, hc: *ws.HandlerConn(WSH)) void {
-        //     defer conn.releaseProcessing();
+        pub fn processWebsocketData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, hc: *ws.HandlerConn(WSH)) void {
+            defer conn.releaseProcessing();
 
-        //     var ws_conn = &hc.conn;
-        //     const success = self.websocket.worker.dataAvailable(hc, thread_buf);
-        //     if (success == false) {
-        //         ws_conn.close(.{ .code = 4997, .reason = "wsz" }) catch {};
-        //         self.websocket.cleanupConn(hc);
-        //     } else if (ws_conn.isClosed()) {
-        //         self.websocket.cleanupConn(hc);
-        //     } else {
-        //         self.loop.rearmRead(conn) catch |err| {
-        //             log.debug("({f}) failed to add read event monitor: {}", .{ ws_conn.address, err });
-        //             ws_conn.close(.{ .code = 4998, .reason = "wsz" }) catch {};
-        //             self.websocket.cleanupConn(hc);
-        //         };
-        //     }
-        // }
+            var ws_conn = &hc.conn;
+            const success = self.websocket.worker.dataAvailable(hc, thread_buf);
+            if (success == false) {
+                ws_conn.close(.{ .code = 4997, .reason = "wsz" }) catch {};
+                self.websocket.cleanupConn(hc);
+            } else if (ws_conn.isClosed()) {
+                self.websocket.cleanupConn(hc);
+            } else {
+                self.loop.rearmRead(conn) catch |err| {
+                    log.debug("({f}) failed to add read event monitor: {}", .{ ws_conn.address, err });
+                    ws_conn.close(.{ .code = 4998, .reason = "wsz" }) catch {};
+                    self.websocket.cleanupConn(hc);
+                };
+            }
+        }
 
         fn disown(self: *Self, conn: *Conn(WSH)) void {
             const io = self.io;
@@ -1511,8 +1484,7 @@ pub fn Conn(comptime WSH: type) type {
     return struct {
         protocol: union(enum) {
             http: *HTTPConn,
-            // @ZIG016
-            // websocket: *ws.HandlerConn(WSH),
+            websocket: *ws.HandlerConn(WSH),
         },
 
         // Node in a List(WSH). List is [obviously] intrusive.
@@ -1540,16 +1512,14 @@ pub fn Conn(comptime WSH: type) type {
         fn close(self: *Self) void {
             switch (self.protocol) {
                 .http => |http_conn| posix.close(http_conn.stream.socket.handle),
-                // @ZIG016
-                // .websocket => |hc| hc.conn.close(.{}) catch {},
+                .websocket => |hc| hc.conn.close(.{}) catch {},
             }
         }
 
         pub fn getSocket(self: Self) posix.fd_t {
             return switch (self.protocol) {
                 .http => |hc| hc.stream.socket.handle,
-                // @ZIG016
-                // .websocket => |hc| hc.socket,
+                .websocket => |hc| hc.socket,
             };
         }
 
@@ -1758,29 +1728,26 @@ pub const HTTPConn = struct {
     }
 
     pub fn writeAll(self: *HTTPConn, data: []const u8) !void {
-        var writer = self.stream.writer(self.io, &.{});
-        try writer.interface.writeAll(data);
-        // ZIG016 would block
+        var i: usize = 0;
+        var blocking = false;
 
-        // var i: usize = 0;
-        // var blocking = false;
+        const socket = self.stream.socket.handle;
 
-        // while (i < data.len) {
-        //     const remaining =
-        //     const n = posix.system.write(socket, data[i..]) catch |err| switch (err) {
-        //         error.WouldBlock => {
-        //             try self.blockingMode();
-        //             blocking = true;
-        //             continue;
-        //         },
-        //         else => return err,
-        //     };
+        while (i < data.len) {
+            const n = posix.write(socket, data[i..]) catch |err| switch (err) {
+                error.WouldBlock => {
+                    try self.blockingMode();
+                    blocking = true;
+                    continue;
+                },
+                else => return err,
+            };
 
-        //     // shouldn't be posssible on a correct posix implementation
-        //     // but let's assert to make sure
-        //     std.debug.assert(n != 0);
-        //     i += n;
-        // }
+            // shouldn't be posssible on a correct posix implementation
+            // but let's assert to make sure
+            std.debug.assert(n != 0);
+            i += n;
+        }
     }
 
     pub fn writeAllIOVec(self: *HTTPConn, vec: [][]const u8) !void {

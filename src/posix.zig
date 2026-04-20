@@ -611,7 +611,7 @@ pub fn epoll_create1(flags: u32) !i32 {
         .MFILE => return error.ProcessFdQuotaExceeded,
         .NFILE => return error.SystemFdQuotaExceeded,
         .NOMEM => return error.SystemResources,
-        else => return error.Unexpected
+        else => return error.Unexpected,
     }
 }
 

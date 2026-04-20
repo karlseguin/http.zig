@@ -6,6 +6,10 @@ const Allocator = std.mem.Allocator;
 
 const BORDER = "=" ** 80;
 
+pub const std_options = std.Options{ .log_scope_levels = &[_]std.log.ScopeLevel{
+    .{ .scope = .websocket, .level = .warn },
+} };
+
 // use in custom panic handler
 var current_test: ?[]const u8 = null;
 

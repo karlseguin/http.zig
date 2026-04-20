@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) !void {
 
     const dep_opts = .{ .target = target, .optimize = optimize };
     const metrics_module = b.dependency("metrics", dep_opts).module("metrics");
-    // const websocket_module = b.dependency("websocket", dep_opts).module("websocket");
+    const websocket_module = b.dependency("websocket", dep_opts).module("websocket");
 
     const enable_tsan = b.option(bool, "tsan", "Enable ThreadSanitizer");
 
@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) !void {
         .sanitize_thread = enable_tsan,
         .imports = &.{
             .{ .name = "metrics", .module = metrics_module },
-            // .{ .name = "websocket", .module = websocket_module },
+            .{ .name = "websocket", .module = websocket_module },
         },
     });
     {
@@ -67,8 +67,8 @@ pub fn build(b: *std.Build) !void {
         .{ .file = "examples/05_request_takeover.zig", .name = "example_5" },
         .{ .file = "examples/06_middleware.zig", .name = "example_6" },
         .{ .file = "examples/07_advanced_routing.zig", .name = "example_7" },
+        .{ .file = "examples/08_websocket.zig", .name = "example_8" },
         // @ZIG016
-        // .{ .file = "examples/08_websocket.zig", .name = "example_8" },
         // .{ .file = "examples/09_shutdown.zig", .name = "example_9", .libc = true },
         .{ .file = "examples/10_file_upload.zig", .name = "example_10" },
         .{ .file = "examples/11_html_streaming.zig", .name = "example_11" },
