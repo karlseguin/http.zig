@@ -11,6 +11,7 @@ pub fn build(b: *std.Build) !void {
     const enable_tsan = b.option(bool, "tsan", "Enable ThreadSanitizer");
 
     const httpz_module = b.addModule("httpz", .{
+        .link_libc = true,
         .root_source_file = b.path("src/httpz.zig"),
         .target = target,
         .optimize = optimize,
@@ -33,7 +34,6 @@ pub fn build(b: *std.Build) !void {
             .filters = test_filter orelse &.{},
             .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
         });
-        tests.linkLibC();
         const force_blocking = b.option(bool, "force_blocking", "Force blocking mode") orelse false;
         {
             const options = b.addOptions();
@@ -41,13 +41,13 @@ pub fn build(b: *std.Build) !void {
             tests.root_module.addOptions("build", options);
         }
         {
-            const options = b.addOptions();
-            options.addOption(bool, "websocket_blocking", force_blocking);
-            websocket_module.addOptions("build", options);
+            // const options = b.addOptions();
+            // options.addOption(bool, "websocket_blocking", force_blocking);
+            // websocket_module.addOptions("build", options);
         }
 
         tests.root_module.addImport("metrics", metrics_module);
-        tests.root_module.addImport("websocket", websocket_module);
+        // tests.root_module.addImport("websocket", websocket_module);
         const run_test = b.addRunArtifact(tests);
         run_test.has_side_effects = true;
 
@@ -68,7 +68,8 @@ pub fn build(b: *std.Build) !void {
         .{ .file = "examples/06_middleware.zig", .name = "example_6" },
         .{ .file = "examples/07_advanced_routing.zig", .name = "example_7" },
         .{ .file = "examples/08_websocket.zig", .name = "example_8" },
-        .{ .file = "examples/09_shutdown.zig", .name = "example_9", .libc = true },
+        // @ZIG016
+        // .{ .file = "examples/09_shutdown.zig", .name = "example_9", .libc = true },
         .{ .file = "examples/10_file_upload.zig", .name = "example_10" },
         .{ .file = "examples/11_html_streaming.zig", .name = "example_11" },
     };
@@ -86,9 +87,6 @@ pub fn build(b: *std.Build) !void {
                     },
                 }),
             });
-            if (ex.libc) {
-                exe.linkLibC();
-            }
             b.installArtifact(exe);
 
             const run_cmd = b.addRunArtifact(exe);

@@ -1,12 +1,14 @@
 const std = @import("std");
+
+const posix = @import("posix.zig");
 const httpz = @import("httpz.zig");
 const request = @import("request.zig");
 const response = @import("response.zig");
 
-const Address = std.net.Address;
+const Io = std.Io;
 
 pub const Config = struct {
-    address: AddressConfig = .localhost(5882),
+    address: Address = .localhost(5882),
     workers: Worker = .{},
     request: Request = .{},
     response: Response = .{},
@@ -14,23 +16,35 @@ pub const Config = struct {
     thread_pool: ThreadPool = .{},
     websocket: Websocket = .{},
 
-    pub const AddressConfig = union(enum) {
-        ip: IpAddress,
+    pub const Address = union(enum) {
+        ip: Io.net.IpAddress,
         unix: []const u8,
-        addr: Address,
 
-        pub fn localhost(port: u16) AddressConfig {
-            return .{ .addr = .initIp4(.{ 127, 0, 0, 1 }, port) };
+        pub fn localhost(port: u16) Address {
+            return .{ .ip = .{ .ip4 = .{ .bytes = .{ 127, 0, 0, 1 }, .port = port } } };
         }
 
-        pub fn all(port: u16) AddressConfig {
-            return .{ .addr = .initIp4(.{ 0, 0, 0, 0 }, port) };
+        pub fn all(port: u16) Address {
+            return .{ .ip = .{ .ip4 = .{ .bytes = .{ 0, 0, 0, 0 }, .port = port } } };
         }
-    };
 
-    pub const IpAddress = struct {
-        host: []const u8,
-        port: u16,
+        pub fn toPosix(address: Address, io: Io) !posix.Address {
+            switch (address) {
+                .unix => |path| {
+                    if (comptime Io.net.has_unix_sockets == false) {
+                        return error.UnixPathNotSupported;
+                    }
+                    // Best-effort cleanup of a stale socket file; ignore errors
+                    // (file may not exist yet).
+                    Io.Dir.deleteFileAbsolute(io, path) catch {};
+                    return posix.Address.initUnix(path);
+                },
+                .ip => |ip| switch (ip) {
+                    .ip4 => |ip4| return posix.Address.initIp4(ip4.bytes, ip4.port),
+                    .ip6 => |ip6| return posix.Address.initIp6(ip6.bytes, ip6.port, ip6.flow, ip6.interface.index),
+                },
+            }
+        }
     };
 
     pub const ThreadPool = struct {
@@ -79,28 +93,6 @@ pub const Config = struct {
         compression_retain_writer: bool = true,
         compression_write_treshold: ?usize = null,
     };
-
-    pub fn parseAddress(self: *const Config) !Address {
-        return switch (self.address) {
-            .ip => |i| try .parseIp(i.host, i.port),
-            .unix => |unix_path| b: {
-                if (comptime std.net.has_unix_sockets == false) {
-                    break :b error.UnixPathNotSupported;
-                }
-                std.fs.deleteFileAbsolute(unix_path) catch {};
-                break :b try .initUnix(unix_path);
-            },
-            .addr => |a| a,
-        };
-    }
-
-    pub fn isUnixAddress(config: *const Config) bool {
-        return switch (config.address) {
-            .unix => true,
-            .ip => false,
-            .addr => |a| a.any.family == std.posix.AF.UNIX,
-        };
-    }
 
     pub fn threadPoolCount(self: *const Config) u32 {
         return self.thread_pool.count orelse 32;

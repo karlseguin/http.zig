@@ -1,22 +1,22 @@
 # An HTTP/1.1 server for Zig.
 
-## Zig 0.16
-Support of Zig 0.16 is close. See the [zig-0.16 branch](https://github.com/karlseguin/http.zig/tree/zig-0.16). Current state is: working without websockets. Note that Zig 0.16's Io.Evented does not support networking, so, at least initially, httpz will continue to work like it always has (its own eventted I/O + a thread-pool).
+## Zig Version
+This is for Zig 0.16.0. Use the [zig-0.15.2](https://github.com/karlseguin/http.zig/tree/zig-0.15) branch for Zig 0.15 or the [dev](https://github.com/karlseguin/http.zig/tree/dev) which may or may not be up to date with zig dev.
+
+This ZIG 0.16 version is not well tested. Like Zig 0.16 itself, consider it experimental!
 
 ## Example
-
 ```zig
 const std = @import("std");
 const httpz = @import("httpz");
 
-pub fn main() !void {
-  var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-  const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+  const allocator = init.gpa;
 
   // More advance cases will use a custom "Handler" instead of "void".
   // The last parameter is our handler instance, since we have a "void"
   // handler, we passed a void ({}) value.
-  var server = try httpz.Server(void).init(allocator, .{
+  var server = try httpz.Server(void).init(init.io, allocator, .{
     // use .all(5882) to bind to all interfaces, i.e. 0.0.0.0
     .address = .localhost(5882),
   }, {});
@@ -120,11 +120,10 @@ const pg = @import("pg");
 const std = @import("std");
 const httpz = @import("httpz");
 
-pub fn main() !void {
-  var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-  const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+  const allocator = init.gpa;
 
-  var db = try pg.Pool.init(allocator, .{
+  var db = try pg.Pool.init(init.io, allocator, .{
     .connect = .{ .port = 5432, .host = "localhost"},
     .auth = .{.username = "user", .database = "db", .password = "pass"}
   });
@@ -134,7 +133,7 @@ pub fn main() !void {
     .db = db,
   };
 
-  var server = try httpz.Server(*App).init(allocator, .{.address = .localhost(5882)}, &app);
+  var server = try httpz.Server(*App).init(init.io, allocator, .{.address = .localhost(5882)}, &app);
   var router = try server.router(.{});
   router.get("/api/user/:id", getUser, .{});
   try server.listen();
@@ -270,11 +269,10 @@ The library supports both simple and complex use cases. A simple use case is sho
 const std = @import("std");
 const httpz = @import("httpz");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
-    var server = try httpz.Server(void).init(allocator, .{.address = .localhost(5882)}, {});
+    var server = try httpz.Server(void).init(init.io, allocator, .{.address = .localhost(5882)}, {});
 
     // overwrite the default notFound handler
     server.notFound(notFound);
@@ -705,7 +703,7 @@ The last parameter to the various `router` methods is a route configuration. In 
 You can specify a separate configuration for each route. To change the configuration for a group of routes, you have two options. The first, is to directly change the router's `handler`, `dispatcher` and `middlewares` field. Any subsequent routes will use these values:
 
 ```zig
-var server = try httpz.Server(Handler).init(allocator, .{.address = .localhost(5882)}, &handler);
+var server = try httpz.Server(Handler).init(io, allocator, .{.address = .localhost(5882)}, &handler);
 
 var router = try server.router(.{});
 
@@ -808,7 +806,7 @@ A middleware is a struct which exposes a nested `Config` type, a public `init` f
 A middleware instance is created using `server.middleware()` and can then be used with the router:
 
 ```zig
-var server = try httpz.Server(void).init(allocator, .{.address = .localhost(5882)}, {});
+var server = try httpz.Server(void).init(io, allocator, .{.address = .localhost(5882)}, {});
 
 // the middleware method takes the struct name and its configuration
 const cors = try server.middleware(httpz.middleware.Cors, .{

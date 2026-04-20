@@ -1,9 +1,9 @@
 const std = @import("std");
 const metrics = @import("metrics.zig");
-
 const blockingMode = @import("httpz.zig").blockingMode;
 
-const Mutex = std.Thread.Mutex;
+const Io = std.Io;
+const Mutex = Io.Mutex;
 const Allocator = std.mem.Allocator;
 
 pub const Buffer = struct {
@@ -25,13 +25,14 @@ pub const Buffer = struct {
 pub const Pool = struct {
     const M = if (blockingMode()) Mutex else void;
 
+    io: Io,
+    mutex: M,
     available: usize,
     buffers: []Buffer,
     allocator: Allocator,
     buffer_size: usize,
-    mutex: M,
 
-    pub fn init(allocator: Allocator, count: usize, buffer_size: usize) !Pool {
+    pub fn init(io: Io, allocator: Allocator, count: usize, buffer_size: usize) !Pool {
         const buffers = try allocator.alloc(Buffer, count);
         errdefer allocator.free(buffers);
 
@@ -51,7 +52,8 @@ pub const Pool = struct {
         }
 
         return .{
-            .mutex = if (comptime blockingMode()) .{} else {},
+            .io = io,
+            .mutex = if (comptime blockingMode()) .init else {},
             .buffers = buffers,
             .available = count,
             .allocator = allocator,
@@ -65,17 +67,6 @@ pub const Pool = struct {
             allocator.free(buf.data);
         }
         allocator.free(self.buffers);
-    }
-
-    pub fn grow(self: *Pool, arena: Allocator, buffer: *Buffer, current_size: usize, new_size: usize) !Buffer {
-        if (buffer.type == .dynamic and arena.resize(buffer.data, new_size)) {
-            buffer.data = buffer.data.ptr[0..new_size];
-            return buffer.*;
-        }
-        const new_buffer = try self.arenaAlloc(arena, new_size);
-        @memcpy(new_buffer.data[0..current_size], buffer.data[0..current_size]);
-        self.release(buffer.*);
-        return new_buffer;
     }
 
     pub fn static(self: Pool, size: usize) !Buffer {
@@ -145,19 +136,19 @@ pub const Pool = struct {
 
     inline fn lock(self: *Pool) void {
         if (comptime blockingMode()) {
-            self.mutex.lock();
+            self.mutex.lockUncancelable(self.io);
         }
     }
     inline fn unlock(self: *Pool) void {
         if (comptime blockingMode()) {
-            self.mutex.unlock();
+            self.mutex.unlock(self.io);
         }
     }
 };
 
 const t = @import("t.zig");
 test "BufferPool" {
-    var pool = try Pool.init(t.allocator, 2, 10);
+    var pool = try Pool.init(t.io, t.allocator, 2, 10);
     defer pool.deinit();
 
     {
@@ -195,44 +186,5 @@ test "BufferPool" {
         pool.release(buf2);
         pool.release(buf3);
         pool.release(buf4);
-    }
-}
-
-test "BufferPool: grow" {
-    defer t.reset();
-
-    var pool = try Pool.init(t.allocator, 1, 10);
-    defer pool.deinit();
-
-    {
-        // grow a dynamic buffer
-        var buf1 = try pool.alloc(15);
-        @memcpy(buf1.data[0..5], "hello");
-        const buf2 = try pool.grow(t.arena.allocator(), &buf1, 5, 20);
-        defer pool.free(buf2);
-        try t.expectEqual(20, buf2.data.len);
-        try t.expectString("hello", buf2.data[0..5]);
-    }
-
-    {
-        // grow a static buffer
-        var buf1 = try pool.static(15);
-        defer pool.free(buf1);
-        @memcpy(buf1.data[0..6], "hello2");
-        const buf2 = try pool.grow(t.arena.allocator(), &buf1, 6, 21);
-        defer pool.free(buf2);
-        try t.expectEqual(21, buf2.data.len);
-        try t.expectString("hello2", buf2.data[0..6]);
-    }
-
-    {
-        // grow a pooled buffer
-        var buf1 = try pool.alloc(8);
-        @memcpy(buf1.data[0..7], "hello2a");
-        const buf2 = try pool.grow(t.arena.allocator(), &buf1, 7, 14);
-        defer pool.free(buf2);
-        try t.expectEqual(14, buf2.data.len);
-        try t.expectString("hello2a", buf2.data[0..7]);
-        try t.expectEqual(1, pool.available);
     }
 }

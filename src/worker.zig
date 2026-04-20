@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const posix = @import("posix.zig");
 const httpz = @import("httpz.zig");
 const metrics = @import("metrics.zig");
 const ws = @import("websocket").server;
@@ -12,15 +13,11 @@ const Response = httpz.Response;
 const BufferPool = @import("buffer.zig").Pool;
 const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
-const Thread = std.Thread;
+const Io = std.Io;
+const Stream = Io.Stream;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
 
-const net = std.net;
-const Stream = net.Stream;
-const NetConn = net.StreamServer.Connection;
-
-const posix = std.posix;
 const log = std.log.scoped(.httpz);
 
 const MAX_TIMEOUT = 2_147_483_647;
@@ -29,8 +26,9 @@ const MAX_TIMEOUT = 2_147_483_647;
 // simpler. (WSH is our websocket handler, and can be void)
 pub fn Blocking(comptime S: type, comptime WSH: type) type {
     return struct {
+        io: Io,
         server: S,
-        mut: Thread.Mutex,
+        mut: Io.Mutex,
         config: *const Config,
         allocator: Allocator,
         buffer_pool: *BufferPool,
@@ -52,21 +50,21 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
 
         const Timeout = struct {
             sec: u32,
-            timeval: [@sizeOf(std.posix.timeval)]u8,
+            timeval: [@sizeOf(posix.timeval)]u8,
 
             // if sec is null, it means we want to cancel the timeout.
             fn init(sec: ?u32) Timeout {
                 return .{
                     .sec = if (sec) |s| s else MAX_TIMEOUT,
-                    .timeval = std.mem.toBytes(std.posix.timeval{ .sec = @intCast(sec orelse 0), .usec = 0 }),
+                    .timeval = std.mem.toBytes(posix.timeval{ .sec = @intCast(sec orelse 0), .usec = 0 }),
                 };
             }
         };
 
         const Self = @This();
 
-        pub fn init(allocator: Allocator, server: S, config: *const Config) !Self {
-            const buffer_pool = try initializeBufferPool(allocator, config);
+        pub fn init(io: Io, allocator: Allocator, server: S, config: *const Config) !Self {
+            const buffer_pool = try initializeBufferPool(io, allocator, config);
             errdefer allocator.destroy(buffer_pool);
 
             errdefer buffer_pool.deinit();
@@ -91,15 +89,15 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
 
             const websocket = try allocator.create(ws.Worker(WSH));
             errdefer allocator.destroy(websocket);
-            websocket.* = try ws.Worker(WSH).init(allocator, &server._websocket_state);
+            websocket.* = try ws.Worker(WSH).init(io, allocator, &server._websocket_state);
             errdefer websocket.deinit();
 
-            var http_conn_pool = try HTTPConnPool.init(allocator, buffer_pool, websocket, 0, config);
+            var http_conn_pool = try HTTPConnPool.init(io, allocator, buffer_pool, websocket, 0, config);
             errdefer http_conn_pool.deinit();
 
             const retain_allocated_bytes_keepalive = config.workers.retain_allocated_bytes orelse 8192;
 
-            var thread_pool = try ThreadPool(Self.handleConnection).init(allocator, .{
+            var thread_pool = try ThreadPool(Self.handleConnection).init(io, allocator, .{
                 .count = config.threadPoolCount(),
                 .backlog = config.thread_pool.backlog orelse 500,
                 .buffer_size = config.thread_pool.buffer_size orelse 32_768,
@@ -110,7 +108,8 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             }
 
             return .{
-                .mut = .{},
+                .io = io,
+                .mut = .init,
                 .server = server,
                 .config = config,
                 .connections = .{},
@@ -122,7 +121,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 .timeout_request = timeout_request,
                 .timeout_keepalive = timeout_keepalive,
                 .timeout_write_error = Timeout.init(5),
-                .conn_node_pool = std.heap.MemoryPool(ConnNode).init(allocator),
+                .conn_node_pool = .empty,
                 .retain_allocated_bytes_keepalive = retain_allocated_bytes_keepalive,
             };
         }
@@ -135,17 +134,18 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             allocator.destroy(self.websocket);
 
             self.http_conn_pool.deinit();
-            self.conn_node_pool.deinit();
+            self.conn_node_pool.deinit(allocator);
 
             self.buffer_pool.deinit();
             allocator.destroy(self.buffer_pool);
         }
 
         pub fn listen(self: *Self, listener: posix.socket_t) void {
+            const io = self.io;
             var thread_pool = &self.thread_pool;
             while (true) {
-                var address: net.Address = undefined;
-                var address_len: posix.socklen_t = @sizeOf(net.Address);
+                var address: posix.Address = undefined;
+                var address_len: posix.socklen_t = @sizeOf(posix.Address);
                 const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
                     if (err == error.ConnectionAborted or err == error.SocketNotListening) {
                         self.websocket.shutdown();
@@ -160,8 +160,8 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             }
 
             {
-                self.mut.lock();
-                defer self.mut.unlock();
+                self.mut.lockUncancelable(io);
+                defer self.mut.unlock(io);
                 var node = self.connections.head;
                 while (node) |n| {
                     node = n.next;
@@ -178,11 +178,12 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
 
         // Called in a worker thread. `thread_buf` is a thread-specific buffer that
         // we are free to use as needed.
-        pub fn handleConnection(self: *Self, socket: posix.socket_t, address: net.Address, thread_buf: []u8) void {
+        pub fn handleConnection(self: *Self, socket: posix.socket_t, address: posix.Address, thread_buf: []u8) void {
+            const io = self.io;
             const connection_node = blk: {
-                self.mut.lock();
-                defer self.mut.unlock();
-                const node = self.conn_node_pool.create() catch |err| {
+                self.mut.lockUncancelable(io);
+                defer self.mut.unlock(io);
+                const node = self.conn_node_pool.create(self.allocator) catch |err| {
                     log.err("Failed to initialize connection node: {}", .{err});
                     return;
                 };
@@ -196,8 +197,8 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             };
 
             defer {
-                self.mut.lock();
-                defer self.mut.unlock();
+                self.mut.lockUncancelable(io);
+                defer self.mut.unlock(io);
                 self.connections.remove(connection_node);
                 self.conn_node_pool.destroy(connection_node);
             }
@@ -207,9 +208,10 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 return;
             };
 
-            conn.address = address;
+            const ip_address = address.toIOAddress();
+            conn.address = ip_address;
             conn.handover = .unknown;
-            conn.stream = .{ .handle = socket };
+            conn.stream = .{ .socket = .{ .handle = socket, .address = ip_address } };
 
             var is_keepalive = false;
             while (true) {
@@ -248,52 +250,45 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
         }
 
         fn handleRequest(self: *const Self, conn: *HTTPConn, is_keepalive: bool, thread_buf: []u8) !HTTPConn.Handover {
-            const stream = conn.stream;
+            const io = self.io;
+            const socket = conn.stream.socket.handle;
             const timeout: ?Timeout = if (is_keepalive) self.timeout_keepalive else self.timeout_request;
 
             var deadline: ?i64 = null;
 
             if (timeout) |to| {
                 if (is_keepalive == false) {
-                    deadline = timestamp(0) + to.sec;
+                    deadline = timestamp(io) + to.sec;
                 }
-                try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &to.timeval);
+                try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &to.timeval);
             }
 
             var is_first = true;
-            var reader = stream.reader(&.{}); // Request.State does its own buffering
             while (true) {
-                const done = conn.req_state.parse(conn, reader.interface()) catch |err| {
+                const done = conn.req_state.parse(conn, socket) catch |err| {
                     switch (err) {
-                        error.ReadFailed => {
-                            if (reader.getError()) |e| {
-                                switch (e) {
-                                    error.WouldBlock => {
-                                        if (is_keepalive and is_first) {
-                                            metrics.timeoutKeepalive(1);
-                                        } else {
-                                            metrics.timeoutRequest(1);
-                                        }
-                                        return .close;
-                                    },
-                                    error.NotOpenForReading => {
-                                        // This can only happen when we're shutting down and our
-                                        // listener has called posix.close(socket) to unblock
-                                        // this thread. Using `.disown` is a bit of a hack, but
-                                        // disown is handled in handleConnection the way we want
-                                        // WE DO NOT WANT to return .close, else that would result
-                                        // in posix.close(socket) being called on an already-closed
-                                        // socket, which would panic.
-                                        return .disown;
-                                    },
-                                    else => {},
-                                }
+                        error.WouldBlock => {
+                            if (is_keepalive and is_first) {
+                                metrics.timeoutKeepalive(1);
+                            } else {
+                                metrics.timeoutRequest(1);
                             }
+                            return .close;
+                        },
+                        error.NotOpenForReading => {
+                            // This can only happen when we're shutting down and our
+                            // listener has called posix.close(socket) to unblock
+                            // this thread. Using `.disown` is a bit of a hack, but
+                            // disown is handled in handleConnection the way we want
+                            // WE DO NOT WANT to return .close, else that would result
+                            // in posix.close(socket) being called on an already-closed
+                            // socket, which would panic.
+                            return .disown;
                         },
                         else => {},
                     }
                     requestError(conn, err) catch {};
-                    posix.close(stream.handle);
+                    posix.close(socket);
                     return .disown;
                 };
 
@@ -311,13 +306,13 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                             // an actual timeout, or it could just be removing the keepalive timeout
                             // either way, it's the same code (timeval will just be set to 0 for
                             // the second case)
-                            deadline = timestamp(0) + to.sec;
-                            try posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &to.timeval);
+                            deadline = timestamp(io) + to.sec;
+                            try posix.setsockopt(socket, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &to.timeval);
                         }
                         is_first = false;
                     }
                 } else if (deadline) |dl| {
-                    if (timestamp(0) > dl) {
+                    if (timestamp(io) > dl) {
                         metrics.timeoutRequest(1);
                         return .close;
                     }
@@ -354,6 +349,8 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
 // and complexity.
 pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
     return struct {
+        io: Io,
+
         // Reference to the httpz.Server. After we've parsed the request we
         // call its handleRequest method.
         server: S,
@@ -448,25 +445,25 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             .epoll => EPoll(WSH),
         };
 
-        pub fn init(allocator: Allocator, server: S, config: *const Config) !Self {
+        pub fn init(io: Io, allocator: Allocator, server: S, config: *const Config) !Self {
             const loop = try Loop.init();
             errdefer loop.deinit();
 
             const websocket = try allocator.create(ws.Worker(WSH));
             errdefer allocator.destroy(websocket);
-            websocket.* = try ws.Worker(WSH).init(allocator, &server._websocket_state);
+            websocket.* = try ws.Worker(WSH).init(io, allocator, &server._websocket_state);
             errdefer websocket.deinit();
 
-            var buffer_pool = try initializeBufferPool(allocator, config);
+            var buffer_pool = try initializeBufferPool(io, allocator, config);
             errdefer buffer_pool.deinit();
 
-            var conn_mem_pool = std.heap.MemoryPool(Conn(WSH)).init(allocator);
-            errdefer conn_mem_pool.deinit();
+            var conn_mem_pool: std.heap.MemoryPool(Conn(WSH)) = .empty;
+            errdefer conn_mem_pool.deinit(allocator);
 
-            var http_conn_pool = try HTTPConnPool.init(allocator, buffer_pool, websocket, loop.fd, config);
+            var http_conn_pool = try HTTPConnPool.init(io, allocator, buffer_pool, websocket, loop.fd, config);
             errdefer http_conn_pool.deinit();
 
-            const thread_pool = try ThreadPool(Self.processData).init(allocator, .{
+            const thread_pool = try ThreadPool(Self.processData).init(io, allocator, .{
                 .count = config.threadPoolCount(),
                 .backlog = config.thread_pool.backlog orelse 500,
                 .buffer_size = config.thread_pool.buffer_size orelse 32_768,
@@ -478,6 +475,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             }
 
             return .{
+                .io = io,
                 .len = 0,
                 .full = false,
                 .loop = loop,
@@ -514,7 +512,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             self.shutdownConcurrentList(&self.keepalive_list);
 
             self.buffer_pool.deinit();
-            self.conn_mem_pool.deinit();
+            self.conn_mem_pool.deinit(allocator);
             self.http_conn_pool.deinit();
             allocator.destroy(self.buffer_pool);
 
@@ -526,7 +524,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             self.loop.stop();
         }
 
-        pub fn run(self: *Self, listener: posix.fd_t, ready_sem: *std.Thread.Semaphore) void {
+        pub fn run(self: *Self, listener: posix.fd_t, ready_sem: *Io.Semaphore) void {
+            const io = self.io;
             var thread_pool = &self.thread_pool;
 
             self.loop.start() catch |err| {
@@ -538,13 +537,13 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             // that we're ready enough to be stopped in necessary.
             self.loop.monitorAccept(listener) catch |err| {
                 log.err("Failed to add monitor to listening socket: {}", .{err});
-                ready_sem.post();
+                ready_sem.post(io);
                 return;
             };
-            ready_sem.post();
+            ready_sem.post(io);
             defer self.websocket.shutdown();
 
-            var now = timestamp(0);
+            var now = timestamp(io);
             var last_timeout = now;
             while (true) {
                 var timeout: ?i32 = 1;
@@ -560,18 +559,22 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                 var it = self.loop.wait(timeout) catch |err| {
                     log.err("Failed to wait on events: {}", .{err});
-                    std.Thread.sleep(std.time.ns_per_s);
+                    io.sleep(.fromMilliseconds(100), .awake) catch |err2| {
+                        log.err("Failed to do a mini recovery sleep: {}", .{err2});
+                    };
                     continue;
                 };
 
-                now = timestamp(now);
+                now = timestamp(io);
                 var closed_conn = false;
 
                 while (it.next()) |event| {
                     switch (event) {
                         .accept => self.accept(listener, now) catch |err| {
                             log.err("Failed to accept connection: {}", .{err});
-                            std.Thread.sleep(std.time.ns_per_ms * 5);
+                            io.sleep(.fromMilliseconds(5), .awake) catch |err2| {
+                                log.err("Failed to do a mini recovery sleep: {}", .{err2});
+                            };
                         },
                         .signal => self.processSignal(&closed_conn),
                         .recv => |conn| switch (conn.protocol) {
@@ -593,10 +596,10 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                                 // can access _state directly.
 
                                 const stream = http_conn.stream;
-                                var reader = stream.reader(&.{}); // Request.State does its own buffering
-                                const done = http_conn.req_state.parse(http_conn, reader.interface()) catch |err| {
+                                var reader = stream.reader(io, &.{}); // Request.State does its own buffering
+                                const done = http_conn.req_state.parse(http_conn, &reader.interface) catch |err| {
                                     // maybe a write fail or something, doesn't matter, we're closing the connection
-                                    requestError(http_conn, reader.getError() orelse err) catch {};
+                                    requestError(http_conn, reader.err orelse err) catch {};
 
                                     // impossible to fail when false is passed
                                     http_conn.requestDone(self.retain_allocated_bytes, false) catch unreachable;
@@ -640,24 +643,25 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         }
 
         fn swapList(self: *Self, conn: *Conn(WSH), new_state: HTTPConn.State) void {
+            const io = self.io;
             const http_conn = conn.protocol.http;
-            http_conn._mut.lock();
-            defer http_conn._mut.unlock();
+            http_conn._mut.lockUncancelable(io);
+            defer http_conn._mut.unlock(io);
 
             switch (http_conn._state) {
-                .active => self.active_list.remove(conn),
-                .keepalive => self.keepalive_list.remove(conn),
+                .active => self.active_list.remove(io, conn),
+                .keepalive => self.keepalive_list.remove(io, conn),
                 .request => self.request_list.remove(conn),
-                .handover => self.handover_list.remove(conn),
+                .handover => self.handover_list.remove(io, conn),
             }
 
             http_conn.setState(new_state);
 
             switch (new_state) {
-                .active => self.active_list.insert(conn),
-                .keepalive => self.keepalive_list.insert(conn),
+                .active => self.active_list.insert(io, conn),
+                .keepalive => self.keepalive_list.insert(io, conn),
                 .request => self.request_list.insert(conn),
-                .handover => self.handover_list.insert(conn),
+                .handover => self.handover_list.insert(io, conn),
             }
         }
 
@@ -678,8 +682,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     self.loop.pauseAccept(listener) catch {};
                     return;
                 }
-                var address: net.Address = undefined;
-                var address_len: posix.socklen_t = @sizeOf(net.Address);
+                var address: posix.Address = undefined;
+                var address_len: posix.socklen_t = @sizeOf(posix.Address);
 
                 const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC | posix.SOCK.NONBLOCK) catch |err| {
                     // On BSD, REUSEPORT_LB means that only 1 worker should get notified
@@ -699,17 +703,19 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 const nonblocking = @as(u32, @bitCast(posix.O{ .NONBLOCK = true }));
                 std.debug.assert(socket_flags & nonblocking == nonblocking);
 
-                const conn = try self.conn_mem_pool.create();
+                const conn = try self.conn_mem_pool.create(self.allocator);
                 errdefer self.conn_mem_pool.destroy(conn);
+
+                const ip_address = address.toIOAddress();
 
                 const http_conn = try self.http_conn_pool.acquire();
                 http_conn.request_count = 1;
                 http_conn._state = .request;
                 http_conn.handover = .unknown;
                 http_conn._io_mode = .nonblocking;
-                http_conn.address = address;
+                http_conn.address = ip_address;
                 http_conn.socket_flags = socket_flags;
-                http_conn.stream = .{ .handle = socket };
+                http_conn.stream = .{ .socket = .{ .handle = socket, .address = ip_address } };
                 http_conn.timeout = now + self.timeout_request;
 
                 self.len += 1;
@@ -730,6 +736,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         }
 
         fn processSignal(self: *Self, closed_bool: *bool) void {
+            const io = self.io;
             const loop = &self.loop;
             var hl = &self.handover_list;
 
@@ -743,8 +750,8 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             // going to end up in another list (or closed) by the time we're
             // done.
             var c = blk: {
-                hl.mut.lock();
-                defer hl.mut.unlock();
+                hl.mut.lockUncancelable(io);
+                defer hl.mut.unlock(io);
                 const head = hl.inner.head;
                 hl.inner = .{};
                 break :blk head;
@@ -835,7 +842,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     // If we don't do this here, then you'd get a segfault if
                     // the signal cleared the connetion, and then in recv we'd
                     // try to call conn.getState() after the signal.
-                    posix.close(http_conn.stream.handle);
+                    posix.close(http_conn.stream.socket.handle);
                 },
                 .websocket, .disown => {},
             }
@@ -863,11 +870,12 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         }
 
         fn disown(self: *Self, conn: *Conn(WSH)) void {
+            const io = self.io;
             const http_conn = conn.protocol.http;
             switch (http_conn._state) {
                 .request => self.request_list.remove(conn),
-                .handover => self.handover_list.remove(conn),
-                .keepalive => self.keepalive_list.remove(conn),
+                .handover => self.handover_list.remove(io, conn),
+                .keepalive => self.keepalive_list.remove(io, conn),
                 .active => unreachable,
             }
             self.len -= 1;
@@ -879,10 +887,11 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         fn prepareToWait(self: *Self, now: u32) struct { bool, ?i32 } {
             const request_timed_out, const request_count, const request_timeout = collectTimedOut(&self.request_list, now);
 
+            const io = self.io;
             const keepalive_timed_out, const keepalive_count, const keepalive_timeout = blk: {
                 const list = &self.keepalive_list;
-                list.mut.lock();
-                defer list.mut.unlock();
+                list.mut.lockUncancelable(io);
+                defer list.mut.unlock(io);
                 break :blk collectTimedOut(&list.inner, now);
             };
 
@@ -950,14 +959,15 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             while (conn) |c| {
                 conn = c.next;
                 const http_conn = c.protocol.http;
-                posix.close(http_conn.stream.handle);
+                posix.close(http_conn.stream.socket.handle);
                 http_conn.deinit(allocator);
             }
         }
 
         fn shutdownConcurrentList(self: *Self, list: *ConcurrentList(Conn(WSH))) void {
-            list.mut.lock();
-            defer list.mut.unlock();
+            const io = self.io;
+            list.mut.lockUncancelable(io);
+            defer list.mut.unlock(io);
             self.shutdownList(&list.inner);
         }
 
@@ -1010,19 +1020,19 @@ pub fn List(comptime T: type) type {
 pub fn ConcurrentList(comptime T: type) type {
     return struct {
         inner: List(T) = .{},
-        mut: Thread.Mutex = .{},
+        mut: Io.Mutex = .init,
 
         const Self = @This();
 
-        pub fn insert(self: *Self, node: *T) void {
-            self.mut.lock();
-            defer self.mut.unlock();
+        pub fn insert(self: *Self, io: Io, node: *T) void {
+            self.mut.lockUncancelable(io);
+            defer self.mut.unlock(io);
             self.inner.insert(node);
         }
 
-        pub fn remove(self: *Self, node: *T) void {
-            self.mut.lock();
-            defer self.mut.unlock();
+        pub fn remove(self: *Self, io: Io, node: *T) void {
+            self.mut.lockUncancelable(io);
+            defer self.mut.unlock(io);
             self.inner.remove(node);
         }
     };
@@ -1222,7 +1232,7 @@ fn EPoll(comptime WSH: type) type {
                     .data = .{ .ptr = 2 },
                     .events = linux.EPOLL.IN,
                 };
-                try std.posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, self.close_fd, &event);
+                try posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, self.close_fd, &event);
             }
 
             {
@@ -1230,7 +1240,7 @@ fn EPoll(comptime WSH: type) type {
                     .data = .{ .ptr = 1 },
                     .events = linux.EPOLL.IN | linux.EPOLL.ET,
                 };
-                try std.posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, self.event_fd, &event);
+                try posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, self.event_fd, &event);
             }
         }
 
@@ -1250,11 +1260,11 @@ fn EPoll(comptime WSH: type) type {
 
         fn monitorAccept(self: *Self, fd: posix.fd_t) !void {
             var event = linux.epoll_event{ .events = linux.EPOLL.IN | linux.EPOLL.EXCLUSIVE, .data = .{ .ptr = 0 } };
-            return std.posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, fd, &event);
+            return posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, fd, &event);
         }
 
         fn pauseAccept(self: *Self, fd: posix.fd_t) !void {
-            return std.posix.epoll_ctl(self.fd, linux.EPOLL.CTL_DEL, fd, null);
+            return posix.epoll_ctl(self.fd, linux.EPOLL.CTL_DEL, fd, null);
         }
 
         fn monitorRead(self: *Self, conn: *Conn(WSH)) !void {
@@ -1333,14 +1343,15 @@ fn Event(comptime WSH: type) type {
 // There's some shared logic between the NonBlocking and Blocking workers.
 // Whatever we can de-duplicate, goes here.
 const HTTPConnPool = struct {
-    mut: Thread.Mutex,
+    io: Io,
+    mut: Io.Mutex,
     conns: []*HTTPConn,
     available: usize,
     allocator: Allocator,
     config: *const Config,
     buffer_pool: *BufferPool,
     retain_allocated_bytes: usize,
-    http_mem_pool_mut: Thread.Mutex,
+    http_mem_pool_mut: Io.Mutex,
     http_mem_pool: std.heap.MemoryPool(HTTPConn),
 
     // we erase the type because we don't want Conn, and therefore Request and
@@ -1354,14 +1365,14 @@ const HTTPConnPool = struct {
     // thread), we store the loop's FD which is more opaque.
     loop: i32,
 
-    fn init(allocator: Allocator, buffer_pool: *BufferPool, websocket: *anyopaque, loop: i32, config: *const Config) !HTTPConnPool {
+    fn init(io: Io, allocator: Allocator, buffer_pool: *BufferPool, websocket: *anyopaque, loop: i32, config: *const Config) !HTTPConnPool {
         const min = config.workers.min_conn orelse @min(config.workers.max_conn orelse 64, 64);
 
         var conns = try allocator.alloc(*HTTPConn, min);
         errdefer allocator.free(conns);
 
-        var http_mem_pool = std.heap.MemoryPool(HTTPConn).init(allocator);
-        errdefer http_mem_pool.deinit();
+        var http_mem_pool: std.heap.MemoryPool(HTTPConn) = .empty;
+        errdefer http_mem_pool.deinit(allocator);
 
         var initialized: usize = 0;
         errdefer {
@@ -1371,15 +1382,16 @@ const HTTPConnPool = struct {
         }
 
         for (0..min) |i| {
-            const conn = try http_mem_pool.create();
-            conn.* = try HTTPConn.init(allocator, buffer_pool, websocket, loop, config);
+            const conn = try http_mem_pool.create(allocator);
+            conn.* = try HTTPConn.init(io, allocator, buffer_pool, websocket, loop, config);
 
             conns[i] = conn;
             initialized += 1;
         }
 
         return .{
-            .mut = .{},
+            .io = io,
+            .mut = .init,
             .loop = loop,
             .conns = conns,
             .config = config,
@@ -1388,7 +1400,7 @@ const HTTPConnPool = struct {
             .allocator = allocator,
             .buffer_pool = buffer_pool,
             .http_mem_pool = http_mem_pool,
-            .http_mem_pool_mut = .{},
+            .http_mem_pool_mut = .init,
             .retain_allocated_bytes = config.workers.retain_allocated_bytes orelse 4096,
         };
     }
@@ -1401,10 +1413,11 @@ const HTTPConnPool = struct {
             conn.deinit(allocator);
         }
         allocator.free(self.conns);
-        self.http_mem_pool.deinit();
+        self.http_mem_pool.deinit(allocator);
     }
 
     fn acquire(self: *HTTPConnPool) !*HTTPConn {
+        const io = self.io;
         const conns = self.conns;
 
         self.lock();
@@ -1412,16 +1425,16 @@ const HTTPConnPool = struct {
         if (available == 0) {
             self.unlock();
 
-            self.http_mem_pool_mut.lock();
-            const conn = try self.http_mem_pool.create();
-            self.http_mem_pool_mut.unlock();
+            try self.http_mem_pool_mut.lock(io);
+            const conn = try self.http_mem_pool.create(self.allocator);
+            self.http_mem_pool_mut.unlock(io);
             errdefer {
-                self.http_mem_pool_mut.lock();
+                self.http_mem_pool_mut.lockUncancelable(io);
                 self.http_mem_pool.destroy(conn);
-                self.http_mem_pool_mut.unlock();
+                self.http_mem_pool_mut.unlock(io);
             }
 
-            conn.* = try HTTPConn.init(self.allocator, self.buffer_pool, self.websocket, self.loop, self.config);
+            conn.* = try HTTPConn.init(io, self.allocator, self.buffer_pool, self.websocket, self.loop, self.config);
             return conn;
         }
 
@@ -1434,16 +1447,16 @@ const HTTPConnPool = struct {
 
     fn release(self: *HTTPConnPool, conn: *HTTPConn) void {
         const conns = self.conns;
-
         self.lock();
         const available = self.available;
         if (available == conns.len) {
             self.unlock();
             conn.deinit(self.allocator);
 
-            self.http_mem_pool_mut.lock();
+            const io = self.io;
+            self.http_mem_pool_mut.lockUncancelable(io);
             self.http_mem_pool.destroy(conn);
-            self.http_mem_pool_mut.unlock();
+            self.http_mem_pool_mut.unlock(io);
             return;
         }
 
@@ -1455,14 +1468,14 @@ const HTTPConnPool = struct {
     // don't need thread safety in nonblocking
     fn lock(self: *HTTPConnPool) void {
         if (comptime httpz.blockingMode()) {
-            self.mut.lock();
+            self.mut.lockUncancelable(self.io);
         }
     }
 
     // don't need thread safety in nonblocking
     fn unlock(self: *HTTPConnPool) void {
         if (comptime httpz.blockingMode()) {
-            self.mut.unlock();
+            self.mut.unlock(self.io);
         }
     }
 };
@@ -1498,14 +1511,14 @@ pub fn Conn(comptime WSH: type) type {
 
         fn close(self: *Self) void {
             switch (self.protocol) {
-                .http => |http_conn| posix.close(http_conn.stream.handle),
+                .http => |http_conn| posix.close(http_conn.stream.socket.handle),
                 .websocket => |hc| hc.conn.close(.{}) catch {},
             }
         }
 
         pub fn getSocket(self: Self) posix.fd_t {
             return switch (self.protocol) {
-                .http => |hc| hc.stream.handle,
+                .http => |hc| hc.stream.socket.handle,
                 .websocket => |hc| hc.socket,
             };
         }
@@ -1566,10 +1579,12 @@ pub const HTTPConn = struct {
         nonblocking,
     };
 
+    io: Io,
+
     // can be concurrently accessed, use getState
     _state: State,
 
-    _mut: Thread.Mutex,
+    _mut: Io.Mutex,
 
     _io_mode: IOMode,
 
@@ -1581,8 +1596,8 @@ pub const HTTPConn = struct {
     // number of requests made on this connection (within a keepalive session)
     request_count: u64,
 
-    stream: net.Stream,
-    address: net.Address,
+    stream: Io.net.Stream,
+    address: Io.net.IpAddress,
     socket_flags: usize,
 
     // Data needed to parse a request. This contains pre-allocated memory, e.g.
@@ -1618,7 +1633,7 @@ pub const HTTPConn = struct {
     // thread), we store the loop's FD which is more opaque.
     loop: i32,
 
-    fn init(allocator: Allocator, buffer_pool: *BufferPool, ws_worker: *anyopaque, loop: i32, config: *const Config) !HTTPConn {
+    fn init(io: Io, allocator: Allocator, buffer_pool: *BufferPool, ws_worker: *anyopaque, loop: i32, config: *const Config) !HTTPConn {
         const conn_arena = try allocator.create(std.heap.ArenaAllocator);
         errdefer allocator.destroy(conn_arena);
 
@@ -1632,8 +1647,9 @@ pub const HTTPConn = struct {
         errdefer req_arena.deinit();
 
         return .{
+            .io = io,
             .timeout = 0,
-            ._mut = .{},
+            ._mut = .init,
             ._state = .request,
             .handover = .unknown,
             .stream = undefined,
@@ -1682,7 +1698,7 @@ pub const HTTPConn = struct {
         }
 
         const loop = self.loop;
-        const socket = self.stream.handle;
+        const socket = self.stream.socket.handle;
         switch (comptime loopType()) {
             .kqueue => {
                 _ = try posix.kevent(loop, &.{
@@ -1712,10 +1728,10 @@ pub const HTTPConn = struct {
     }
 
     pub fn writeAll(self: *HTTPConn, data: []const u8) !void {
-        const socket = self.stream.handle;
-
         var i: usize = 0;
         var blocking = false;
+
+        const socket = self.stream.socket.handle;
 
         while (i < data.len) {
             const n = posix.write(socket, data[i..]) catch |err| switch (err) {
@@ -1736,19 +1752,20 @@ pub const HTTPConn = struct {
 
     pub fn writeAllIOVec(self: *HTTPConn, vec: [][]const u8) !void {
         var buf: [4096]u8 = undefined;
-        var writer = self.stream.writer(&buf);
+        var writer = self.stream.writer(self.io, &buf);
         var i: usize = 0;
         while (true) {
             var n = writer.interface.writeVec(vec[i..]) catch |err| {
-                if (writer.err) |socket_err| {
-                    switch (socket_err) {
-                        error.WouldBlock => {
-                            try self.blockingMode();
-                            continue;
-                        },
-                        else => return err,
-                    }
-                }
+                // ZIG016
+                // if (writer.err) |socket_err| {
+                //     switch (socket_err) {
+                //         error.WouldBlock => {
+                //             try self.blockingMode();
+                //             continue;
+                //         },
+                //         else => return err,
+                //     }
+                // }
                 return err;
             };
             while (n >= vec[i].len) {
@@ -1771,7 +1788,7 @@ pub const HTTPConn = struct {
         if (self._io_mode == .blocking) {
             return;
         }
-        _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags & ~@as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
+        _ = try posix.fcntl(self.stream.socket.handle, posix.F.SETFL, self.socket_flags & ~@as(u32, @bitCast(posix.O{ .NONBLOCK = true })));
         self._io_mode = .blocking;
     }
 
@@ -1784,21 +1801,16 @@ pub const HTTPConn = struct {
         if (self._io_mode == .nonblocking) {
             return;
         }
-        _ = try posix.fcntl(self.stream.handle, posix.F.SETFL, self.socket_flags);
+        _ = try posix.fcntl(self.stream.socket.handle, posix.F.SETFL, self.socket_flags);
         self._io_mode = .nonblocking;
     }
 };
 
-pub fn timestamp(clamp: u32) u32 {
-    if (comptime @hasDecl(posix, "CLOCK") == false or posix.CLOCK == void) {
-        const value: u32 = @intCast(std.time.timestamp());
-        return if (value <= clamp) return clamp + 1 else value;
-    }
-    const ts = posix.clock_gettime(posix.CLOCK.MONOTONIC) catch unreachable;
-    return @intCast(ts.sec);
+pub fn timestamp(io: Io) u32 {
+    return @intCast(Io.Timestamp.now(io, .awake).toSeconds());
 }
 
-fn initializeBufferPool(allocator: Allocator, config: *const Config) !*BufferPool {
+fn initializeBufferPool(io: Io, allocator: Allocator, config: *const Config) !*BufferPool {
     const large_buffer_count = config.workers.large_buffer_count orelse blk: {
         if (comptime httpz.blockingMode()) {
             break :blk config.threadPoolCount();
@@ -1811,7 +1823,7 @@ fn initializeBufferPool(allocator: Allocator, config: *const Config) !*BufferPoo
     const buffer_pool = try allocator.create(BufferPool);
     errdefer allocator.destroy(buffer_pool);
 
-    buffer_pool.* = try BufferPool.init(allocator, large_buffer_count, large_buffer_size);
+    buffer_pool.* = try BufferPool.init(io, allocator, large_buffer_count, large_buffer_size);
     return buffer_pool;
 }
 
@@ -1821,7 +1833,7 @@ fn initializeBufferPool(allocator: Allocator, config: *const Config) !*BufferPoo
 // This function ensures that both Blocking and NonBlocking workers handle these
 // errors with the same response
 fn requestError(conn: *HTTPConn, err: anyerror) !void {
-    const handle = conn.stream.handle;
+    const handle = conn.stream.socket.handle;
     switch (err) {
         error.HeaderTooBig => {
             metrics.invalidRequest();
@@ -1869,10 +1881,10 @@ fn loopType() LoopType {
 
 const t = @import("t.zig");
 test "HTTPConnPool" {
-    var bp = try BufferPool.init(t.allocator, 2, 64);
+    var bp = try BufferPool.init(t.io, t.allocator, 2, 64);
     defer bp.deinit();
 
-    var p = try HTTPConnPool.init(t.allocator, &bp, undefined, 0, &.{
+    var p = try HTTPConnPool.init(t.io, t.allocator, &bp, undefined, 0, &.{
         .workers = .{ .min_conn = 2 },
         .request = .{ .buffer_size = 64 },
     });

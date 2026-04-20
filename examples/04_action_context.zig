@@ -7,12 +7,11 @@ const PORT = 8804;
 // This example is very similar to 03_dispatch.zig, but shows how the action
 // state can be a different type than the handler.
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
     var handler = Handler{};
-    var server = try httpz.Server(*Handler).init(allocator, .{ .address = .localhost(PORT) }, &handler);
+    var server = try httpz.Server(*Handler).init(init.io, allocator, .{ .address = .localhost(PORT) }, &handler);
 
     defer server.deinit();
 

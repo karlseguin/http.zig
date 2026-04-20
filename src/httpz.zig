@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 pub const testing = @import("testing.zig");
 pub const websocket = @import("websocket");
 
+const posix = @import("posix.zig");
 pub const routing = @import("router.zig");
 pub const request = @import("request.zig");
 pub const response = @import("response.zig");
@@ -17,8 +18,8 @@ pub const Url = @import("url.zig").Url;
 pub const Config = @import("config.zig").Config;
 
 const Thread = std.Thread;
+const Io = std.Io;
 const net = std.net;
-const posix = std.posix;
 const Allocator = std.mem.Allocator;
 const FixedBufferAllocator = std.heap.FixedBufferAllocator;
 
@@ -252,15 +253,16 @@ pub fn Server(comptime H: type) type {
     };
 
     return struct {
+        io: Io,
         handler: H,
         config: Config,
         arena: Allocator,
         allocator: Allocator,
         _router: Router(H, ActionArg),
-        _mut: Thread.Mutex,
+        _mut: Io.Mutex,
         _workers: []Worker,
-        _cond: Thread.Condition,
-        _listener: ?posix.socket_t,
+        _cond: Io.Condition,
+        _listener: ?posix.fd_t,
         _max_request_per_connection: usize,
         _middlewares: []const Middleware(H),
         _websocket_state: websocket.server.WorkerState,
@@ -269,7 +271,7 @@ pub fn Server(comptime H: type) type {
         const Self = @This();
         const Worker = if (blockingMode()) worker.Blocking(*Self, WebsocketHandler) else worker.NonBlocking(*Self, WebsocketHandler);
 
-        pub fn init(allocator: Allocator, config: Config, handler: H) !Self {
+        pub fn init(io: Io, allocator: Allocator, config: Config, handler: H) !Self {
             // Be mindful about where we pass this arena. Most things are able to
             // do dynamic allocation, and need to be able to free when they're
             // done with their memory. Only use this for stuff that's created on
@@ -283,8 +285,9 @@ pub fn Server(comptime H: type) type {
 
             // do not pass arena.allocator to WorkerState, it needs to be able to
             // allocate and free at will.
+
             const ws_config = config.websocket;
-            var websocket_state = try websocket.server.WorkerState.init(allocator, .{
+            var websocket_state = try websocket.server.WorkerState.init(io, allocator, .{
                 .max_message_size = ws_config.max_message_size,
                 .buffers = .{
                     .small_size = if (has_websocket) ws_config.small_buffer_size else 0,
@@ -309,12 +312,13 @@ pub fn Server(comptime H: type) type {
             const workers = try arena.allocator().alloc(Worker, config.workerCount());
 
             return .{
+                .io = io,
                 .config = config,
                 .handler = handler,
                 .allocator = allocator,
                 .arena = arena.allocator(),
-                ._mut = .{},
-                ._cond = .{},
+                ._mut = .init,
+                ._cond = .init,
                 ._workers = workers,
                 ._listener = null,
                 ._middlewares = &.{},
@@ -342,24 +346,25 @@ pub fn Server(comptime H: type) type {
 
         pub fn listen(self: *Self) !void {
             // incase "stop" is waiting
-            defer self._cond.signal();
-            self._mut.lock();
-            errdefer self._mut.unlock();
+            const io = self.io;
+
+            defer self._cond.signal(io);
+            self._mut.lockUncancelable(io);
+            errdefer self._mut.unlock(io);
 
             const config = self.config;
-
-            const no_delay = config.isUnixAddress();
-            const address = try config.parseAddress();
+            const address = try config.address.toPosix(io);
+            const is_unix_socket = address.any.family == posix.AF.UNIX;
 
             const listener = blk: {
                 var sock_flags: u32 = posix.SOCK.STREAM | posix.SOCK.CLOEXEC;
                 if (blockingMode() == false) sock_flags |= posix.SOCK.NONBLOCK;
 
-                const proto = if (address.any.family == posix.AF.UNIX) @as(u32, 0) else posix.IPPROTO.TCP;
+                const proto = if (is_unix_socket) @as(u32, 0) else posix.IPPROTO.TCP;
                 break :blk try posix.socket(address.any.family, sock_flags, proto);
             };
 
-            if (no_delay) {
+            if (is_unix_socket) {
                 // TODO: Broken on darwin:
                 // https://github.com/ziglang/zig/issues/17260
                 // if (@hasDecl(os.TCP, "NODELAY")) {
@@ -370,7 +375,7 @@ pub fn Server(comptime H: type) type {
 
             try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
 
-            if (!config.isUnixAddress() and self._workers.len > 1) {
+            if (is_unix_socket == false and self._workers.len > 1) {
                 if (@hasDecl(posix.SO, "REUSEPORT_LB")) {
                     try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEPORT_LB, &std.mem.toBytes(@as(c_int, 1)));
                 } else if (@hasDecl(posix.SO, "REUSEPORT")) {
@@ -390,14 +395,14 @@ pub fn Server(comptime H: type) type {
             const allocator = self.allocator;
 
             if (comptime blockingMode()) {
-                workers[0] = try worker.Blocking(*Self, WebsocketHandler).init(allocator, self, &config);
+                workers[0] = try worker.Blocking(*Self, WebsocketHandler).init(io, allocator, self, &config);
                 defer workers[0].deinit();
 
                 const thrd = try Thread.spawn(.{}, worker.Blocking(*Self, WebsocketHandler).listen, .{ &workers[0], listener });
 
                 // incase listenInNewThread was used and is waiting for us to start
-                self._cond.signal();
-                self._mut.unlock();
+                self._cond.signal(io);
+                self._mut.unlock(io);
 
                 // This will unblock when server.stop() is called and the listening
                 // socket is closed.
@@ -412,10 +417,10 @@ pub fn Server(comptime H: type) type {
                     workers[i].stop();
                 };
 
-                var ready_sem = std.Thread.Semaphore{};
+                var ready_sem = Io.Semaphore{};
                 const threads = try self.arena.alloc(Thread, workers.len);
                 for (0..workers.len) |i| {
-                    workers[i] = try Worker.init(allocator, self, &config);
+                    workers[i] = try Worker.init(io, allocator, self, &config);
                     errdefer {
                         workers[i].stop();
                         workers[i].deinit();
@@ -425,12 +430,12 @@ pub fn Server(comptime H: type) type {
                 }
 
                 for (0..workers.len) |_| {
-                    ready_sem.wait();
+                    ready_sem.waitUncancelable(io);
                 }
 
                 // incase listenInNewThread was used and is waiting for us to start
-                self._cond.signal();
-                self._mut.unlock();
+                self._cond.signal(io);
+                self._mut.unlock(io);
 
                 for (threads) |thrd| {
                     thrd.join();
@@ -439,19 +444,21 @@ pub fn Server(comptime H: type) type {
         }
 
         pub fn listenInNewThread(self: *Self) !std.Thread {
-            self._mut.lock();
-            defer self._mut.unlock();
+            const io = self.io;
+            self._mut.lockUncancelable(io);
+            defer self._mut.unlock(io);
             const thrd = try std.Thread.spawn(.{}, listen, .{self});
 
             // we don't return until listen() signals us that the server is up
-            self._cond.wait(&self._mut);
+            self._cond.waitUncancelable(io, &self._mut);
 
             return thrd;
         }
 
         pub fn stop(self: *Self) void {
-            self._mut.lock();
-            defer self._mut.unlock();
+            const io = self.io;
+            self._mut.lockUncancelable(io);
+            defer self._mut.unlock(io);
 
             for (self._workers) |*w| {
                 if (self._listener == null) {
@@ -673,7 +680,7 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: an
     const http_conn = res.conn;
     const ws_worker: *websocket.server.Worker(H) = @ptrCast(@alignCast(http_conn.ws_worker));
 
-    var hc = try ws_worker.createConn(http_conn.stream.handle, http_conn.address, worker.timestamp(0));
+    var hc = try ws_worker.createConn(http_conn.stream.socket.handle, http_conn.address, worker.timestamp(http_conn.io));
     errdefer ws_worker.cleanupConn(hc);
 
     hc.handler = try H.init(&hc.conn, ctx);
@@ -687,7 +694,7 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: an
 
     var reply_buf: [512]u8 = undefined;
     const reply = try websocket.Handshake.createReply(key, null, compression, &reply_buf);
-    var writer = http_conn.stream.writer(&.{});
+    var writer = http_conn.stream.writer(http_conn.io, &.{});
     const w = &writer.interface;
     try w.writeAll(reply);
     try w.flush();
@@ -771,7 +778,7 @@ fn drain(req: *Request) !void {
 }
 
 const t = @import("t.zig");
-var global_test_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+var global_test_allocator = std.heap.DebugAllocator(.{}){};
 
 var test_handler_dispatch = TestHandlerDispatch{ .state = 10 };
 var test_handler_disaptch_context = TestHandlerDispatchContext{ .state = 20 };
@@ -798,7 +805,7 @@ test "tests:beforeAll" {
     const ga = global_test_allocator.allocator();
 
     {
-        default_server = try Server(void).init(ga, .{
+        default_server = try Server(void).init(t.io, ga, .{
             .address = .localhost(5992),
             .request = .{
                 .lazy_read_size = 4_096,
@@ -842,7 +849,7 @@ test "tests:beforeAll" {
     }
 
     {
-        dispatch_default_server = try Server(*TestHandlerDefaultDispatch).init(ga, .{ .address = .localhost(5993) }, &test_handler_default_dispatch1);
+        dispatch_default_server = try Server(*TestHandlerDefaultDispatch).init(t.io, ga, .{ .address = .localhost(5993) }, &test_handler_default_dispatch1);
         var router = try dispatch_default_server.router(.{});
         router.get("/", TestHandlerDefaultDispatch.echo, .{});
         router.get("/write/*", TestHandlerDefaultDispatch.echoWrite, .{});
@@ -864,14 +871,14 @@ test "tests:beforeAll" {
     }
 
     {
-        dispatch_server = try Server(*TestHandlerDispatch).init(ga, .{ .address = .localhost(5994) }, &test_handler_dispatch);
+        dispatch_server = try Server(*TestHandlerDispatch).init(t.io, ga, .{ .address = .localhost(5994) }, &test_handler_dispatch);
         var router = try dispatch_server.router(.{});
         router.get("/", TestHandlerDispatch.root, .{});
         test_server_threads[2] = try dispatch_server.listenInNewThread();
     }
 
     {
-        dispatch_action_context_server = try Server(*TestHandlerDispatchContext).init(ga, .{ .address = .localhost(5995) }, &test_handler_disaptch_context);
+        dispatch_action_context_server = try Server(*TestHandlerDispatchContext).init(t.io, ga, .{ .address = .localhost(5995) }, &test_handler_disaptch_context);
         var router = try dispatch_action_context_server.router(.{});
         router.get("/", TestHandlerDispatchContext.root, .{});
         test_server_threads[3] = try dispatch_action_context_server.listenInNewThread();
@@ -880,26 +887,26 @@ test "tests:beforeAll" {
     {
         // with only 1 worker, and a min/max conn of 1, each request should
         // hit our reset path.
-        reuse_server = try Server(void).init(ga, .{ .address = .localhost(5996), .workers = .{ .count = 1, .min_conn = 1, .max_conn = 1 } }, {});
+        reuse_server = try Server(void).init(t.io, ga, .{ .address = .localhost(5996), .workers = .{ .count = 1, .min_conn = 1, .max_conn = 1 } }, {});
         var router = try reuse_server.router(.{});
         router.get("/test/writer", TestDummyHandler.reuseWriter, .{});
         test_server_threads[4] = try reuse_server.listenInNewThread();
     }
 
     {
-        handle_server = try Server(TestHandlerHandle).init(ga, .{ .address = .localhost(5997) }, TestHandlerHandle{});
+        handle_server = try Server(TestHandlerHandle).init(t.io, ga, .{ .address = .localhost(5997) }, TestHandlerHandle{});
         test_server_threads[5] = try handle_server.listenInNewThread();
     }
 
     {
-        websocket_server = try Server(TestWebsocketHandler).init(ga, .{ .address = .localhost(5998) }, TestWebsocketHandler{});
+        websocket_server = try Server(TestWebsocketHandler).init(t.io, ga, .{ .address = .localhost(5998) }, TestWebsocketHandler{});
         var router = try websocket_server.router(.{});
         router.get("/ws", TestWebsocketHandler.upgrade, .{});
         test_server_threads[6] = try websocket_server.listenInNewThread();
     }
 
     {
-        cors_wildcard_server = try Server(void).init(ga, .{ .address = .localhost(5999) }, {});
+        cors_wildcard_server = try Server(void).init(t.io, ga, .{ .address = .localhost(5999) }, {});
         var cors_wildcard = try cors_wildcard_server.arena.alloc(Middleware(void), 1);
         cors_wildcard[0] = try cors_wildcard_server.middleware(middleware.Cors, .{
             .origin = "*",
@@ -913,7 +920,7 @@ test "tests:beforeAll" {
     }
 
     {
-        cors_single_server = try Server(void).init(ga, .{ .address = .localhost(6000) }, {});
+        cors_single_server = try Server(void).init(t.io, ga, .{ .address = .localhost(6000) }, {});
         var cors_single = try cors_single_server.arena.alloc(Middleware(void), 1);
         cors_single[0] = try cors_single_server.middleware(middleware.Cors, .{
             .origin = "https://example.com",
@@ -926,7 +933,7 @@ test "tests:beforeAll" {
     }
 
     {
-        cors_multiple_server = try Server(void).init(ga, .{ .address = .localhost(6001) }, {});
+        cors_multiple_server = try Server(void).init(t.io, ga, .{ .address = .localhost(6001) }, {});
         var cors_multiple = try cors_multiple_server.arena.alloc(Middleware(void), 1);
         cors_multiple[0] = try cors_multiple_server.middleware(middleware.Cors, .{
             .origin = "https://example.com, https://api.example.com, https://test.local",
@@ -969,11 +976,11 @@ test "tests:afterAll" {
     cors_single_server.deinit();
     cors_multiple_server.deinit();
 
-    try t.expectEqual(false, global_test_allocator.detectLeaks());
+    try t.expectEqual(0, global_test_allocator.detectLeaks());
 }
 
 test "httpz: quick shutdown" {
-    var server = try Server(void).init(t.allocator, .{ .address = .localhost(6992) }, {});
+    var server = try Server(void).init(t.io, t.allocator, .{ .address = .localhost(6992) }, {});
     const thrd = try server.listenInNewThread();
     server.stop();
     thrd.join();
@@ -982,7 +989,7 @@ test "httpz: quick shutdown" {
 
 test "httpz: bind failure releases mutex" {
     // Start a server to occupy the port
-    var server1 = try Server(void).init(t.allocator, .{ .address = .localhost(6993) }, {});
+    var server1 = try Server(void).init(t.io, t.allocator, .{ .address = .localhost(6993) }, {});
     const thrd1 = try server1.listenInNewThread();
     defer {
         server1.stop();
@@ -991,7 +998,7 @@ test "httpz: bind failure releases mutex" {
     }
 
     // Try to start another server on the same port - will fail to bind
-    var server2 = try Server(void).init(t.allocator, .{ .address = .localhost(6993) }, {});
+    var server2 = try Server(void).init(t.io, t.allocator, .{ .address = .localhost(6993) }, {});
     defer server2.deinit();
 
     // First call fails with AddressInUse
@@ -1004,15 +1011,15 @@ test "httpz: bind failure releases mutex" {
 
 test "httpz: shutdown without listen" {
     // Should not throw a .BADF (unreachable) error
-    var server = try Server(void).init(t.allocator, .{ .address = .localhost(6992) }, {});
+    var server = try Server(void).init(t.io, t.allocator, .{ .address = .localhost(6992) }, {});
     server.stop();
     server.deinit();
 }
 
 test "httpz: invalid request" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("TEA HTTP/1.1\r\n\r\n");
     try w.flush();
@@ -1023,8 +1030,8 @@ test "httpz: invalid request" {
 
 test "httpz: invalid request path" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("TEA /hello\rn\nWorld:test HTTP/1.1\r\n\r\n");
     try w.flush();
@@ -1035,8 +1042,8 @@ test "httpz: invalid request path" {
 
 test "httpz: invalid header name" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET / HTTP/1.1\r\nOver: 9000\r\nHel\tlo:World\r\n\r\n");
     try w.flush();
@@ -1047,8 +1054,8 @@ test "httpz: invalid header name" {
 
 test "httpz: invalid content length value (1)" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET / HTTP/1.1\r\nContent-Length: HaHA\r\n\r\n");
     try w.flush();
@@ -1059,8 +1066,8 @@ test "httpz: invalid content length value (1)" {
 
 test "httpz: invalid content length value (2)" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET / HTTP/1.1\r\nContent-Length: 1.0\r\n\r\n");
     try w.flush();
@@ -1071,8 +1078,8 @@ test "httpz: invalid content length value (2)" {
 
 test "httpz: body too big" {
     const stream = testStream(5993);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("POST / HTTP/1.1\r\nContent-Length: 999999999999999999\r\n\r\n");
     try w.flush();
@@ -1083,8 +1090,8 @@ test "httpz: body too big" {
 
 test "httpz: overflow content length" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET / HTTP/1.1\r\nContent-Length: 999999999999999999999999999\r\n\r\n");
     try w.flush();
@@ -1095,8 +1102,9 @@ test "httpz: overflow content length" {
 
 test "httpz: no route" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET / HTTP/1.1\r\n\r\n");
     try w.flush();
@@ -1107,8 +1115,8 @@ test "httpz: no route" {
 
 test "httpz: no route with custom notFound handler" {
     const stream = testStream(5993);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /not_found HTTP/1.1\r\n\r\n");
     try w.flush();
@@ -1122,8 +1130,8 @@ test "httpz: unhandled exception" {
     defer std.testing.log_level = .warn;
 
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /fail HTTP/1.1\r\n\r\n");
     try w.flush();
@@ -1137,8 +1145,8 @@ test "httpz: unhandled exception with custom error handler" {
     defer std.testing.log_level = .warn;
 
     const stream = testStream(5993);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /fail HTTP/1.1\r\n\r\n");
     try w.flush();
@@ -1149,10 +1157,10 @@ test "httpz: unhandled exception with custom error handler" {
 
 test "httpz: custom methods" {
     const stream = testStream(5992);
-    defer stream.close();
+    defer stream.close(t.io);
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("GET /test/method HTTP/1.1\r\n\r\n");
         try w.flush();
@@ -1162,7 +1170,7 @@ test "httpz: custom methods" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("PUT /test/method HTTP/1.1\r\n\r\n");
         try w.flush();
@@ -1172,7 +1180,7 @@ test "httpz: custom methods" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("TEA /test/method HTTP/1.1\r\n\r\n");
         try w.flush();
@@ -1182,7 +1190,7 @@ test "httpz: custom methods" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("PING /test/method HTTP/1.1\r\n\r\n");
         try w.flush();
@@ -1192,7 +1200,7 @@ test "httpz: custom methods" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("TEA /test/other HTTP/1.1\r\n\r\n");
         try w.flush();
@@ -1203,8 +1211,8 @@ test "httpz: custom methods" {
 
 test "httpz: route params" {
     const stream = testStream(5993);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
     try w.flush();
@@ -1215,8 +1223,8 @@ test "httpz: route params" {
 
 test "httpz: request and response headers" {
     const stream = testStream(5993);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /test/headers HTTP/1.1\r\nHeader-Name: Header-Value\r\n\r\n");
     try w.flush();
@@ -1227,8 +1235,8 @@ test "httpz: request and response headers" {
 
 test "httpz: content-length body" {
     const stream = testStream(5993);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /test/body/cl HTTP/1.1\r\nHeader-Name: Header-Value\r\nContent-Length: 4\r\n\r\nabcz");
     try w.flush();
@@ -1239,8 +1247,8 @@ test "httpz: content-length body" {
 
 test "httpz: json response" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /test/json HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     try w.flush();
@@ -1251,8 +1259,8 @@ test "httpz: json response" {
 
 test "httpz: query" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /test/query?fav=keemun%20te%61%21 HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     try w.flush();
@@ -1263,8 +1271,8 @@ test "httpz: query" {
 
 test "httpz: chunked" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /test/chunked HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     try w.flush();
@@ -1275,8 +1283,8 @@ test "httpz: chunked" {
 
 test "httpz: route-specific dispatcher" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("HEAD /test/dispatcher HTTP/1.1\r\n\r\n");
     try w.flush();
@@ -1287,8 +1295,8 @@ test "httpz: route-specific dispatcher" {
 
 test "httpz: middlewares" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
 
     {
@@ -1304,10 +1312,10 @@ test "httpz: middlewares" {
 
 test "httpz: CORS" {
     const stream = testStream(5992);
-    defer stream.close();
+    defer stream.close(t.io);
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("GET /echo HTTP/1.1\r\n\r\n");
         try w.flush();
@@ -1321,7 +1329,7 @@ test "httpz: CORS" {
 
     {
         // cors endpoint but not cors options
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nOrigin: httpz.local\r\nSec-Fetch-Mode: navigate\r\n\r\n");
         try w.flush();
@@ -1336,7 +1344,7 @@ test "httpz: CORS" {
 
     {
         // cors request
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nOrigin: httpz.local\r\nSec-Fetch-Mode: cors\r\n\r\n");
         try w.flush();
@@ -1351,7 +1359,7 @@ test "httpz: CORS" {
 
     {
         // cors request, non-options
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: httpz.local\r\nSec-Fetch-Mode: cors\r\n\r\n");
         try w.flush();
@@ -1367,10 +1375,10 @@ test "httpz: CORS" {
 
 test "httpz: CORS wildcard origin" {
     const stream = testStream(5999);
-    defer stream.close();
+    defer stream.close(t.io);
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://example.com\r\n\r\n");
         try w.flush();
@@ -1381,7 +1389,7 @@ test "httpz: CORS wildcard origin" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://any-domain.com\r\n\r\n");
         try w.flush();
@@ -1392,7 +1400,7 @@ test "httpz: CORS wildcard origin" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nOrigin: https://test.com\r\nSec-Fetch-Mode: cors\r\n\r\n");
         try w.flush();
@@ -1407,7 +1415,7 @@ test "httpz: CORS wildcard origin" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("GET /test/cors HTTP/1.1\r\n\r\n");
         try w.flush();
@@ -1420,10 +1428,10 @@ test "httpz: CORS wildcard origin" {
 
 test "httpz: CORS single origin" {
     const stream = testStream(6000);
-    defer stream.close();
+    defer stream.close(t.io);
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://example.com\r\n\r\n");
         try w.flush();
@@ -1435,7 +1443,7 @@ test "httpz: CORS single origin" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://attacker.com\r\n\r\n");
         try w.flush();
@@ -1447,7 +1455,7 @@ test "httpz: CORS single origin" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nOrigin: https://example.com\r\nSec-Fetch-Mode: cors\r\n\r\n");
         try w.flush();
@@ -1461,7 +1469,7 @@ test "httpz: CORS single origin" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nOrigin: https://wrong.com\r\nSec-Fetch-Mode: cors\r\n\r\n");
         try w.flush();
@@ -1475,10 +1483,10 @@ test "httpz: CORS single origin" {
 
 test "httpz: CORS multiple origins" {
     const stream = testStream(6001);
-    defer stream.close();
+    defer stream.close(t.io);
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://example.com\r\n\r\n");
         try w.flush();
@@ -1490,7 +1498,7 @@ test "httpz: CORS multiple origins" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://api.example.com\r\n\r\n");
         try w.flush();
@@ -1502,7 +1510,7 @@ test "httpz: CORS multiple origins" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://test.local\r\n\r\n");
         try w.flush();
@@ -1514,7 +1522,7 @@ test "httpz: CORS multiple origins" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("GET /test/cors HTTP/1.1\r\nOrigin: https://attacker.com\r\n\r\n");
         try w.flush();
@@ -1526,7 +1534,7 @@ test "httpz: CORS multiple origins" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nOrigin: https://api.example.com\r\nSec-Fetch-Mode: cors\r\n\r\n");
         try w.flush();
@@ -1541,7 +1549,7 @@ test "httpz: CORS multiple origins" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("OPTIONS /test/cors HTTP/1.1\r\nOrigin: https://not-in-list.com\r\nSec-Fetch-Mode: cors\r\n\r\n");
         try w.flush();
@@ -1554,10 +1562,10 @@ test "httpz: CORS multiple origins" {
 
 test "httpz: router groups" {
     const stream = testStream(5993);
-    defer stream.close();
+    defer stream.close(t.io);
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("GET / HTTP/1.1\r\n\r\n");
         try w.flush();
@@ -1569,7 +1577,7 @@ test "httpz: router groups" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("GET /admin/users HTTP/1.1\r\n\r\n");
         try w.flush();
@@ -1581,7 +1589,7 @@ test "httpz: router groups" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("PUT /admin/users/:id HTTP/1.1\r\n\r\n");
         try w.flush();
@@ -1593,7 +1601,7 @@ test "httpz: router groups" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("HEAD /debug/ping HTTP/1.1\r\n\r\n");
         try w.flush();
@@ -1605,7 +1613,7 @@ test "httpz: router groups" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("OPTIONS /debug/stats HTTP/1.1\r\n\r\n");
         try w.flush();
@@ -1617,7 +1625,7 @@ test "httpz: router groups" {
     }
 
     {
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
         try w.writeAll("POST /login HTTP/1.1\r\n\r\n");
         try w.flush();
@@ -1631,8 +1639,8 @@ test "httpz: router groups" {
 
 test "httpz: event stream" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /test/stream HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     try w.flush();
@@ -1650,8 +1658,8 @@ test "httpz: event stream" {
 
 test "httpz: event stream sync" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /test/streamsync HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     try w.flush();
@@ -1669,8 +1677,8 @@ test "httpz: event stream sync" {
 
 test "httpz: keepalive" {
     const stream = testStream(5993);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /api/v2/users/9001 HTTP/1.1\r\n\r\n");
     try w.flush();
@@ -1685,8 +1693,8 @@ test "httpz: keepalive" {
 
 test "httpz: route data" {
     const stream = testStream(5992);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /test/route_data HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     try w.flush();
@@ -1698,8 +1706,8 @@ test "httpz: route data" {
 
 test "httpz: keepalive with explicit write" {
     const stream = testStream(5993);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /write/9001 HTTP/1.1\r\n\r\n");
     try w.flush();
@@ -1714,12 +1722,12 @@ test "httpz: keepalive with explicit write" {
 
 test "httpz: request in chunks" {
     const stream = testStream(5993);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /api/v2/use");
     try w.flush();
-    std.Thread.sleep(std.time.ns_per_ms * 10);
+    try t.io.sleep(.fromMilliseconds(10), .awake);
     try w.writeAll("rs/11 HTTP/1.1\r\n\r\n");
     try w.flush();
 
@@ -1731,8 +1739,8 @@ test "httpz: writer re-use" {
     defer t.reset();
 
     const stream = testStream(5996);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
 
     var expected: [10]TestUser = undefined;
@@ -1755,8 +1763,8 @@ test "httpz: writer re-use" {
 
 test "httpz: custom dispatch without action context" {
     const stream = testStream(5994);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     try w.flush();
@@ -1767,8 +1775,8 @@ test "httpz: custom dispatch without action context" {
 
 test "httpz: custom dispatch with action context" {
     const stream = testStream(5995);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /?name=teg HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     try w.flush();
@@ -1779,8 +1787,8 @@ test "httpz: custom dispatch with action context" {
 
 test "httpz: custom handle" {
     const stream = testStream(5997);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /whatever?name=teg HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     try w.flush();
@@ -1793,9 +1801,9 @@ test "httpz: request body reader" {
     {
         // no body
         const stream = testStream(5992);
-        defer stream.close();
+        defer stream.close(t.io);
 
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
 
         try w.writeAll("GET /test/req_reader HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
@@ -1809,9 +1817,9 @@ test "httpz: request body reader" {
     {
         // small body
         const stream = testStream(5992);
-        defer stream.close();
+        defer stream.close(t.io);
 
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
 
         try w.writeAll("GET /test/req_reader HTTP/1.1\r\nContent-Length: 4\r\n\r\n123z");
@@ -1826,9 +1834,9 @@ test "httpz: request body reader" {
     {
         // medium body
         const stream = testStream(5992);
-        defer stream.close();
+        defer stream.close(t.io);
 
-        var writer = stream.writer(&.{});
+        var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
 
         try w.writeAll(std.fmt.comptimePrint("GET /test/req_reader HTTP/1.1\r\nContent-Length: {d}\r\n\r\n" ++ ("a" ** length), .{length}));
@@ -1846,17 +1854,17 @@ test "httpz: request body reader" {
     // a bit of fuzzing
     for (0..10) |_| {
         const stream = testStream(5992);
-        defer stream.close();
+        defer stream.close(t.io);
 
         var buf: [1024]u8 = undefined;
-        var writer = stream.writer(&buf);
+        var writer = stream.writer(t.io, &buf);
         const w = &writer.interface;
 
         var req: []const u8 = std.fmt.comptimePrint("GET /test/req_reader HTTP/1.1\r\nContent-Length: {d}\r\n\r\n" ++ ("a" ** length), .{length});
         while (req.len > 0) {
             const len = random.uintAtMost(usize, req.len - 1) + 1;
             try w.writeAll(req[0..len]);
-            std.Thread.sleep(std.time.ns_per_ms * 2);
+            try t.io.sleep(.fromMilliseconds(2), .awake);
             req = req[len..];
         }
 
@@ -1870,8 +1878,8 @@ test "httpz: request body reader" {
 
 test "websocket: invalid request" {
     const stream = testStream(5998);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /ws HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
     try w.flush();
@@ -1883,8 +1891,8 @@ test "websocket: invalid request" {
 
 test "websocket: upgrade" {
     const stream = testStream(5998);
-    defer stream.close();
-    var writer = stream.writer(&.{});
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET /ws HTTP/1.1\r\nContent-Length: 0\r\n");
     try w.writeAll("upgrade: WEBsocket\r\n");
@@ -1904,7 +1912,7 @@ test "websocket: upgrade" {
 
     // https://github.com/karlseguin/http.zig/pull/188
     try w.flush();
-    std.Thread.sleep(std.time.ns_per_ms * 5);
+    try t.io.sleep(.fromMilliseconds(5), .awake);
 
     try w.writeAll(&websocket.frameText("close"));
     try w.flush();
@@ -1912,29 +1920,21 @@ test "websocket: upgrade" {
     var pos: usize = 0;
     var buf: [100]u8 = undefined;
     var wait_count: usize = 0;
-    var reader = stream.reader(&.{});
-    const r = reader.interface();
-    while (pos < 16) {
-        const n = r.readSliceShort(buf[pos..]) catch |err|
-            switch (err) {
-                error.ReadFailed => {
-                    if (reader.getError()) |e| {
-                        switch (e) {
-                            error.WouldBlock => {
-                                if (wait_count == 100) {
-                                    break;
-                                }
-                                wait_count += 1;
-                                std.Thread.sleep(std.time.ns_per_ms);
-                                continue;
-                            },
-                            else => {},
-                        }
-                    }
-                    return err;
-                },
-            };
 
+    while (pos < 16) {
+        const n = posix.read(stream.socket.handle, buf[pos..]) catch |err| {
+            switch (err) {
+                error.WouldBlock => {
+                    if (wait_count == 100) {
+                        break;
+                    }
+                    wait_count += 1;
+                    try t.io.sleep(.fromMilliseconds(1), .awake);
+                    continue;
+                },
+                else => return err,
+            }
+        };
         if (n == 0) {
             break;
         }
@@ -1960,7 +1960,7 @@ test "websocket: stress" {
     var stress_server: ?Server(TestWebsocketHandler) = null;
     var stress_listen_thread: ?Thread = null;
     testing.waitForPort(5998) catch {
-        stress_server = try Server(TestWebsocketHandler).init(t.allocator, .{ .address = .localhost(5998) }, TestWebsocketHandler{});
+        stress_server = try Server(TestWebsocketHandler).init(t.io, t.allocator, .{ .address = .localhost(5998) }, TestWebsocketHandler{});
         var router = try stress_server.?.router(.{});
         router.get("/ws", TestWebsocketHandler.upgrade, .{});
         stress_listen_thread = try stress_server.?.listenInNewThread();
@@ -1977,9 +1977,9 @@ test "websocket: stress" {
         threads[i] = Thread.spawn(.{}, struct {
             fn run(_: usize) void {
                 const stream = testStream(5998);
-                defer stream.close();
+                defer stream.close(t.io);
 
-                var writer = stream.writer(&.{});
+                var writer = stream.writer(t.io, &.{});
                 const w = &writer.interface;
                 w.writeAll("GET /ws HTTP/1.1\r\nContent-Length: 0\r\n") catch return;
                 w.writeAll("upgrade: WEBsocket\r\n") catch return;
@@ -1990,13 +1990,15 @@ test "websocket: stress" {
 
                 var buf: [1024]u8 = undefined;
                 var pos: usize = 0;
-                var reader = stream.reader(&.{});
-                const r = reader.interface();
+
                 while (!std.mem.endsWith(u8, buf[0..pos], "\r\n\r\n")) {
-                    if (pos >= buf.len) return;
-                    var vecs: [1][]u8 = .{buf[pos..]};
-                    const n = r.readVec(&vecs) catch return;
-                    if (n == 0) return;
+                    if (pos >= buf.len) {
+                        return;
+                    }
+                    const n = posix.read(stream.socket.handle, buf[pos..]) catch return;
+                    if (n == 0) {
+                        return;
+                    }
                     pos += n;
                 }
                 if (pos < 12 or !std.mem.startsWith(u8, buf[0..12], "HTTP/1.1 101")) return;
@@ -2034,46 +2036,36 @@ test "ContentType: forX" {
     try t.expectEqual(ContentType.UNKNOWN, ContentType.forFile("must.spice"));
 }
 
-fn testStream(port: u16) std.net.Stream {
+fn testStream(port: u16) Io.net.Stream {
     const timeout = std.mem.toBytes(posix.timeval{
         .sec = 0,
         .usec = 20_000,
     });
 
-    const address = std.net.Address.parseIp("127.0.0.1", port) catch unreachable;
-    const stream = std.net.tcpConnectToAddress(address) catch unreachable;
-    posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeout) catch unreachable;
-    posix.setsockopt(stream.handle, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &timeout) catch unreachable;
+    const address = Io.net.IpAddress.parse("127.0.0.1", port) catch unreachable;
+    const stream = address.connect(t.io, .{ .mode = .stream }) catch unreachable;
+    posix.setsockopt(stream.socket.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeout) catch unreachable;
+    posix.setsockopt(stream.socket.handle, posix.SOL.SOCKET, posix.SO.SNDTIMEO, &timeout) catch unreachable;
     return stream;
 }
 
-fn testReadAll(stream: std.net.Stream, buf: []u8) []u8 {
+fn testReadAll(stream: Io.net.Stream, buf: []u8) []u8 {
     var pos: usize = 0;
     var blocked = false;
-    var reader = stream.reader(&.{});
-    const r = reader.interface();
     while (true) {
         std.debug.assert(pos < buf.len);
-        var vecs: [1][]u8 = .{buf[pos..]};
-        const n = r.readVec(&vecs) catch |err|
-            switch (err) {
-                error.ReadFailed => {
-                    if (reader.getError()) |e| {
-                        switch (e) {
-                            error.WouldBlock => {
-                                if (blocked) return buf[0..pos];
-                                blocked = true;
-                                std.Thread.sleep(std.time.ns_per_ms);
-                                continue;
-                            },
-                            error.ConnectionResetByPeer => return buf[0..pos],
-                            else => @panic(@errorName(e)),
-                        }
-                    }
-                    @panic(@errorName(err));
-                },
-                error.EndOfStream => 0,
-            };
+        const n = posix.read(stream.socket.handle, buf[pos..]) catch |err| switch (err) {
+            error.WouldBlock => {
+                if (blocked) {
+                    return buf[0..pos];
+                }
+                blocked = true;
+                std.Io.sleep(t.io, .fromMilliseconds(1), .awake) catch unreachable;
+                continue;
+            },
+            error.ConnectionResetByPeer => return buf[0..pos],
+            else => @panic(@errorName(err)),
+        };
 
         if (n == 0) {
             return buf[0..pos];
@@ -2084,32 +2076,33 @@ fn testReadAll(stream: std.net.Stream, buf: []u8) []u8 {
     unreachable;
 }
 
-fn testReadParsed(stream: std.net.Stream) testing.Testing.Response {
+fn testReadParsed(stream: Io.net.Stream) testing.Testing.Response {
     var buf: [4096]u8 = undefined;
     const data = testReadAll(stream, &buf);
     return testing.parse(data) catch unreachable;
 }
 
-fn testReadHeader(stream: std.net.Stream) testing.Testing.Response {
+fn testReadHeader(stream: Io.net.Stream) testing.Testing.Response {
     var pos: usize = 0;
     var blocked = false;
     var buf: [1024]u8 = undefined;
-    var reader = stream.reader(&.{});
-    const r = reader.interface();
+    var reader = stream.reader(t.io, &.{});
+    const r = &reader.interface;
     while (true) {
         std.debug.assert(pos < buf.len);
         var vecs: [1][]u8 = .{buf[pos..]};
         const n = r.readVec(&vecs) catch |err|
             switch (err) {
                 error.ReadFailed => {
-                    if (reader.getError()) |e| {
+                    if (reader.err) |e| {
                         switch (e) {
-                            error.WouldBlock => {
-                                if (blocked) unreachable;
-                                blocked = true;
-                                std.Thread.sleep(std.time.ns_per_ms);
-                                continue;
-                            },
+                            // @ZIG016
+                            // error.WouldBlock => {
+                            //     if (blocked) unreachable;
+                            //     blocked = true;
+                            //     std.Thread.sleep(std.time.ns_per_ms);
+                            //     continue;
+                            // },
                             else => @panic(@errorName(e)),
                         }
                     }
@@ -2180,7 +2173,7 @@ const TestDummyHandler = struct {
     fn eventStreamSync(_: *Request, res: *Response) !void {
         res.status = 818;
         const stream = try res.startEventStreamSync();
-        var w = stream.writer(&.{});
+        var w = stream.writer(res.conn.io, &.{});
         w.interface.writeAll("hello") catch unreachable;
         w.interface.writeAll("a sync message") catch unreachable;
     }
@@ -2206,8 +2199,8 @@ const TestDummyHandler = struct {
     const StreamContext = struct {
         data: []const u8,
 
-        fn handle(self: StreamContext, stream: std.net.Stream) void {
-            var writer = stream.writer(&.{});
+        fn handle(self: StreamContext, stream: Io.net.Stream) void {
+            var writer = stream.writer(t.io, &.{});
             const w = &writer.interface;
             w.writeAll(self.data) catch unreachable;
             w.writeAll("a message") catch unreachable;

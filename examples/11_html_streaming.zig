@@ -5,11 +5,10 @@ const Allocator = std.mem.Allocator;
 const PORT = 8801;
 
 /// This example demonstrates HTML streaming.
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
 
-    var server = try httpz.Server(void).init(allocator, .{
+    var server = try httpz.Server(void).init(init.io, allocator, .{
         .address = .localhost(PORT),
     }, {});
     defer server.deinit();
@@ -29,7 +28,6 @@ pub fn main() !void {
 }
 
 fn index(_: *httpz.Request, res: *httpz.Response) !void {
-    const wait_time = 1_000_000_000; // 1 second
 
     try res.chunk(
         \\<!DOCTYPE html>
@@ -45,10 +43,12 @@ fn index(_: *httpz.Request, res: *httpz.Response) !void {
         \\  </body>
         \\</html>
     );
-    std.Thread.sleep(wait_time);
+
+    const io = res.conn.io;
+    try io.sleep(.fromSeconds(1), .awake);
     try res.chunk("\n<span slot='item-2'>Item 2</span>");
-    std.Thread.sleep(wait_time);
+    try io.sleep(.fromSeconds(1), .awake);
     try res.chunk("\n<span slot='item-0'>Item 0</span>");
-    std.Thread.sleep(wait_time);
+    try io.sleep(.fromSeconds(1), .awake);
     try res.chunk("\n<span slot='item-1'>Item 1</span>");
 }
