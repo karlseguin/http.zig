@@ -741,6 +741,8 @@ const FallbackAllocator = struct {
             if (self.fixed.rawResize(buf, alignment, new_len, ra)) {
                 return true;
             }
+            self.fixed.rawFree(buf, alignment, ra);
+            return false;
         }
         return self.fallback.rawResize(buf, alignment, new_len, ra);
     }

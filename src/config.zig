@@ -45,6 +45,13 @@ pub const Config = struct {
                 },
             }
         }
+
+        pub fn format(self: Address, w: *Io.Writer) !void {
+            switch (self) {
+                .ip => |ip| return ip.format(w),
+                .unix => |unix| return w.writeAll(unix),
+            }
+        }
     };
 
     pub const ThreadPool = struct {
