@@ -433,10 +433,39 @@ pub fn accept(
     return accepted_sock;
 }
 
-const iovec_const = extern struct {
-    base: [*]const u8,
-    len: usize,
-};
+pub const iovec_const = posix.iovec_const;
+
+pub fn writev(fd: fd_t, iov: []const iovec_const) !usize {
+    if (native_os == .windows) {
+        // TODO improve this to use WriteFileScatter
+        if (iov.len == 0) return 0;
+        const first = iov[0];
+        return write(fd, first.base[0..first.len]);
+    }
+
+    while (true) {
+        const rc = system.writev(fd, iov.ptr, @min(iov.len, posix.IOV_MAX));
+        switch (posix.errno(rc)) {
+            .SUCCESS => return @intCast(rc),
+            .INTR => continue,
+            .INVAL => return error.InvalidArgument,
+            .FAULT => unreachable,
+            .SRCH => return error.ProcessNotFound,
+            .AGAIN => return error.WouldBlock,
+            .BADF => return error.NotOpenForWriting, // Can be a race condition.
+            .DESTADDRREQ => unreachable, // `connect` was never called.
+            .DQUOT => return error.DiskQuota,
+            .FBIG => return error.FileTooBig,
+            .IO => return error.InputOutput,
+            .NOSPC => return error.NoSpaceLeft,
+            .PERM => return error.PermissionDenied,
+            .PIPE => return error.BrokenPipe,
+            .CONNRESET => return error.ConnectionResetByPeer,
+            .BUSY => return error.DeviceBusy,
+            else => return error.Unexpected,
+        }
+    }
+}
 
 pub fn write(fd: fd_t, bytes: []const u8) !usize {
     if (bytes.len == 0) return 0;

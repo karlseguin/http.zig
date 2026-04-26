@@ -1750,32 +1750,28 @@ pub const HTTPConn = struct {
         }
     }
 
-    pub fn writeAllIOVec(self: *HTTPConn, vec: [][]const u8) !void {
-        var buf: [4096]u8 = undefined;
-        var writer = self.stream.writer(self.io, &buf);
+    pub fn writeAllIOVec(self: *HTTPConn, vec: []posix.iovec_const) !void {
+        const socket = self.stream.socket.handle;
+
         var i: usize = 0;
         while (true) {
-            var n = writer.interface.writeVec(vec[i..]) catch |err| {
-                // ZIG016
-                // if (writer.err) |socket_err| {
-                //     switch (socket_err) {
-                //         error.WouldBlock => {
-                //             try self.blockingMode();
-                //             continue;
-                //         },
-                //         else => return err,
-                //     }
-                // }
-                return err;
+            var n = posix.writev(socket, vec[i..]) catch |err| switch (err) {
+                error.WouldBlock => {
+                    try self.blockingMode();
+                    continue;
+                },
+                else => return err,
             };
+
             while (n >= vec[i].len) {
                 n -= vec[i].len;
                 i += 1;
                 if (i >= vec.len) {
-                    return writer.interface.flush();
+                    return;
                 }
             }
-            vec[i] = vec[i][n..];
+            vec[i].base += n;
+            vec[i].len -= n;
         }
     }
 
