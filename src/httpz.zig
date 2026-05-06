@@ -798,8 +798,9 @@ var websocket_server: Server(TestWebsocketHandler) = undefined;
 var cors_wildcard_server: Server(void) = undefined;
 var cors_single_server: Server(void) = undefined;
 var cors_multiple_server: Server(void) = undefined;
+var chunked_server: Server(void) = undefined;
 
-var test_server_threads: [10]Thread = undefined;
+var test_server_threads: [11]Thread = undefined;
 
 test "tests:beforeAll" {
     // this will leak since the server will run until the process exits. If we use
@@ -948,6 +949,20 @@ test "tests:beforeAll" {
         test_server_threads[9] = try cors_multiple_server.listenInNewThread();
     }
 
+    {
+        // Dedicated server for chunked-encoding integration tests. Small
+        // max_body_size lets us cover BodyTooBig, and a small pool buffer
+        // forces growth on bodies larger than 1KB.
+        chunked_server = try Server(void).init(t.io, ga, .{
+            .address = .localhost(6002),
+            .request = .{ .max_body_size = 32_768 },
+            .workers = .{ .large_buffer_size = 1024 },
+        }, {});
+        var router = try chunked_server.router(.{});
+        router.post("/echo_body", TestDummyHandler.echoBody, .{});
+        test_server_threads[10] = try chunked_server.listenInNewThread();
+    }
+
     std.testing.refAllDecls(@This());
 }
 
@@ -962,6 +977,7 @@ test "tests:afterAll" {
     cors_wildcard_server.stop();
     cors_single_server.stop();
     cors_multiple_server.stop();
+    chunked_server.stop();
 
     for (test_server_threads) |thread| {
         thread.join();
@@ -977,6 +993,7 @@ test "tests:afterAll" {
     cors_wildcard_server.deinit();
     cors_single_server.deinit();
     cors_multiple_server.deinit();
+    chunked_server.deinit();
 
     try t.expectEqual(0, global_test_allocator.detectLeaks());
 }
@@ -1096,6 +1113,128 @@ test "httpz: overflow content length" {
     var writer = stream.writer(t.io, &.{});
     const w = &writer.interface;
     try w.writeAll("GET / HTTP/1.1\r\nContent-Length: 999999999999999999999999999\r\n\r\n");
+    try w.flush();
+
+    var buf: [100]u8 = undefined;
+    try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
+}
+
+test "httpz: chunked body" {
+    // small body — fits entirely in the initial pooled buffer (1024 bytes
+    // on this test server). Split into two chunks plus a chunk extension,
+    // which must be ignored.
+    const stream = testStream(6002);
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
+    const w = &writer.interface;
+    try w.writeAll("POST /echo_body HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5;ext=1\r\nHello\r\n6\r\n World\r\n0\r\n\r\n");
+    try w.flush();
+
+    var buf: [200]u8 = undefined;
+    try t.expectString("HTTP/1.1 200 \r\nContent-Length: 11\r\n\r\nHello World", testReadAll(stream, &buf));
+}
+
+test "httpz: chunked body grows past pool buffer" {
+    // pool buffer_size is 1024 on this server; send a 5000-byte body so the
+    // grow path runs at least twice (1024 -> 2048 -> 4096 -> needed).
+    const total: usize = 5000;
+    const aa = t.arena.allocator();
+    defer t.reset();
+
+    const body = aa.alloc(u8, total) catch unreachable;
+    for (body, 0..) |*b, i| {
+        b.* = @intCast('A' + (i % 26));
+    }
+
+    // Build the whole request up-front so it goes out in one shot — avoids
+    // any partial-write/timeout interaction with the small SNDTIMEO on the
+    // test socket.
+    var aw: std.Io.Writer.Allocating = .init(aa);
+    try aw.writer.writeAll("POST /echo_body HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n");
+    var sent: usize = 0;
+    while (sent < total) {
+        const take = @min(@as(usize, 1250), total - sent);
+        try aw.writer.print("{x}\r\n", .{take});
+        try aw.writer.writeAll(body[sent .. sent + take]);
+        try aw.writer.writeAll("\r\n");
+        sent += take;
+    }
+    try aw.writer.writeAll("0\r\n\r\n");
+
+    const stream = testStream(6002);
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
+    const w = &writer.interface;
+    try w.writeAll(aw.written());
+    try w.flush();
+
+    const buf = aa.alloc(u8, total + 1024) catch unreachable;
+    const expected = std.fmt.allocPrint(aa, "HTTP/1.1 200 \r\nContent-Length: {d}\r\n\r\n{s}", .{ total, body }) catch unreachable;
+    try t.expectString(expected, testReadAll(stream, buf));
+}
+
+test "httpz: chunked body too big" {
+    // max_body_size is 32768; send 40000 bytes split into chunks. Server
+    // should fail with 413 once the cap is exceeded.
+    const total: usize = 40_000;
+    const aa = t.arena.allocator();
+    defer t.reset();
+
+    const body = aa.alloc(u8, total) catch unreachable;
+    @memset(body, 'x');
+
+    const stream = testStream(6002);
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
+    const w = &writer.interface;
+    try w.writeAll("POST /echo_body HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n");
+    var sent: usize = 0;
+    while (sent < total) {
+        const take = @min(@as(usize, 4096), total - sent);
+        try w.print("{x}\r\n", .{take});
+        try w.writeAll(body[sent .. sent + take]);
+        try w.writeAll("\r\n");
+        sent += take;
+    }
+    try w.writeAll("0\r\n\r\n");
+    // The server may close the connection mid-write once it errors; ignore
+    // a broken pipe.
+    w.flush() catch {};
+
+    var buf: [100]u8 = undefined;
+    try t.expectString("HTTP/1.1 413 \r\nConnection: Close\r\nContent-Length: 23\r\n\r\nRequest body is too big", testReadAll(stream, &buf));
+}
+
+test "httpz: invalid transfer-encoding" {
+    const stream = testStream(6002);
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
+    const w = &writer.interface;
+    try w.writeAll("POST /echo_body HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n");
+    try w.flush();
+
+    var buf: [100]u8 = undefined;
+    try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
+}
+
+test "httpz: chunked with content-length is rejected" {
+    const stream = testStream(6002);
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
+    const w = &writer.interface;
+    try w.writeAll("POST /echo_body HTTP/1.1\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\n\r\n");
+    try w.flush();
+
+    var buf: [100]u8 = undefined;
+    try t.expectString("HTTP/1.1 400 \r\nConnection: Close\r\nContent-Length: 15\r\n\r\nInvalid Request", testReadAll(stream, &buf));
+}
+
+test "httpz: chunked with malformed chunk size" {
+    const stream = testStream(6002);
+    defer stream.close(t.io);
+    var writer = stream.writer(t.io, &.{});
+    const w = &writer.interface;
+    try w.writeAll("POST /echo_body HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nZZ\r\nnope\r\n0\r\n\r\n");
     try w.flush();
 
     var buf: [100]u8 = undefined;
@@ -2160,6 +2299,11 @@ const TestDummyHandler = struct {
     fn jsonRes(_: *Request, res: *Response) !void {
         res.setStatus(.created);
         try res.json(.{ .over = 9000, .teg = "soup" }, .{});
+    }
+
+    fn echoBody(req: *Request, res: *Response) !void {
+        res.status = 200;
+        res.body = req.body() orelse "";
     }
 
     fn routeData(req: *Request, res: *Response) !void {

@@ -644,9 +644,39 @@ pub const State = struct {
     // It'll be up to the app to read it!
     unread_body: usize,
 
+    // Set when the request is using Transfer-Encoding: chunked. While decoding,
+    // body_pos tracks how many decoded bytes we've written into self.body.data,
+    // and body_len is set to body_pos once the terminating 0-sized chunk is seen.
+    chunked: ?Chunked,
+
     middlewares: std.StringHashMap(*anyopaque),
 
     const asUint = @import("url.zig").asUint;
+
+    const Chunked = struct {
+        state: Chunked.State,
+
+        // bytes left in the current chunk's data section
+        chunk_remaining: usize,
+
+        // current capacity of self.body.?.data
+        body_capacity: usize,
+
+        // Dedicated raw-input buffer. We can't recycle self.buf here because
+        // URL and header-value slices point into it; mutating it would
+        // invalidate them.
+        raw: []u8,
+        raw_pos: usize,
+        raw_len: usize,
+
+        const State = enum {
+            size_line,
+            data,
+            trailing_crlf,
+            trailers,
+            done,
+        };
+    };
 
     pub fn init(arena: Allocator, buffer_pool: *buffer.Pool, config: *const Config) !Request.State {
         return .{
@@ -660,6 +690,7 @@ pub const State = struct {
             .method_string = "",
             .protocol = null,
             .unread_body = 0,
+            .chunked = null,
             .buffer_pool = buffer_pool,
             .lazy_read_size = config.lazy_read_size,
             .max_body_size = config.max_body_size orelse 1_048_576,
@@ -687,6 +718,7 @@ pub const State = struct {
         self.url = null;
         self.method = null;
         self.unread_body = 0;
+        self.chunked = null;
         self.method_string = null;
         self.protocol = null;
 
@@ -708,6 +740,9 @@ pub const State = struct {
     // returns true if the header has been fully parsed
     pub fn parse(self: *State, conn: *HTTPConn, source: anytype) !bool {
         if (self.body != null) {
+            if (self.chunked != null) {
+                return self.readChunked(conn, source);
+            }
             // if we have a body, then we've read the header. We want to read into
             // self.body, not self.buf.
             return self.readBody(source);
@@ -942,11 +977,22 @@ pub const State = struct {
                             return false;
                         }
 
+                        // +2 to skip the \r\n. Use the untrimmed length here so
+                        // the advance still covers any trailing whitespace.
+                        const next_line = value_start + skip_len + value.len + 2;
+
+                        // RFC 7230 §3.2.4: OWS surrounding the field value is
+                        // not part of the value. Leading was handled by
+                        // trimLeadingSpaceCount; trim trailing here.
+                        while (value.len > 0) {
+                            const last = value[value.len - 1];
+                            if (last != ' ' and last != '\t') break;
+                            value = value[0 .. value.len - 1];
+                        }
+
                         const name = buf[0..i];
                         headers.add(name, value);
 
-                        // +2 to skip the \r\n
-                        const next_line = value_start + skip_len + value.len + 2;
                         self.pos += next_line;
                         buf = buf[next_line..];
                         continue :line;
@@ -984,6 +1030,23 @@ pub const State = struct {
 
     // we've finished reading the header
     fn prepareForBody(self: *State, conn: *HTTPConn, req_arena: Allocator) !bool {
+        if (self.headers.get("transfer-encoding")) |te| {
+            if (!std.ascii.eqlIgnoreCase(te, "chunked")) {
+                return error.InvalidTransferEncoding;
+            }
+            // RFC 7230 §3.3.3: a sender MUST NOT send Content-Length together with
+            // Transfer-Encoding. Reject to avoid request smuggling ambiguity.
+            if (self.headers.get("content-length") != null) {
+                return error.InvalidTransferEncoding;
+            }
+            if (self.headers.get("expect")) |expect| {
+                if (std.ascii.eqlIgnoreCase(expect, "100-continue")) {
+                    try conn.writeAll("HTTP/1.1 100 Continue\r\n\r\n");
+                }
+            }
+            return self.prepareForChunkedBody(req_arena);
+        }
+
         const str = self.headers.get("content-length") orelse return true;
         const cl = atoi(str) orelse return error.InvalidContentLength;
 
@@ -1058,7 +1121,220 @@ pub const State = struct {
         self.body_pos += try zig016HackRead(source, buf[self.body_pos..]);
         return (self.body_pos == self.body_len);
     }
+
+    fn prepareForChunkedBody(self: *State, req_arena: Allocator) !bool {
+        // Initial decoded-body buffer. Try the pool first; if empty, arena-alloc
+        // a buffer of the same size so the consumer always sees a contiguous []u8
+        // regardless of which path we took.
+        const initial: buffer.Buffer = self.buffer_pool.tryAlloc() orelse blk: {
+            const data = try req_arena.alloc(u8, self.buffer_pool.buffer_size);
+            break :blk .{ .type = .arena, .data = data };
+        };
+        self.body = initial;
+        self.body_pos = 0;
+        self.body_len = 0;
+
+        // Allocate a dedicated raw-input buffer; copy whatever already sits
+        // past the headers in self.buf. We never write back into self.buf
+        // because URL/header-value slices reference it.
+        const raw = try req_arena.alloc(u8, self.buf.len);
+        const carry = self.len - self.pos;
+        @memcpy(raw[0..carry], self.buf[self.pos..self.len]);
+
+        self.chunked = .{
+            .state = .size_line,
+            .chunk_remaining = 0,
+            .body_capacity = initial.data.len,
+            .raw = raw,
+            .raw_pos = 0,
+            .raw_len = carry,
+        };
+        // Drain anything that arrived in the same read as the headers.
+        if (carry > 0) {
+            return try self.processChunked(req_arena);
+        }
+        return false;
+    }
+
+    fn readChunked(self: *State, conn: *HTTPConn, source: anytype) !bool {
+        const req_arena = conn.req_arena.allocator();
+        var ck = &self.chunked.?;
+
+        // Compact the raw buffer to make room for the upcoming read.
+        if (ck.raw_pos > 0) {
+            if (ck.raw_pos == ck.raw_len) {
+                ck.raw_pos = 0;
+                ck.raw_len = 0;
+            } else {
+                const remaining = ck.raw_len - ck.raw_pos;
+                std.mem.copyForwards(u8, ck.raw[0..remaining], ck.raw[ck.raw_pos..ck.raw_len]);
+                ck.raw_pos = 0;
+                ck.raw_len = remaining;
+            }
+        }
+
+        if (ck.raw_len == ck.raw.len) {
+            // Couldn't progress and buffer is full — a chunk size line or
+            // trailer line longer than ck.raw. Treat as malformed.
+            return error.InvalidChunkSize;
+        }
+
+        // Match readBody's shape: one read per parse() call. The worker's
+        // event loop re-invokes us when more data arrives, so we must not
+        // try to read past what's currently available.
+        const n = try zig016HackRead(source, ck.raw[ck.raw_len..]);
+        if (n == 0) {
+            return false;
+        }
+        ck.raw_len += n;
+        return try self.processChunked(req_arena);
+    }
+
+    // Decodes as much of the raw buffer as possible into self.body. Returns
+    // true once the terminating 0-sized chunk and trailers have been
+    // consumed. Returns false to indicate "need more raw input".
+    fn processChunked(self: *State, req_arena: Allocator) !bool {
+        var ck = &self.chunked.?;
+        while (true) {
+            switch (ck.state) {
+                .size_line => {
+                    const slice = ck.raw[ck.raw_pos..ck.raw_len];
+                    const lf = std.mem.indexOfScalar(u8, slice, '\n') orelse {
+                        // No \r\n yet. The size line is small in practice; if we
+                        // already have more bytes than any reasonable size line,
+                        // it's malformed.
+                        if (slice.len > MAX_CHUNK_SIZE_LINE) {
+                            return error.InvalidChunkSize;
+                        }
+                        return false;
+                    };
+
+                    if (lf == 0 or slice[lf - 1] != '\r') {
+                        return error.InvalidChunkLine;
+                    }
+
+                    // size = hex digits up to ';' (extension) or '\r'
+                    var end_hex: usize = 0;
+                    while (end_hex < lf and slice[end_hex] != ';' and slice[end_hex] != '\r') : (end_hex += 1) {}
+                    if (end_hex == 0) {
+                        return error.InvalidChunkSize;
+                    }
+
+                    const size = parseHex(slice[0..end_hex]) orelse return error.InvalidChunkSize;
+                    ck.raw_pos += lf + 1;
+                    if (size == 0) {
+                        ck.state = .trailers;
+                    } else {
+                        ck.chunk_remaining = size;
+                        ck.state = .data;
+                    }
+                },
+                .data => {
+                    const avail = ck.raw_len - ck.raw_pos;
+                    if (avail == 0) {
+                        return false;
+                    }
+                    const take = @min(avail, ck.chunk_remaining);
+                    const new_body_pos = self.body_pos + take;
+
+                    if (new_body_pos > self.max_body_size) {
+                        metrics.bodyTooBig();
+                        return error.BodyTooBig;
+                    }
+
+                    if (new_body_pos > ck.body_capacity) {
+                        try self.growBody(req_arena, new_body_pos);
+                    }
+
+                    @memcpy(self.body.?.data[self.body_pos..new_body_pos], ck.raw[ck.raw_pos .. ck.raw_pos + take]);
+                    ck.raw_pos += take;
+                    self.body_pos = new_body_pos;
+                    ck.chunk_remaining -= take;
+                    if (ck.chunk_remaining == 0) {
+                        ck.state = .trailing_crlf;
+                    }
+                },
+                .trailing_crlf => {
+                    if (ck.raw_len - ck.raw_pos < 2) {
+                        return false;
+                    }
+                    if (ck.raw[ck.raw_pos] != '\r' or ck.raw[ck.raw_pos + 1] != '\n') {
+                        return error.InvalidChunkLine;
+                    }
+                    ck.raw_pos += 2;
+                    ck.state = .size_line;
+                },
+                .trailers => {
+                    const slice = ck.raw[ck.raw_pos..ck.raw_len];
+                    const lf = std.mem.indexOfScalar(u8, slice, '\n') orelse return false;
+                    if (lf == 0 or slice[lf - 1] != '\r') {
+                        return error.InvalidChunkLine;
+                    }
+
+                    ck.raw_pos += lf + 1;
+                    if (lf == 1) {
+                        // empty line — end of trailers, body fully decoded
+                        self.body_len = self.body_pos;
+                        ck.state = .done;
+                        return true;
+                    }
+                    // non-empty trailer line; discard and keep looking for the
+                    // empty terminator
+                },
+                .done => return true,
+            }
+        }
+    }
+
+    fn growBody(self: *State, req_arena: Allocator, needed: usize) !void {
+        var ck = &self.chunked.?;
+        const cur = ck.body_capacity;
+        var new_cap = cur * 2;
+
+        if (new_cap < needed) {
+            new_cap = needed;
+        }
+
+        if (new_cap > self.max_body_size) {
+            new_cap = self.max_body_size;
+        }
+
+        if (new_cap < needed) {
+            metrics.bodyTooBig();
+            return error.BodyTooBig;
+        }
+
+        const new_data = try req_arena.alloc(u8, new_cap);
+        @memcpy(new_data[0..self.body_pos], self.body.?.data[0..self.body_pos]);
+        // releases pool buffers; no-op for arena buffers
+        self.buffer_pool.release(self.body.?);
+        self.body = .{ .type = .arena, .data = new_data };
+        ck.body_capacity = new_cap;
+    }
 };
+
+// Hex digits, optional ';' + extension, then '\r\n'. Generous cap; real-world
+// values are always tiny.
+const MAX_CHUNK_SIZE_LINE: usize = 64;
+
+fn parseHex(str: []const u8) ?usize {
+    if (str.len == 0) {
+        return null;
+    }
+
+    var n: usize = 0;
+    for (str) |b| {
+        const d: usize = switch (b) {
+            '0'...'9' => @intCast(b - '0'),
+            'a'...'f' => @intCast(b - 'a' + 10),
+            'A'...'F' => @intCast(b - 'A' + 10),
+            else => return null,
+        };
+        n = std.math.shlExact(usize, n, 4) catch return null;
+        n = std.math.add(usize, n, d) catch return null;
+    }
+    return n;
+}
 
 // Zig 0.16's Io.net.Stream doesn't expose WouldBlock. It just panics. I don't
 // understand why it's like that. But we're in a transition, and I just want to
@@ -1290,6 +1566,16 @@ test "request: parse headers" {
         try t.expectString("Some-Value", r.header("misc").?);
         try t.expectString("none", r.header("authorization").?);
     }
+
+    {
+        // RFC 7230 §3.2.4 — leading and trailing OWS (space, tab) is not
+        // part of the field value.
+        var r = try testParse("PUT / HTTP/1.0\r\nA: trailing-space   \r\nB:\tboth\t \r\nC:no-trim\r\nD:   \r\n\r\n", .{});
+        try t.expectString("trailing-space", r.header("a").?);
+        try t.expectString("both", r.header("b").?);
+        try t.expectString("no-trim", r.header("c").?);
+        try t.expectString("", r.header("d").?);
+    }
 }
 
 test "request: canKeepAlive" {
@@ -1401,6 +1687,135 @@ test "request: query & body" {
 test "request: invalid content-length" {
     defer t.reset();
     try expectParseError(error.InvalidContentLength, "GET / HTTP/1.0\r\nContent-Length: 1\r\n\r\nabc", .{});
+}
+
+test "request: body chunked" {
+    defer t.reset();
+    {
+        // simple two-chunk body that fits in initial pooled buffer
+        var r = try testParse("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n", .{});
+        try t.expectString("Hello World", r.body().?);
+        try t.expectString("Hello World", r.body().?);
+    }
+
+    {
+        // empty body via single 0-sized chunk
+        var r = try testParse("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n", .{});
+        try t.expectString("", r.body().?);
+    }
+
+    {
+        // chunk size with extension is accepted (extension ignored)
+        var r = try testParse("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5;name=value\r\nHello\r\n0\r\n\r\n", .{});
+        try t.expectString("Hello", r.body().?);
+    }
+
+    {
+        // hex size > 9 (uppercase and lowercase)
+        var r = try testParse("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nA\r\n0123456789\r\nb\r\nabcdefghijk\r\n0\r\n\r\n", .{});
+        try t.expectString("0123456789abcdefghijk", r.body().?);
+    }
+
+    {
+        // trailers are accepted and discarded
+        var r = try testParse("POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n0\r\nX-Trailer: yes\r\nX-Other: 1\r\n\r\n", .{});
+        try t.expectString("Hello", r.body().?);
+    }
+
+    {
+        // case-insensitive transfer-encoding value, surrounding whitespace OK
+        var r = try testParse("POST / HTTP/1.1\r\nTransfer-Encoding: ChUnKeD \r\n\r\n3\r\nfoo\r\n0\r\n\r\n", .{});
+        try t.expectString("foo", r.body().?);
+    }
+}
+
+test "request: chunked overflows initial pool buffer" {
+    defer t.reset();
+    // pool buffer_size is 256 in test setup; send a chunked body that's larger
+    // so the grow path runs.
+    const big_chunk_size = 1000;
+    const aa = t.arena.allocator();
+    const buf = aa.alloc(u8, big_chunk_size) catch unreachable;
+    for (buf, 0..) |*b, i| b.* = @intCast(('a' + (i % 26)));
+
+    const req = std.fmt.allocPrint(aa, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n{x}\r\n{s}\r\n0\r\n\r\n", .{ big_chunk_size, buf }) catch unreachable;
+    var r = try testParse(req, .{});
+    try t.expectString(buf, r.body().?);
+}
+
+test "request: chunked too big" {
+    defer t.reset();
+    // 11-byte body, max_body_size = 10
+    try expectParseError(
+        error.BodyTooBig,
+        "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n",
+        .{ .max_body_size = 10 },
+    );
+}
+
+test "request: invalid transfer-encoding" {
+    defer t.reset();
+    // Non-chunked TE
+    try expectParseError(error.InvalidTransferEncoding, "POST / HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n", .{});
+    // Combined with content-length is rejected
+    try expectParseError(error.InvalidTransferEncoding, "POST / HTTP/1.1\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n", .{});
+    // Multi-coding with chunked is rejected
+    try expectParseError(error.InvalidTransferEncoding, "POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n", .{});
+}
+
+test "request: invalid chunked framing" {
+    defer t.reset();
+    // bad hex in chunk size
+    try expectParseError(error.InvalidChunkSize, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nZZ\r\nHello\r\n0\r\n\r\n", .{});
+    // empty hex
+    try expectParseError(error.InvalidChunkSize, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n;ext\r\n0\r\n\r\n", .{});
+    // missing trailing \r\n after chunk data
+    try expectParseError(error.InvalidChunkLine, "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nHelloXX0\r\n\r\n", .{});
+}
+
+test "request: chunked across fragmented reads" {
+    defer t.reset();
+    const aa = t.arena.allocator();
+
+    // Build a chunked body where the body itself exceeds the initial pool
+    // buffer (256 bytes), forcing a grow, and feed it through the FakeReader
+    // which fragments reads at random byte boundaries.
+    const big = 600;
+    var body = aa.alloc(u8, big) catch unreachable;
+    for (body, 0..) |*b, i| b.* = @intCast('A' + (i % 26));
+
+    const req = std.fmt.allocPrint(
+        aa,
+        // two chunks split, plus a trailer line
+        "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n{x}\r\n{s}\r\n{x}\r\n{s}\r\n0\r\nX-Note: ok\r\n\r\n",
+        .{ 200, body[0..200], big - 200, body[200..] },
+    ) catch unreachable;
+
+    var ctx = t.Context.init(.{ .request = .{ .buffer_size = 128 } });
+    ctx.fake = true;
+    defer ctx.deinit();
+
+    ctx.write(req);
+    var fake = ctx.fakeReader();
+    const fr = &fake.interface;
+    while (true) {
+        const done = try ctx.conn.req_state.parse(ctx.conn, fr);
+        if (done) break;
+    }
+    var request = Request.init(ctx.conn.req_arena.allocator(), ctx.conn);
+    try t.expectString(body, request.body().?);
+}
+
+test "parseHex" {
+    try t.expectEqual(@as(?usize, 0), parseHex("0"));
+    try t.expectEqual(@as(?usize, 10), parseHex("a"));
+    try t.expectEqual(@as(?usize, 10), parseHex("A"));
+    try t.expectEqual(@as(?usize, 255), parseHex("ff"));
+    try t.expectEqual(@as(?usize, 255), parseHex("Ff"));
+    try t.expectEqual(@as(?usize, 0x1A2b), parseHex("1A2b"));
+    try t.expectEqual(@as(?usize, null), parseHex(""));
+    try t.expectEqual(@as(?usize, null), parseHex("g"));
+    try t.expectEqual(@as(?usize, null), parseHex("12g"));
 }
 
 test "body: json" {

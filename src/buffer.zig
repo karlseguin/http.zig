@@ -84,6 +84,23 @@ pub const Pool = struct {
         return self.allocType(arena, .arena, size);
     }
 
+    // Returns a pooled buffer, or null if the pool is empty. Never falls back
+    // to allocating. Useful when the caller wants to use the pool as a hot path
+    // and handle the empty case with a different strategy.
+    pub fn tryAlloc(self: *Pool) ?Buffer {
+        self.lock();
+        defer self.unlock();
+
+        const available = self.available;
+        if (available == 0) {
+            return null;
+        }
+        const index = available - 1;
+        const buffer = self.buffers[index];
+        self.available = index;
+        return buffer;
+    }
+
     fn allocType(self: *Pool, allocator: Allocator, buffer_type: Buffer.Type, size: usize) !Buffer {
         if (size > self.buffer_size) {
             metrics.allocBufferLarge(size);

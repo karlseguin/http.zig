@@ -1835,7 +1835,7 @@ fn requestError(conn: *HTTPConn, err: anyerror) !void {
             metrics.invalidRequest();
             return writeError(handle, 431, "Request header is too big");
         },
-        error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine, error.InvalidContentLength => {
+        error.UnknownMethod, error.InvalidRequestTarget, error.UnknownProtocol, error.UnsupportedProtocol, error.InvalidHeaderLine, error.InvalidContentLength, error.InvalidTransferEncoding, error.InvalidChunkSize, error.InvalidChunkLine => {
             metrics.invalidRequest();
             return writeError(handle, 400, "Invalid Request");
         },
