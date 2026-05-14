@@ -1028,15 +1028,35 @@ pub const State = struct {
         return false;
     }
 
+    // rejects duplicate Content-Length and duplicate Host
+    // returns the Content-Length
+    fn checkHeaderValidity(self: *State) !?[]const u8 {
+        var content_length: ?[]const u8 = null;
+        var host_seen: bool = false;
+        var it = self.headers.iterator();
+        while (it.next()) |kv| {
+            if (std.mem.eql(u8, kv.key, "content-length")) {
+                if (content_length != null) return error.InvalidContentLength;
+                content_length = kv.value;
+            } else if (std.mem.eql(u8, kv.key, "host")) {
+                if (host_seen) return error.InvalidHost;
+                host_seen = true;
+            }
+        }
+        return content_length;
+    }
+
     // we've finished reading the header
     fn prepareForBody(self: *State, conn: *HTTPConn, req_arena: Allocator) !bool {
+        const content_length_str = try self.checkHeaderValidity();
+
         if (self.headers.get("transfer-encoding")) |te| {
             if (!std.ascii.eqlIgnoreCase(te, "chunked")) {
                 return error.InvalidTransferEncoding;
             }
             // RFC 7230 §3.3.3: a sender MUST NOT send Content-Length together with
             // Transfer-Encoding. Reject to avoid request smuggling ambiguity.
-            if (self.headers.get("content-length") != null) {
+            if (content_length_str != null) {
                 return error.InvalidTransferEncoding;
             }
             if (self.headers.get("expect")) |expect| {
@@ -1047,7 +1067,7 @@ pub const State = struct {
             return self.prepareForChunkedBody(req_arena);
         }
 
-        const str = self.headers.get("content-length") orelse return true;
+        const str = content_length_str orelse return true;
         const cl = atoi(str) orelse return error.InvalidContentLength;
 
         if (self.headers.get("expect")) |expect| {
@@ -1687,6 +1707,14 @@ test "request: query & body" {
 test "request: invalid content-length" {
     defer t.reset();
     try expectParseError(error.InvalidContentLength, "GET / HTTP/1.0\r\nContent-Length: 1\r\n\r\nabc", .{});
+    try expectParseError(error.InvalidContentLength, "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\nContent-Length: 1\r\n\r\n", .{});
+    try expectParseError(error.InvalidContentLength, "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n", .{});
+}
+
+test "request: invalid host" {
+    defer t.reset();
+    try expectParseError(error.InvalidHost, "GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n", .{});
+    try expectParseError(error.InvalidHost, "GET / HTTP/1.1\r\nHost: a\r\nHost: a\r\n\r\n", .{});
 }
 
 test "request: body chunked" {
