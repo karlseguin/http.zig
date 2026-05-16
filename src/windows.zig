@@ -105,6 +105,73 @@ pub fn closesocket(s: ws2_32.SOCKET) !void {
     }
 }
 
+pub const RecvError = error{
+    WouldBlock,
+    ConnectionResetByPeer,
+    SocketNotConnected,
+    NetworkSubsystemFailed,
+    Unexpected,
+};
+
+/// Synchronous `recv` for a `WSA_FLAG_OVERLAPPED` socket. Used in place of
+/// `ReadFile`, which fails with INVALID_PARAMETER on overlapped sockets when
+/// passed a null OVERLAPPED. Returns 0 on graceful shutdown.
+pub fn recv(s: ws2_32.SOCKET, buf: []u8) RecvError!usize {
+    const len: i32 = @intCast(@min(buf.len, std.math.maxInt(i32)));
+    const rc = ws2_32.recv(s, buf.ptr, len, 0);
+    if (rc != ws2_32.SOCKET_ERROR) return @intCast(rc);
+    switch (ws2_32.WSAGetLastError()) {
+        .WSAEWOULDBLOCK => return error.WouldBlock,
+        .WSAECONNRESET,
+        .WSAECONNABORTED,
+        .WSAENETRESET,
+        .WSAETIMEDOUT,
+        => return error.ConnectionResetByPeer,
+        .WSAENETDOWN => return error.NetworkSubsystemFailed,
+        .WSAENOTCONN => return error.SocketNotConnected,
+        .WSAESHUTDOWN => return 0,
+        .WSAEINTR, .WSAEINPROGRESS => unreachable,
+        .WSAEINVAL, .WSAEFAULT => unreachable,
+        .WSAENOTSOCK => unreachable,
+        .WSAEOPNOTSUPP => unreachable,
+        else => |err| return unexpectedWSAError(err),
+    }
+}
+
+pub const SendError = error{
+    WouldBlock,
+    ConnectionResetByPeer,
+    BrokenPipe,
+    SocketNotConnected,
+    NetworkSubsystemFailed,
+    AccessDenied,
+    SystemResources,
+    MessageTooBig,
+    Unexpected,
+};
+
+/// Synchronous `send` for a `WSA_FLAG_OVERLAPPED` socket.
+pub fn send(s: ws2_32.SOCKET, bytes: []const u8) SendError!usize {
+    const len: i32 = @intCast(@min(bytes.len, std.math.maxInt(i32)));
+    const rc = ws2_32.send(s, bytes.ptr, len, 0);
+    if (rc != ws2_32.SOCKET_ERROR) return @intCast(rc);
+    switch (ws2_32.WSAGetLastError()) {
+        .WSAEWOULDBLOCK => return error.WouldBlock,
+        .WSAECONNRESET, .WSAENETRESET, .WSAETIMEDOUT, .WSAEHOSTUNREACH => return error.ConnectionResetByPeer,
+        .WSAECONNABORTED, .WSAESHUTDOWN => return error.BrokenPipe,
+        .WSAENETDOWN => return error.NetworkSubsystemFailed,
+        .WSAENOTCONN => return error.SocketNotConnected,
+        .WSAEACCES => return error.AccessDenied,
+        .WSAENOBUFS => return error.SystemResources,
+        .WSAEMSGSIZE => return error.MessageTooBig,
+        .WSAEINTR, .WSAEINPROGRESS => unreachable,
+        .WSAEINVAL, .WSAEFAULT => unreachable,
+        .WSAENOTSOCK => unreachable,
+        .WSAEOPNOTSUPP => unreachable,
+        else => |err| return unexpectedWSAError(err),
+    }
+}
+
 pub const ReadFileError = error{
     BrokenPipe,
     /// The specified network name is no longer available.

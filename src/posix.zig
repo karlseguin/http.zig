@@ -164,7 +164,10 @@ pub fn fcntl(fd: fd_t, cmd: i32, arg: usize) !usize {
 
 pub fn close(fd: fd_t) void {
     if (native_os == .windows) {
-        return windows.CloseHandle(fd);
+        // httpz only ever passes socket handles to close; `closesocket` is the
+        // proper API on Windows (CloseHandle skips Winsock's refcount/cleanup).
+        windows.closesocket(fd) catch {};
+        return;
     }
     switch (posix.errno(system.close(fd))) {
         .BADF => unreachable, // Always a race condition.
@@ -175,7 +178,19 @@ pub fn close(fd: fd_t) void {
 
 pub fn setsockopt(fd: socket_t, level: i32, optname: u32, opt: []const u8) !void {
     if (native_os == .windows) {
-        const rc = windows.ws2_32.setsockopt(fd, level, @intCast(optname), opt.ptr, @intCast(opt.len));
+        // Winsock takes SO_RCVTIMEO/SO_SNDTIMEO as a DWORD of milliseconds,
+        // not a struct timeval. Translate so callers can stay portable.
+        var ms_buf: u32 = 0;
+        var opt_ptr: [*]const u8 = opt.ptr;
+        var opt_len: i32 = @intCast(opt.len);
+        if (level == SOL.SOCKET and (optname == SO.RCVTIMEO or optname == SO.SNDTIMEO) and opt.len == @sizeOf(timeval)) {
+            const tv: *const timeval = @ptrCast(@alignCast(opt.ptr));
+            const total_ms = @as(i64, tv.sec) * 1000 + @divTrunc(@as(i64, tv.usec), 1000);
+            ms_buf = if (total_ms < 0) 0 else @intCast(@min(total_ms, std.math.maxInt(u32)));
+            opt_ptr = @ptrCast(&ms_buf);
+            opt_len = @sizeOf(u32);
+        }
+        const rc = windows.ws2_32.setsockopt(fd, level, @intCast(optname), opt_ptr, opt_len);
         if (rc == windows.ws2_32.SOCKET_ERROR) {
             switch (windows.ws2_32.WSAGetLastError()) {
                 .WSANOTINITIALISED => unreachable,
@@ -528,10 +543,7 @@ pub fn accept(
 pub const iovec_const = posix.iovec_const;
 
 /// Union of read errors across platforms. Declared explicitly so callers can
-/// switch on `error.WouldBlock` portably — on Windows `read` goes through
-/// `ReadFile`, which never reports it, but non-blocking sockets in general
-/// might, and keeping it in the type lets the rest of the codebase stay
-/// platform-agnostic.
+/// switch on `error.WouldBlock` portably regardless of OS.
 pub const ReadError = error{
     WouldBlock,
     ProcessNotFound,
@@ -543,10 +555,7 @@ pub const ReadError = error{
     SocketNotConnected,
     ConnectionResetByPeer,
     ConnectionTimedOut,
-    BrokenPipe,
-    OperationAborted,
-    LockViolation,
-    AccessDenied,
+    NetworkSubsystemFailed,
     Unexpected,
 };
 
@@ -567,14 +576,14 @@ pub const WriteError = error{
     NoDevice,
     MessageTooBig,
     SystemResources,
-    OperationAborted,
-    LockViolation,
+    SocketNotConnected,
+    NetworkSubsystemFailed,
     Unexpected,
 };
 
 pub fn writev(fd: fd_t, iov: []const iovec_const) WriteError!usize {
     if (native_os == .windows) {
-        // TODO improve this to use WriteFileScatter
+        // TODO improve this to use WSASend with the full iovec
         if (iov.len == 0) return 0;
         const first = iov[0];
         return write(fd, first.base[0..first.len]);
@@ -607,7 +616,7 @@ pub fn writev(fd: fd_t, iov: []const iovec_const) WriteError!usize {
 pub fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
     if (bytes.len == 0) return 0;
     if (native_os == .windows) {
-        return windows.WriteFile(fd, bytes, null);
+        return windows.send(fd, bytes);
     }
 
     const max_count = switch (native_os) {
@@ -645,7 +654,7 @@ pub fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
 pub fn read(fd: fd_t, buf: []u8) ReadError!usize {
     if (buf.len == 0) return 0;
     if (native_os == .windows) {
-        return windows.ReadFile(fd, buf, null);
+        return windows.recv(fd, buf);
     }
 
     // Prevents EINVAL.
