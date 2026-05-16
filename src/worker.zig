@@ -146,7 +146,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             while (true) {
                 var address: posix.Address = undefined;
                 var address_len: posix.socklen_t = @sizeOf(posix.Address);
-                const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC) catch |err| {
+                const socket = posix.accept(listener, &address.any, &address_len, posix.CLOEXEC) catch |err| {
                     if (err == error.ConnectionAborted or err == error.SocketNotListening) {
                         self.websocket.shutdown();
                         break;
@@ -685,7 +685,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 var address: posix.Address = undefined;
                 var address_len: posix.socklen_t = @sizeOf(posix.Address);
 
-                const socket = posix.accept(listener, &address.any, &address_len, posix.SOCK.CLOEXEC | posix.SOCK.NONBLOCK) catch |err| {
+                const socket = posix.accept(listener, &address.any, &address_len, posix.CLOEXEC | posix.NONBLOCK) catch |err| {
                     // On BSD, REUSEPORT_LB means that only 1 worker should get notified
                     // of a connetion. On Linux, however, we only have REUSEPORT, which will
                     // notify all workers. However, we monitor the listener using EPOLLEXCLUSIVE.

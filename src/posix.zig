@@ -1,8 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const windows = @import("windows.zig");
 
 const posix = std.posix;
-const windows = std.io.windows;
 pub const system = posix.system;
 
 pub const O = system.O;
@@ -22,12 +22,18 @@ pub const Kevent = system.Kevent;
 
 const native_os = builtin.os.tag;
 
+/// WARNING: this flag is not supported by windows socket functions directly,
+///          it is only supported by `socket` below. Be sure that this value does
+///          not share any bits with any of the `SOCK` values.
+pub const CLOEXEC = if (native_os == .windows) 0x10000 else SOCK.CLOEXEC;
+pub const NONBLOCK = if (native_os == .windows) 0x20000 else SOCK.NONBLOCK;
+
 pub fn socket(domain: u32, socket_type: u32, protocol: u32) !socket_t {
     if (native_os == .windows) {
         // These flags are not actually part of the Windows API, instead they are converted here for compatibility
-        const filtered_sock_type = socket_type & ~@as(u32, SOCK.NONBLOCK | SOCK.CLOEXEC);
+        const filtered_sock_type = socket_type & ~@as(u32, NONBLOCK | CLOEXEC);
         var flags: u32 = windows.ws2_32.WSA_FLAG_OVERLAPPED;
-        if ((socket_type & SOCK.CLOEXEC) != 0) flags |= windows.ws2_32.WSA_FLAG_NO_HANDLE_INHERIT;
+        if ((socket_type & CLOEXEC) != 0) flags |= windows.ws2_32.WSA_FLAG_NO_HANDLE_INHERIT;
 
         const rc = try windows.WSASocketW(
             @bitCast(domain),
@@ -38,7 +44,7 @@ pub fn socket(domain: u32, socket_type: u32, protocol: u32) !socket_t {
             flags,
         );
         errdefer windows.closesocket(rc) catch unreachable;
-        if ((socket_type & SOCK.NONBLOCK) != 0) {
+        if ((socket_type & NONBLOCK) != 0) {
             var mode: c_ulong = 1; // nonblocking
             if (windows.ws2_32.SOCKET_ERROR == windows.ws2_32.ioctlsocket(rc, windows.ws2_32.FIONBIO, &mode)) {
                 switch (windows.ws2_32.WSAGetLastError()) {
@@ -52,7 +58,7 @@ pub fn socket(domain: u32, socket_type: u32, protocol: u32) !socket_t {
 
     const have_sock_flags = !builtin.target.os.tag.isDarwin() and native_os != .haiku;
     const filtered_sock_type = if (!have_sock_flags)
-        socket_type & ~@as(u32, SOCK.NONBLOCK | SOCK.CLOEXEC)
+        socket_type & ~@as(u32, NONBLOCK | CLOEXEC)
     else
         socket_type;
     const rc = posix.system.socket(domain, filtered_sock_type, protocol);
@@ -79,7 +85,7 @@ pub fn socket(domain: u32, socket_type: u32, protocol: u32) !socket_t {
 }
 
 fn setSockFlags(sock: socket_t, flags: u32) !void {
-    if ((flags & SOCK.CLOEXEC) != 0) {
+    if ((flags & CLOEXEC) != 0) {
         if (native_os == .windows) {
             // TODO: Find out if this is supported for sockets
         } else {
@@ -102,7 +108,7 @@ fn setSockFlags(sock: socket_t, flags: u32) !void {
             };
         }
     }
-    if ((flags & SOCK.NONBLOCK) != 0) {
+    if ((flags & NONBLOCK) != 0) {
         if (native_os == .windows) {
             var mode: c_ulong = 1;
             if (windows.ws2_32.ioctlsocket(sock, windows.ws2_32.FIONBIO, &mode) == windows.ws2_32.SOCKET_ERROR) {
@@ -244,6 +250,88 @@ pub fn bind(sock: socket_t, addr: *const sockaddr, len: socklen_t) !void {
     unreachable;
 }
 
+pub fn connect(sock: socket_t, sock_addr: *const sockaddr, len: socklen_t) !void {
+    if (native_os == .windows) {
+        const rc = windows.ws2_32.connect(sock, sock_addr, @intCast(len));
+        if (rc == 0) return;
+        switch (windows.ws2_32.WSAGetLastError()) {
+            .WSAEADDRINUSE => return error.AddressInUse,
+            .WSAEADDRNOTAVAIL => return error.AddressNotAvailable,
+            .WSAECONNREFUSED => return error.ConnectionRefused,
+            .WSAECONNRESET => return error.ConnectionResetByPeer,
+            .WSAETIMEDOUT => return error.ConnectionTimedOut,
+            .WSAEHOSTUNREACH,
+            .WSAENETUNREACH,
+            => return error.NetworkUnreachable,
+            .WSAEFAULT => unreachable,
+            .WSAEINVAL => unreachable,
+            .WSAEISCONN => unreachable,
+            .WSAENOTSOCK => unreachable,
+            .WSAEWOULDBLOCK => return error.WouldBlock,
+            .WSAEACCES => unreachable,
+            .WSAENOBUFS => return error.SystemResources,
+            .WSAEAFNOSUPPORT => return error.AddressFamilyNotSupported,
+            else => |err| return windows.unexpectedWSAError(err),
+        }
+        return;
+    }
+
+    while (true) {
+        switch (posix.errno(system.connect(sock, sock_addr, len))) {
+            .SUCCESS => return,
+            .ACCES => return error.AccessDenied,
+            .PERM => return error.PermissionDenied,
+            .ADDRINUSE => return error.AddressInUse,
+            .ADDRNOTAVAIL => return error.AddressNotAvailable,
+            .AFNOSUPPORT => return error.AddressFamilyNotSupported,
+            .AGAIN, .INPROGRESS => return error.WouldBlock,
+            .ALREADY => return error.ConnectionPending,
+            .BADF => unreachable,
+            .CONNREFUSED => return error.ConnectionRefused,
+            .CONNRESET => return error.ConnectionResetByPeer,
+            .FAULT => unreachable,
+            .INTR => continue,
+            .ISCONN => unreachable,
+            .HOSTUNREACH => return error.NetworkUnreachable,
+            .NETUNREACH => return error.NetworkUnreachable,
+            .NOTSOCK => unreachable,
+            .PROTOTYPE => unreachable,
+            .TIMEDOUT => return error.ConnectionTimedOut,
+            .NOENT => return error.FileNotFound,
+            .CONNABORTED => unreachable,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+pub fn getsockname(sock: socket_t, addr: *sockaddr, addrlen: *socklen_t) !void {
+    if (native_os == .windows) {
+        const rc = windows.getsockname(sock, addr, addrlen);
+        if (rc == windows.ws2_32.SOCKET_ERROR) {
+            switch (windows.ws2_32.WSAGetLastError()) {
+                .WSANOTINITIALISED => unreachable,
+                .WSAENETDOWN => return error.NetworkSubsystemFailed,
+                .WSAEFAULT => unreachable,
+                .WSAENOTSOCK => return error.FileDescriptorNotASocket,
+                .WSAEINVAL => return error.SocketNotBound,
+                else => |err| return windows.unexpectedWSAError(err),
+            }
+        }
+        return;
+    } else {
+        const rc = system.getsockname(sock, addr, addrlen);
+        switch (posix.errno(rc)) {
+            .SUCCESS => return,
+            .BADF => unreachable,
+            .FAULT => unreachable,
+            .INVAL => unreachable,
+            .NOTSOCK => return error.FileDescriptorNotASocket,
+            .NOBUFS => return error.SystemResources,
+            else => return error.Unexpected,
+        }
+    }
+}
+
 pub const Address = extern union {
     any: posix.sockaddr,
     in: posix.sockaddr.in,
@@ -309,6 +397,10 @@ pub const Address = extern union {
             else => .{ .ip4 = .unspecified(0) },
         };
     }
+
+    pub fn format(self: Address, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        return self.toIOAddress().format(w);
+    }
 };
 
 pub fn listen(sock: socket_t, backlog: u31) !void {
@@ -367,7 +459,7 @@ pub fn accept(
     flags: u32,
 ) !socket_t {
     const have_accept4 = !(builtin.target.os.tag.isDarwin() or native_os == .windows or native_os == .haiku);
-    std.debug.assert(0 == (flags & ~@as(u32, SOCK.NONBLOCK | SOCK.CLOEXEC))); // Unsupported flag(s)
+    std.debug.assert(0 == (flags & ~@as(u32, NONBLOCK | CLOEXEC))); // Unsupported flag(s)
 
     const accepted_sock: socket_t = while (true) {
         const rc = if (have_accept4)
@@ -435,7 +527,52 @@ pub fn accept(
 
 pub const iovec_const = posix.iovec_const;
 
-pub fn writev(fd: fd_t, iov: []const iovec_const) !usize {
+/// Union of read errors across platforms. Declared explicitly so callers can
+/// switch on `error.WouldBlock` portably — on Windows `read` goes through
+/// `ReadFile`, which never reports it, but non-blocking sockets in general
+/// might, and keeping it in the type lets the rest of the codebase stay
+/// platform-agnostic.
+pub const ReadError = error{
+    WouldBlock,
+    ProcessNotFound,
+    Canceled,
+    NotOpenForReading,
+    InputOutput,
+    IsDir,
+    SystemResources,
+    SocketNotConnected,
+    ConnectionResetByPeer,
+    ConnectionTimedOut,
+    BrokenPipe,
+    OperationAborted,
+    LockViolation,
+    AccessDenied,
+    Unexpected,
+};
+
+pub const WriteError = error{
+    WouldBlock,
+    InvalidArgument,
+    ProcessNotFound,
+    NotOpenForWriting,
+    DiskQuota,
+    FileTooBig,
+    InputOutput,
+    NoSpaceLeft,
+    AccessDenied,
+    PermissionDenied,
+    BrokenPipe,
+    ConnectionResetByPeer,
+    DeviceBusy,
+    NoDevice,
+    MessageTooBig,
+    SystemResources,
+    OperationAborted,
+    LockViolation,
+    Unexpected,
+};
+
+pub fn writev(fd: fd_t, iov: []const iovec_const) WriteError!usize {
     if (native_os == .windows) {
         // TODO improve this to use WriteFileScatter
         if (iov.len == 0) return 0;
@@ -467,7 +604,7 @@ pub fn writev(fd: fd_t, iov: []const iovec_const) !usize {
     }
 }
 
-pub fn write(fd: fd_t, bytes: []const u8) !usize {
+pub fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
     if (bytes.len == 0) return 0;
     if (native_os == .windows) {
         return windows.WriteFile(fd, bytes, null);
@@ -505,7 +642,7 @@ pub fn write(fd: fd_t, bytes: []const u8) !usize {
     }
 }
 
-pub fn read(fd: fd_t, buf: []u8) !usize {
+pub fn read(fd: fd_t, buf: []u8) ReadError!usize {
     if (buf.len == 0) return 0;
     if (native_os == .windows) {
         return windows.ReadFile(fd, buf, null);

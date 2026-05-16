@@ -151,12 +151,12 @@ pub const Context = struct {
         const listener = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch unreachable;
         defer posix.close(listener);
 
-        var address = try std.net.Address.parseIp("127.0.0.1", 0);
+        var address = try posix.Address.initIp4(.{ 127, 0, 0, 1 }, 0);
         try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));
         try posix.bind(listener, &address.any, address.getOsSockLen());
         try posix.listen(listener, 0);
 
-        var len: posix.socklen_t = @sizeOf(std.net.Address);
+        var len: posix.socklen_t = @sizeOf(posix.Address);
         try posix.getsockname(listener, &address.any, &len);
 
         var thread = try std.Thread.spawn(.{}, struct {
