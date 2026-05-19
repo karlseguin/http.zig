@@ -357,8 +357,8 @@ pub fn Server(comptime H: type) type {
             const is_unix_socket = address.any.family == posix.AF.UNIX;
 
             const listener = blk: {
-                var sock_flags: u32 = posix.SOCK.STREAM | posix.SOCK.CLOEXEC;
-                if (blockingMode() == false) sock_flags |= posix.SOCK.NONBLOCK;
+                var sock_flags: u32 = posix.SOCK.STREAM | posix.CLOEXEC;
+                if (blockingMode() == false) sock_flags |= posix.NONBLOCK;
 
                 const proto = if (is_unix_socket) @as(u32, 0) else posix.IPPROTO.TCP;
                 break :blk try posix.socket(address.any.family, sock_flags, proto);
@@ -2063,18 +2063,16 @@ test "websocket: upgrade" {
     var wait_count: usize = 0;
 
     while (pos < 16) {
-        const n = posix.read(stream.socket.handle, buf[pos..]) catch |err| {
-            switch (err) {
-                error.WouldBlock => {
-                    if (wait_count == 100) {
-                        break;
-                    }
-                    wait_count += 1;
-                    try t.io.sleep(.fromMilliseconds(1), .awake);
-                    continue;
-                },
-                else => return err,
-            }
+        const n = posix.read(stream.socket.handle, buf[pos..]) catch |err| switch (err) {
+            error.WouldBlock => {
+                if (wait_count == 100) {
+                    break;
+                }
+                wait_count += 1;
+                try t.io.sleep(.fromMilliseconds(1), .awake);
+                continue;
+            },
+            else => return err,
         };
         if (n == 0) {
             break;
