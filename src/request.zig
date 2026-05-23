@@ -1373,7 +1373,7 @@ fn zig016HackRead(source: anytype, buf: []u8) !usize {
 }
 
 const allowedHeaderValueByte = blk: {
-    var v = [_]bool{false} ** 256;
+    var v: [256]bool = @splat(false);
     for ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_ :;.,/\"'?!(){}[]@<>=-+*#$&`|~^%\t\\") |b| {
         v[b] = true;
     }

@@ -641,14 +641,14 @@ test "response: multiple writers" {
     var res = ctx.response();
     {
         const w = res.writer();
-        try w.writeAll("a" ** 5000);
+        try w.writeAll(&@as([5000]u8, @splat('a')));
     }
     {
         const w = res.writer();
-        try w.writeAll("z" ** 10);
+        try w.writeAll(&@as([10]u8, @splat('z')));
     }
     try res.write();
-    try ctx.expect("HTTP/1.1 200 \r\nContent-Length: 5010\r\n\r\n" ++ ("a" ** 5000) ++ ("z" ** 10));
+    try ctx.expect("HTTP/1.1 200 \r\nContent-Length: 5010\r\n\r\n" ++ @as([5000]u8, @splat('a')) ++ @as([10]u8, @splat('z')));
 }
 
 test "response: written" {
