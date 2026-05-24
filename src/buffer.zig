@@ -18,10 +18,6 @@ pub const Buffer = struct {
     };
 };
 
-// When we're in blocking mode, the Pool is shared by threads in the blocking
-// worker's threadpool. Thus, we need to synchornize access.
-// When we're not in blocking mode, every worker gets its own Pool and the pool
-// is only accessed from that worker thread, so no lockig is required.
 pub const Pool = struct {
     io: Io,
     mutex: Mutex,
