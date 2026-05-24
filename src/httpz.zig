@@ -1980,7 +1980,7 @@ test "httpz: request body reader" {
         var writer = stream.writer(t.io, &.{});
         const w = &writer.interface;
 
-        try w.writeAll(std.fmt.comptimePrint("GET /test/req_reader HTTP/1.1\r\nContent-Length: {d}\r\n\r\n" ++ ("a" ** length), .{length}));
+        try w.writeAll(std.fmt.comptimePrint("GET /test/req_reader HTTP/1.1\r\nContent-Length: {d}\r\n\r\n" ++ @as([length]u8, @splat('a')), .{length}));
         try w.flush();
 
         var res = testReadParsed(stream);
@@ -2001,7 +2001,7 @@ test "httpz: request body reader" {
         var writer = stream.writer(t.io, &buf);
         const w = &writer.interface;
 
-        var req: []const u8 = std.fmt.comptimePrint("GET /test/req_reader HTTP/1.1\r\nContent-Length: {d}\r\n\r\n" ++ ("a" ** length), .{length});
+        var req: []const u8 = std.fmt.comptimePrint("GET /test/req_reader HTTP/1.1\r\nContent-Length: {d}\r\n\r\n" ++ @as([length]u8, @splat('a')), .{length});
         while (req.len > 0) {
             const len = random.uintAtMost(usize, req.len - 1) + 1;
             try w.writeAll(req[0..len]);

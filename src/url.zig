@@ -131,7 +131,7 @@ pub const Url = struct {
 };
 
 /// converts ascii to unsigned int of appropriate size
-pub fn asUint(comptime string: anytype) std.meta.Int(
+pub fn asUint(comptime string: anytype) @Int(
     .unsigned,
     @bitSizeOf(@TypeOf(string.*)) - 8, // (- 8) to exclude sentinel 0
 ) {
