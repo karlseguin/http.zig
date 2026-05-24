@@ -164,6 +164,29 @@ pub const Pool = struct {
 };
 
 const t = @import("t.zig");
+
+test "BufferPool race" {
+    if (comptime blockingMode()) return error.SkipZigTest;
+
+    var pool = try Pool.init(t.io, t.allocator, 1, 64);
+    defer pool.deinit();
+
+    const Ctx = struct {
+        fn worker(p: *Pool) void {
+            var i: usize = 0;
+            while (i < 500_000) : (i += 1) {
+                const buf = p.tryAlloc() orelse continue;
+                std.atomic.spinLoopHint();
+                p.release(buf);
+            }
+        }
+    };
+
+    var threads: [4]std.Thread = undefined;
+    for (&threads) |*thr| thr.* = try std.Thread.spawn(.{}, Ctx.worker, .{&pool});
+    for (&threads) |*thr| thr.join();
+}
+
 test "BufferPool" {
     var pool = try Pool.init(t.io, t.allocator, 2, 10);
     defer pool.deinit();
