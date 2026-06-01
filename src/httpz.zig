@@ -671,7 +671,7 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: an
 
     // firefox will send multiple values for this header
     const connection = req.header("connection") orelse return false;
-    if (std.ascii.indexOfIgnoreCase(connection, "upgrade") == null) {
+    if (std.ascii.findIgnoreCase(connection, "upgrade") == null) {
         return false;
     }
 
