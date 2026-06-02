@@ -294,6 +294,21 @@ const OVERLAPPED = extern struct {
     hEvent: ?HANDLE,
 };
 
+pub const HANDLE_FLAG_INHERIT = 1;
+pub const HANDLE_FLAG_PROTECT_FROM_CLOSE = 2;
+
+/// Disables handle inheritance for the given handle (Windows equivalent of
+/// FD_CLOEXEC). Works on socket handles as well as regular file handles.
+pub fn setNoInherit(handle: HANDLE) !void {
+    if (kernel32.SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) == .FALSE) {
+        switch (GetLastError()) {
+            .INVALID_HANDLE => return error.Unexpected,
+            .ACCESS_DENIED => return error.AccessDenied,
+            else => |err| return std_windows.unexpectedError(err),
+        }
+    }
+}
+
 /// kernel32 was severely trimmed in Zig 0.16, so re-declare the few entry
 /// points we need.
 const kernel32 = struct {
@@ -311,5 +326,11 @@ const kernel32 = struct {
         nNumberOfBytesToWrite: DWORD,
         lpNumberOfBytesWritten: ?*DWORD,
         lpOverlapped: ?*OVERLAPPED,
+    ) callconv(.winapi) BOOL;
+
+    pub extern "kernel32" fn SetHandleInformation(
+        hObject: HANDLE,
+        dwMask: DWORD,
+        dwFlags: DWORD,
     ) callconv(.winapi) BOOL;
 };
