@@ -87,7 +87,11 @@ pub fn socket(domain: u32, socket_type: u32, protocol: u32) !socket_t {
 fn setSockFlags(sock: socket_t, flags: u32) !void {
     if ((flags & CLOEXEC) != 0) {
         if (native_os == .windows) {
-            // TODO: Find out if this is supported for sockets
+            // Windows: disable handle inheritance. This prevents child
+            // processes from inheriting the socket, equivalent to FD_CLOEXEC.
+            // Socket handles are HANDLE objects in Windows NT, so
+            // SetHandleInformation works on them.
+            try windows.setNoInherit(@ptrCast(sock));
         } else {
             var fd_flags = fcntl(sock, F.GETFD, 0) catch |err| switch (err) {
                 error.FileBusy => unreachable,
@@ -116,7 +120,11 @@ fn setSockFlags(sock: socket_t, flags: u32) !void {
                     .WSANOTINITIALISED => unreachable,
                     .WSAENETDOWN => return error.NetworkSubsystemFailed,
                     .WSAENOTSOCK => return error.FileDescriptorNotASocket,
-                    // TODO: handle more errors
+                    .WSAEINVAL => return error.Unexpected,
+                    .WSAEFAULT,
+                    .WSAEOPNOTSUPP,
+                    .WSAEINPROGRESS,
+                    => unreachable,
                     else => |err| return windows.unexpectedWSAError(err),
                 }
             }
