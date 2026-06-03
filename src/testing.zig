@@ -151,9 +151,9 @@ pub const Testing = struct {
     pub fn form(self: *Testing, data: anytype) void {
         var arr: ArrayList(u8) = .empty;
 
-        inline for (@typeInfo(@TypeOf(data)).@"struct".fields) |field| {
-            const name = escapeString(self.arena, field.name) catch unreachable;
-            const value = escapeString(self.arena, @field(data, field.name)) catch unreachable;
+        inline for (@typeInfo(@TypeOf(data)).@"struct".field_names) |field_name| {
+            const name = escapeString(self.arena, field_name) catch unreachable;
+            const value = escapeString(self.arena, @field(data, field_name)) catch unreachable;
             arr.appendSlice(self.arena, name) catch unreachable;
             arr.append(self.arena, '=') catch unreachable;
             arr.appendSlice(self.arena, value) catch unreachable;

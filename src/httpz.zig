@@ -238,7 +238,7 @@ pub fn Server(comptime H: type) type {
         else => @compileError("Server handler must be a struct, got: " ++ @tagName(@typeInfo(H))),
     };
 
-    const ActionArg = if (comptime std.meta.hasFn(Handler, "dispatch")) @typeInfo(@TypeOf(Handler.dispatch)).@"fn".params[1].type.? else Action(H);
+    const ActionArg = if (comptime std.meta.hasFn(Handler, "dispatch")) @typeInfo(@TypeOf(Handler.dispatch)).@"fn".param_types[1].? else Action(H);
 
     const has_websocket = Handler != void and @hasDecl(Handler, "WebsocketHandler");
     const WebsocketHandler = if (has_websocket) Handler.WebsocketHandler else DummyWebsocketHandler;
@@ -594,7 +594,7 @@ pub fn Server(comptime H: type) type {
 
             const m = try arena.create(M);
             errdefer arena.destroy(m);
-            switch (comptime @typeInfo(@TypeOf(M.init)).@"fn".params.len) {
+            switch (comptime @typeInfo(@TypeOf(M.init)).@"fn".param_types.len) {
                 1 => m.* = try M.init(config),
                 2 => m.* = try M.init(config, MiddlewareConfig{
                     .arena = arena,
@@ -700,7 +700,7 @@ pub fn upgradeWebsocket(comptime H: type, req: *Request, res: *Response, ctx: an
     try w.flush();
 
     if (comptime std.meta.hasFn(H, "afterInit")) {
-        const params = @typeInfo(@TypeOf(H.afterInit)).@"fn".params;
+        const params = @typeInfo(@TypeOf(H.afterInit)).@"fn".param_types;
         try if (comptime params.len == 1) hc.handler.?.afterInit() else hc.handler.?.afterInit(ctx);
     }
     try ws_worker.setupConnection(hc);
@@ -2155,12 +2155,12 @@ test "websocket: stress" {
 }
 
 test "ContentType: forX" {
-    inline for (@typeInfo(ContentType).@"enum".fields) |field| {
-        if (comptime std.mem.eql(u8, "BINARY", field.name)) continue;
-        if (comptime std.mem.eql(u8, "EVENTS", field.name)) continue;
-        try t.expectEqual(@field(ContentType, field.name), ContentType.forExtension(field.name));
-        try t.expectEqual(@field(ContentType, field.name), ContentType.forExtension("." ++ field.name));
-        try t.expectEqual(@field(ContentType, field.name), ContentType.forFile("some_file." ++ field.name));
+    inline for (@typeInfo(ContentType).@"enum".field_names) |name| {
+        if (comptime std.mem.eql(u8, "BINARY", name)) continue;
+        if (comptime std.mem.eql(u8, "EVENTS", name)) continue;
+        try t.expectEqual(@field(ContentType, name), ContentType.forExtension(name));
+        try t.expectEqual(@field(ContentType, name), ContentType.forExtension("." ++ name));
+        try t.expectEqual(@field(ContentType, name), ContentType.forFile("some_file." ++ name));
     }
     // variations
     try t.expectEqual(ContentType.HTML, ContentType.forExtension(".htm"));
