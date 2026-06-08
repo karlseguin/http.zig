@@ -498,7 +498,7 @@ pub fn accept(
                     .WSANOTINITIALISED => unreachable, // not initialized WSA
                     .WSAECONNRESET => return error.ConnectionResetByPeer,
                     .WSAEFAULT => unreachable,
-                    .WSAENOTSOCK => return error.FileDescriptorNotASocket,
+                    .WSAEINTR, .WSAENOTSOCK => return error.SocketNotListening,
                     .WSAEINVAL => return error.SocketNotListening,
                     .WSAEMFILE => return error.ProcessFdQuotaExceeded,
                     .WSAENETDOWN => return error.NetworkSubsystemFailed,

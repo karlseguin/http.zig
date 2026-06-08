@@ -10,14 +10,23 @@ pub const std_windows = std.os.windows;
 const HANDLE = std_windows.HANDLE;
 const ULONG_PTR = std_windows.ULONG_PTR;
 const PVOID = std_windows.PVOID;
-const Win32Error = std_windows.Win32Error;
 const UnexpectedError = std.posix.UnexpectedError;
 const GetLastError = std_windows.GetLastError;
 
 pub const CloseHandle = std_windows.CloseHandle;
 
 pub fn unexpectedWSAError(err: ws2_32.WinsockError) UnexpectedError {
-    return std_windows.unexpectedError(@as(Win32Error, @enumFromInt(@intFromEnum(err))));
+    @branchHint(.cold);
+    // Do NOT route this through std_windows.unexpectedError: it takes a
+    // Win32Error and prints it with `{t}` (@tagName). Winsock codes live in the
+    // 10000+ range and have no Win32Error tag, so @tagName panics with "invalid
+    // enum value". ws2_32.WinsockError is its own exhaustive enum that does have
+    // tags for these codes, so format it directly.
+    if (std.options.unexpected_error_tracing) {
+        std.debug.print("error.Unexpected: WSAGetLastError({d}): {t}\n", .{ @intFromEnum(err), err });
+        std.debug.dumpCurrentStackTrace(.{ .first_address = @returnAddress() });
+    }
+    return error.Unexpected;
 }
 
 pub fn WSASocketW(
