@@ -738,22 +738,22 @@ const FallbackAllocator = struct {
     fn resize(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ra: usize) bool {
         const self: *FallbackAllocator = @ptrCast(@alignCast(ctx));
         if (self.fba.ownsPtr(buf.ptr)) {
-            if (self.fixed.rawResize(buf, alignment, new_len, ra)) {
-                return true;
-            }
-            self.fixed.rawFree(buf, alignment, ra);
-            return false;
+            // A failed resize must leave the allocation valid. Callers like
+            // ArenaAllocator keep using the buffer after a false return, so
+            // we cannot reclaim it here (that caused memory to be handed out
+            // twice and corrupted live arena nodes).
+            return self.fixed.rawResize(buf, alignment, new_len, ra);
         }
         return self.fallback.rawResize(buf, alignment, new_len, ra);
     }
 
     fn free(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ra: usize) void {
-        _ = ctx;
-        _ = buf;
-        _ = alignment;
-        _ = ra;
-        // hack.
-        // Always noop since, in our specific usage, we know fallback is an arena.
+        const self: *FallbackAllocator = @ptrCast(@alignCast(ctx));
+        if (self.fba.ownsPtr(buf.ptr)) {
+            // reclaims thread_buf space when buf is the fba's last allocation
+            self.fixed.rawFree(buf, alignment, ra);
+        }
+        // else: fallback is an arena in our specific usage, freeing is a noop
     }
 
     fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
@@ -2152,6 +2152,73 @@ test "websocket: stress" {
         }.run, .{i}) catch return;
     }
     for (&threads) |*th| th.join();
+}
+
+test "FallbackAllocator: failed resize leaves allocation valid" {
+    var thread_buf: [1024]u8 = undefined;
+    var req_arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer req_arena.deinit();
+
+    var fba = FixedBufferAllocator.init(&thread_buf);
+    var fb = FallbackAllocator{
+        .fba = &fba,
+        .fallback = req_arena.allocator(),
+        .fixed = fba.allocator(),
+    };
+    const allocator = fb.allocator();
+
+    const a = try allocator.alloc(u8, 100);
+    @memset(a, 1);
+
+    // can't grow past thread_buf, must fail AND leave `a` valid
+    try t.expectEqual(false, allocator.resize(a, 2000));
+
+    // `a` is still live, a new allocation must not alias it
+    const b = try allocator.alloc(u8, 100);
+    @memset(b, 2);
+    try t.expectEqual(true, a.ptr != b.ptr);
+    try t.expectEqual(1, a[0]);
+
+    // an explicit free should reclaim the fba space
+    allocator.free(b);
+    allocator.free(a);
+    const c = try allocator.alloc(u8, 800);
+    try t.expectEqual(true, fba.ownsPtr(c.ptr));
+}
+
+test "FallbackAllocator: nested arena survives node resize failure" {
+    // Simulates a handler that creates its own arena on top of req.arena
+    // while the response writer grows in the same allocator. The arena
+    // grows its node via resize; when that fails, the node must remain
+    // valid or its header gets overwritten by subsequent allocations.
+    var thread_buf: [2048]u8 = undefined;
+    var req_arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer req_arena.deinit();
+
+    var fba = FixedBufferAllocator.init(&thread_buf);
+    var fb = FallbackAllocator{
+        .fba = &fba,
+        .fallback = req_arena.allocator(),
+        .fixed = fba.allocator(),
+    };
+    const allocator = fb.allocator();
+
+    var nested = std.heap.ArenaAllocator.init(allocator);
+    defer nested.deinit();
+
+    // first allocation puts an arena node in thread_buf, the second forces
+    // a node resize that fails (larger than thread_buf)
+    _ = try nested.allocator().alloc(u8, 64);
+    _ = try nested.allocator().alloc(u8, 4096);
+
+    // response writer keeps allocating from the same request allocator. If
+    // the failed resize freed the node, this overwrites the node header and
+    // nested.deinit() crashes.
+    var out = std.Io.Writer.Allocating.init(allocator);
+    defer out.deinit();
+    for (0..100) |_| {
+        try out.writer.writeAll("{\"key\": \"some json value written by the response writer\"}");
+    }
 }
 
 test "ContentType: forX" {
