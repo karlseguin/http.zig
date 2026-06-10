@@ -551,6 +551,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             };
             ready_sem.post(io);
             defer self.websocket.shutdown();
+            // The graveyard may be non-empty when the loop exits via .shutdown
+            // mid-batch; release before deinit so pools account for everything.
+            defer self.reapGraveyard();
 
             var now = timestamp(io);
             var last_timeout = now;
@@ -586,59 +589,73 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                             };
                         },
                         .signal => self.processSignal(&closed_conn),
-                        .recv => |conn| switch (conn.protocol) {
-                            .http => |http_conn| {
-                                switch (http_conn.getState()) {
-                                    .request, .keepalive => {},
-                                    .active, .handover => {
-                                        // we need to finish whatever we're doing
-                                        // before we can process more data (i.e. if
-                                        // the connection is being upgrade to websocket,
-                                        // this will be a websocket message.)
+                        .recv => |conn| {
+                            if (conn.dead) {
+                                // This conn was retired earlier in this same
+                                // harvested batch (e.g. by a handover/disown
+                                // signal processed before this event). Its
+                                // memory is only valid because reaping is
+                                // deferred until the batch completes. Skip.
+                                continue;
+                            }
+                            switch (conn.protocol) {
+                                .http => |http_conn| {
+                                    switch (http_conn.getState()) {
+                                        .request, .keepalive => {},
+                                        .active, .handover => {
+                                            // we need to finish whatever we're doing
+                                            // before we can process more data (i.e. if
+                                            // the connection is being upgrade to websocket,
+                                            // this will be a websocket message.)
+                                            continue;
+                                        },
+                                    }
+
+                                    // At this point, the connection is either in
+                                    // keepalive or request. Either way, we know no
+                                    // other thread is accessing the connection, so we
+                                    // can access _state directly.
+
+                                    const stream = http_conn.stream;
+                                    var reader = stream.reader(io, &.{}); // Request.State does its own buffering
+                                    const done = http_conn.req_state.parse(http_conn, &reader.interface) catch |err| {
+                                        // maybe a write fail or something, doesn't matter, we're closing the connection
+                                        requestError(http_conn, reader.err orelse err) catch {};
+
+                                        // impossible to fail when false is passed
+                                        http_conn.requestDone(self.retain_allocated_bytes, false) catch unreachable;
+                                        conn.close();
+                                        self.disown(conn);
+                                        if (self.full) self.enableListener(listener);
                                         continue;
-                                    },
-                                }
+                                    };
 
-                                // At this point, the connection is either in
-                                // keepalive or request. Either way, we know no
-                                // other thread is accessing the connection, so we
-                                // can access _state directly.
+                                    if (done == false) {
+                                        self.swapList(conn, .request);
+                                        continue;
+                                    }
 
-                                const stream = http_conn.stream;
-                                var reader = stream.reader(io, &.{}); // Request.State does its own buffering
-                                const done = http_conn.req_state.parse(http_conn, &reader.interface) catch |err| {
-                                    // maybe a write fail or something, doesn't matter, we're closing the connection
-                                    requestError(http_conn, reader.err orelse err) catch {};
-
-                                    // impossible to fail when false is passed
-                                    http_conn.requestDone(self.retain_allocated_bytes, false) catch unreachable;
-                                    conn.close();
-                                    self.disown(conn);
-                                    if (self.full) self.enableListener(listener);
-                                    continue;
-                                };
-
-                                if (done == false) {
-                                    self.swapList(conn, .request);
-                                    continue;
-                                }
-
-                                self.swapList(conn, .active);
-                                thread_pool.spawn(.{ self, now, conn });
-                            },
-                            .websocket => {
-                                if (conn.acquireProcessing() == false) {
-                                    // Connection is already being processed. We need
-                                    // to wait for the current processing to complete.
-                                    // See the processing field in Conn
-                                    continue;
-                                }
-                                thread_pool.spawn(.{ self, now, conn });
-                            },
+                                    self.swapList(conn, .active);
+                                    thread_pool.spawn(.{ self, now, conn });
+                                },
+                                .websocket => {
+                                    if (conn.acquireProcessing() == false) {
+                                        // Connection is already being processed. We need
+                                        // to wait for the current processing to complete.
+                                        // See the processing field in Conn
+                                        continue;
+                                    }
+                                    thread_pool.spawn(.{ self, now, conn });
+                                },
+                            }
                         },
                         .shutdown => return,
                     }
                 }
+
+                // The harvested batch is fully processed; it is now safe to
+                // release the memory of connections retired during it.
+                self.reapGraveyard();
 
                 const batch_size = thread_pool.batch_size;
                 if (batch_size > 0) {
