@@ -408,6 +408,14 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         // that alone) and the worker thread will process it.
         handover_list: ConcurrentList(Conn(WSH)),
 
+        // Connections retired mid-batch: removed from their state list, fd no
+        // longer monitored, but memory NOT yet released — the harvested event
+        // batch currently being processed may still hold pointers to them
+        // (epoll_ctl(DEL)/close() do not retract already-harvested events).
+        // Only the worker thread touches this. reapGraveyard() releases the
+        // entries once the batch is fully processed.
+        graveyard: List(Conn(WSH)),
+
         // A pool of HTTPConn objects. The pool maintains a configured min # of these.
         // An HTTPConn is relatively expensive, since we pre-allocate all types
         // of things (a Request.State and Response.State).
@@ -488,6 +496,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 .request_list = .{},
                 .handover_list = .{},
                 .keepalive_list = .{},
+                .graveyard = .{},
                 .buffer_pool = buffer_pool,
                 .conn_mem_pool = conn_mem_pool,
                 .http_conn_pool = http_conn_pool,
@@ -1506,6 +1515,13 @@ pub fn Conn(comptime WSH: type) type {
         // wait calls as we're switching to DISPATCH. So this guard is there just
         // for thar narrow window.
         processing: bool = false,
+
+        // Set when the connection is retired (graveyarded) while a harvested
+        // event batch may still hold a reference to it. The event loop checks
+        // this before processing a .recv event so a stale event for a retired
+        // connection no-ops. accept() re-initializes the whole struct on
+        // node reuse, which resets this to false.
+        dead: bool = false,
 
         const Self = @This();
 
