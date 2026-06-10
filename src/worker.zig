@@ -878,18 +878,53 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             }
         }
 
+        // Retire a connection: detach it from its state list, mark it dead and
+        // queue it on the graveyard. Memory is NOT released here — an event
+        // referencing this conn may already have been harvested into the batch
+        // currently being processed (epoll_ctl(DEL)/close() do not retract
+        // harvested events). reapGraveyard() releases it once the batch is done.
         fn disown(self: *Self, conn: *Conn(WSH)) void {
-            const io = self.io;
-            const http_conn = conn.protocol.http;
-            switch (http_conn._state) {
-                .request => self.request_list.remove(conn),
-                .handover => self.handover_list.remove(io, conn),
-                .keepalive => self.keepalive_list.remove(io, conn),
-                .active => unreachable,
+            std.debug.assert(!conn.dead);
+            switch (conn.protocol) {
+                .http => |http_conn| switch (http_conn._state) {
+                    .request => self.request_list.remove(conn),
+                    // .handover connections only reach disown from
+                    // processSignal, which snapshots and re-initializes the
+                    // handover list — they are already detached. Removing them
+                    // from the live list here (with their stale snapshot
+                    // prev/next pointers) corrupts it when a thread-pool
+                    // thread has concurrently inserted a new entry.
+                    .handover => {},
+                    .keepalive => self.keepalive_list.remove(self.io, conn),
+                    .active => unreachable,
+                },
+                // processSignal's websocket-handover failure path: the
+                // HTTPConn was already released back to its pool and the
+                // protocol switched, and the conn came from the snapshotted
+                // handover list, so it is already detached.
+                .websocket => {},
             }
             self.len -= 1;
-            self.http_conn_pool.release(http_conn);
-            self.conn_mem_pool.destroy(conn);
+            conn.dead = true;
+            self.graveyard.insert(conn);
+        }
+
+        // Release the memory of all retired connections. Must only run when no
+        // harvested event batch is in flight: between loop.wait() calls, or
+        // after the run loop has exited.
+        fn reapGraveyard(self: *Self) void {
+            var c = self.graveyard.head;
+            while (c) |conn| {
+                c = conn.next;
+                switch (conn.protocol) {
+                    .http => |http_conn| self.http_conn_pool.release(http_conn),
+                    // The HTTPConn was already released when the protocol
+                    // switched to websocket.
+                    .websocket => {},
+                }
+                self.conn_mem_pool.destroy(conn);
+            }
+            self.graveyard = .{};
         }
 
         // Enforces timeouts, and returns when the next timeout should be checked.
