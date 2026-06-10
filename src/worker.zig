@@ -789,8 +789,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 switch (http_conn.handover) {
                     .close, .unknown => {
                         closed_bool.* = true;
-                        // http handler already closed the socket
-                        self.disown(conn);
+                        // http handler already closed the socket. The conn came
+                        // from the snapshotted handover list — already detached.
+                        self.disownDetached(conn);
                     },
                     .disown => {
                         // When res.disown() was called, we immediately removed
@@ -799,14 +800,14 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                         // before we get back here.
                         // https://github.com/karlseguin/http.zig/issues/129#issuecomment-3031411404
                         closed_bool.* = true;
-                        self.disown(conn);
+                        self.disownDetached(conn);
                     },
                     .websocket => |ptr| {
                         if (comptime WSH == httpz.DummyWebsocketHandler) {
                             std.debug.print("Your httpz handler must have a `WebsocketHandler` declaration. This must be the same type passed to `httpz.upgradeWebsocket`. Closing the connection.\n", .{});
                             closed_bool.* = true;
                             conn.close();
-                            self.disown(conn);
+                            self.disownDetached(conn);
                             continue;
                         }
 
@@ -819,7 +820,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                             metrics.internalError();
                             closed_bool.* = true;
                             conn.close();
-                            self.disown(conn);
+                            self.disownDetached(conn);
                             continue;
                         };
                     },
@@ -895,32 +896,30 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             }
         }
 
-        // Retire a connection: detach it from its state list, mark it dead and
-        // queue it on the graveyard. Memory is NOT released here — an event
-        // referencing this conn may already have been harvested into the batch
-        // currently being processed (epoll_ctl(DEL)/close() do not retract
-        // harvested events). reapGraveyard() releases it once the batch is done.
+        // Retire a connection that is still linked in its state list (the recv
+        // parse-error path and accept's errdefer). Connections that are already
+        // detached — processSignal's snapshotted handover conns and
+        // closeList's timed-out splice — must use disownDetached instead:
+        // removing them here through their stale prev/next pointers corrupts
+        // the live list.
         fn disown(self: *Self, conn: *Conn(WSH)) void {
-            std.debug.assert(!conn.dead);
-            switch (conn.protocol) {
-                .http => |http_conn| switch (http_conn._state) {
-                    .request => self.request_list.remove(conn),
-                    // .handover connections only reach disown from
-                    // processSignal, which snapshots and re-initializes the
-                    // handover list — they are already detached. Removing them
-                    // from the live list here (with their stale snapshot
-                    // prev/next pointers) corrupts it when a thread-pool
-                    // thread has concurrently inserted a new entry.
-                    .handover => {},
-                    .keepalive => self.keepalive_list.remove(self.io, conn),
-                    .active => unreachable,
-                },
-                // processSignal's websocket-handover failure path: the
-                // HTTPConn was already released back to its pool and the
-                // protocol switched, and the conn came from the snapshotted
-                // handover list, so it is already detached.
-                .websocket => {},
+            const http_conn = conn.protocol.http;
+            switch (http_conn._state) {
+                .request => self.request_list.remove(conn),
+                .keepalive => self.keepalive_list.remove(self.io, conn),
+                .handover, .active => unreachable,
             }
+            self.disownDetached(conn);
+        }
+
+        // Retire a connection: mark it dead and queue it on the graveyard. The
+        // conn must no longer be in any state list. Memory is NOT released
+        // here — an event referencing this conn may already have been
+        // harvested into the batch currently being processed
+        // (epoll_ctl(DEL)/close() do not retract harvested events).
+        // reapGraveyard() releases it once the batch is done.
+        fn disownDetached(self: *Self, conn: *Conn(WSH)) void {
+            std.debug.assert(!conn.dead);
             self.len -= 1;
             conn.dead = true;
             self.graveyard.insert(conn);
@@ -993,6 +992,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             while (conn) |c| {
                 const timeout = c.protocol.http.timeout;
                 if (timeout > now) {
+                    // c becomes the new head; its prev must not dangle into
+                    // the spliced-out timed_out chain.
+                    c.prev = null;
                     list.head = c;
                     return .{ timed_out, count, timeout };
                 }
@@ -1010,7 +1012,10 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             while (conn) |c| {
                 conn = c.next;
                 c.close();
-                self.disown(c);
+                // collectTimedOut already spliced these conns out of the live
+                // list — use disownDetached to avoid list-removing them again
+                // through their rewritten prev/next pointers.
+                self.disownDetached(c);
             }
         }
 
