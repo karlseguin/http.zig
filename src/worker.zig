@@ -851,16 +851,25 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         }
 
         pub fn processWebsocketData(self: *Self, conn: *Conn(WSH), thread_buf: []u8, hc: *ws.HandlerConn(WSH)) void {
-            defer conn.releaseProcessing();
-
             var ws_conn = &hc.conn;
             const success = self.websocket.worker.dataAvailable(hc, thread_buf);
             if (success == false) {
                 ws_conn.close(.{ .code = 4997, .reason = "wsz" }) catch {};
                 self.websocket.cleanupConn(hc);
+                conn.releaseProcessing();
             } else if (ws_conn.isClosed()) {
                 self.websocket.cleanupConn(hc);
+                conn.releaseProcessing();
             } else {
+                // Release `processing` before re-arming. With EPOLLONESHOT, re-arming
+                // while still holding `processing` loses a read that arrives in the
+                // window between the re-arm and the release: the event loop sees the
+                // connection as busy (acquireProcessing fails) and the one-shot arming
+                // is consumed, so the read is dropped and the connection hangs / leaks
+                // (CLOSE_WAIT). Releasing first means a read arriving after this
+                // dispatches a fresh worker, and a read already buffered is re-reported
+                // when rearmRead arms the readable fd.
+                conn.releaseProcessing();
                 self.loop.rearmRead(conn) catch |err| {
                     log.debug("({f}) failed to add read event monitor: {}", .{ ws_conn.address, err });
                     ws_conn.close(.{ .code = 4998, .reason = "wsz" }) catch {};
