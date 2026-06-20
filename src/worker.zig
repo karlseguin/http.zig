@@ -568,6 +568,16 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 now = timestamp(io);
                 var closed_conn = false;
 
+                // Defer signal handling (which disowns/frees handed-over
+                // connections) until the whole event batch is drained. epoll can
+                // return a .signal and a .recv for the same connection in one
+                // batch; processing the signal first would free the connection,
+                // and the later .recv would then dereference freed memory in
+                // getState(). By deferring, every .recv runs while its connection
+                // is still alive, sees the .handover state set before the signal,
+                // and skips it; the free happens safely afterward.
+                var has_signal = false;
+
                 while (it.next()) |event| {
                     switch (event) {
                         .accept => self.accept(listener, now) catch |err| {
@@ -576,7 +586,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                                 log.err("Failed to do a mini recovery sleep: {}", .{err2});
                             };
                         },
-                        .signal => self.processSignal(&closed_conn),
+                        .signal => has_signal = true,
                         .recv => |conn| switch (conn.protocol) {
                             .http => |http_conn| {
                                 switch (http_conn.getState()) {
@@ -630,6 +640,10 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                         .shutdown => return,
                     }
                 }
+
+                // Now that every .recv in this batch has been handled, it is safe
+                // to disown/free the connections handed over since the last batch.
+                if (has_signal) self.processSignal(&closed_conn);
 
                 const batch_size = thread_pool.batch_size;
                 if (batch_size > 0) {
