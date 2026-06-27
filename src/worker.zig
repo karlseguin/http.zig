@@ -504,6 +504,11 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             self.websocket.deinit();
             allocator.destroy(self.websocket);
 
+            // Join in-flight handlers before freeing the pool. run() only stops
+            // the event loop, so a handler can still be mid-callback here; without
+            // this, deinit frees its stack/buffer (and the caller proceeds to tear
+            // down resources the handler is still using) -> use-after-free.
+            self.thread_pool.stop();
             self.thread_pool.deinit();
 
             self.shutdownList(&self.request_list);
