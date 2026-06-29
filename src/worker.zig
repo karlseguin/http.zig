@@ -501,14 +501,18 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
         pub fn deinit(self: *Self) void {
             const allocator = self.allocator;
 
+            // Join in-flight handlers before freeing ANY connection state they
+            // may still be reading. run() only stops the event loop, so a handler
+            // can still be mid-callback here. This must come before
+            // websocket.deinit(), which frees the per-connection read buffers via
+            // buffer_provider.deinit(): a handler still in dataAvailable() can be
+            // reading a parsed message that holds zero-copy slices into those
+            // buffers, so joining afterward would be too late -> use-after-free.
+            self.thread_pool.stop();
+
             self.websocket.deinit();
             allocator.destroy(self.websocket);
 
-            // Join in-flight handlers before freeing the pool. run() only stops
-            // the event loop, so a handler can still be mid-callback here; without
-            // this, deinit frees its stack/buffer (and the caller proceeds to tear
-            // down resources the handler is still using) -> use-after-free.
-            self.thread_pool.stop();
             self.thread_pool.deinit();
 
             self.shutdownList(&self.request_list);
