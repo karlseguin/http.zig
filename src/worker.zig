@@ -786,7 +786,13 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 switch (http_conn.handover) {
                     .close, .unknown => {
                         closed_bool.* = true;
-                        // http handler already closed the socket
+                        // Remove from the event loop and close here, on the loop
+                        // thread, before disown() recycles the Conn. The fd is
+                        // still open (processHTTPData no longer closes it on the
+                        // worker thread), so the DEL is valid and no later batch
+                        // can deliver a .recv for the freed Conn.
+                        loop.remove(conn);
+                        conn.close();
                         self.disown(conn);
                     },
                     .disown => {
@@ -857,15 +863,15 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     return;
                 },
                 .close, .unknown => {
-                    // We _have_ to close the connection here in order to avoid
-                    // a bad race condition. By closing it here, we [automatically]
-                    // remove the connection from epoll/kqueue, which ensures that
-                    // in a single loop through ready-event we won't process both
-                    // a signal and a recv message.
-                    // If we don't do this here, then you'd get a segfault if
-                    // the signal cleared the connetion, and then in recv we'd
-                    // try to call conn.getState() after the signal.
-                    posix.close(http_conn.stream.socket.handle);
+                    // Closing the socket (which removes it from epoll/kqueue) is
+                    // deferred to processSignal on the event-loop thread. Closing
+                    // here, on a worker thread, raced epoll_wait: the fd could
+                    // stay armed past the point where disown() recycled the Conn,
+                    // so a later batch delivered a .recv carrying a pointer to
+                    // freed memory (getState on a null/recycled HTTPConn). The
+                    // signal-vs-recv-in-one-batch case this used to guard against
+                    // is now handled by deferring signal processing to the end of
+                    // the event batch plus the getState() .handover check in recv.
                 },
                 .websocket, .disown => {},
             }
@@ -1138,6 +1144,17 @@ fn KQueue(comptime WSH: type) type {
             try self.change(conn.getSocket(), @intFromPtr(conn), posix.system.EVFILT.READ, posix.system.EV.ADD | posix.system.EV.ENABLE, 0);
         }
 
+        fn remove(self: *Self, conn: *Conn(WSH)) void {
+            _ = posix.kevent(self.fd, &.{.{
+                .ident = @intCast(conn.getSocket()),
+                .filter = posix.system.EVFILT.READ,
+                .flags = posix.system.EV.DELETE,
+                .fflags = 0,
+                .data = 0,
+                .udata = 0,
+            }}, &.{}, null) catch {};
+        }
+
         fn rearmRead(self: *Self, conn: *Conn(WSH)) !void {
             // called from the worker thread, can't use change_buffer
             // must remove then re-add for macOS
@@ -1305,6 +1322,10 @@ fn EPoll(comptime WSH: type) type {
                 .events = linux.EPOLL.IN | linux.EPOLL.RDHUP,
             };
             return posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, conn.getSocket(), &event);
+        }
+
+        fn remove(self: *Self, conn: *Conn(WSH)) void {
+            posix.epoll_ctl(self.fd, linux.EPOLL.CTL_DEL, conn.getSocket(), null) catch {};
         }
 
         fn rearmRead(self: *Self, conn: *Conn(WSH)) !void {
