@@ -364,6 +364,11 @@ pub fn Server(comptime H: type) type {
                 break :blk try posix.socket(address.any.family, sock_flags, proto);
             };
 
+            errdefer {
+                posix.close(listener);
+                self._listener = null;
+            }
+
             if (is_unix_socket) {
                 // TODO: Broken on darwin:
                 // https://github.com/ziglang/zig/issues/17260
