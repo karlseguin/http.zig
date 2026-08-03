@@ -369,13 +369,8 @@ pub fn Server(comptime H: type) type {
                 self._listener = null;
             }
 
-            if (is_unix_socket) {
-                // TODO: Broken on darwin:
-                // https://github.com/ziglang/zig/issues/17260
-                // if (@hasDecl(os.TCP, "NODELAY")) {
-                //  try os.setsockopt(socket.sockfd.?, os.IPPROTO.TCP, os.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
-                // }
-                try posix.setsockopt(listener, posix.IPPROTO.TCP, 1, &std.mem.toBytes(@as(c_int, 1)));
+            if (is_unix_socket == false) {
+                try posix.setsockopt(listener, posix.IPPROTO.TCP, posix.TCP.NODELAY, &std.mem.toBytes(@as(c_int, 1)));
             }
 
             try posix.setsockopt(listener, posix.SOL.SOCKET, posix.SO.REUSEADDR, &std.mem.toBytes(@as(c_int, 1)));

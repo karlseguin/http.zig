@@ -11,6 +11,7 @@ pub const AF = posix.AF;
 pub const SO = posix.SO;
 pub const SOL = posix.SOL;
 pub const SOCK = posix.SOCK;
+pub const TCP = posix.TCP;
 pub const fd_t = posix.fd_t;
 pub const socket_t = posix.socket_t;
 pub const timeval = posix.timeval;
