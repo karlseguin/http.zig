@@ -970,6 +970,10 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             while (conn) |c| {
                 const timeout = c.protocol.http.timeout;
                 if (timeout > now) {
+                    // The expired connections ahead of this one were moved into
+                    // `timed_out` and are about to be destroyed, so this node
+                    // must not keep pointing back into them.
+                    c.prev = null;
                     list.head = c;
                     return .{ timed_out, count, timeout };
                 }
@@ -982,12 +986,18 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             return .{ timed_out, count, null };
         }
 
+        // `list` holds connections that collectTimedOut already detached from
+        // request_list/keepalive_list, so they must not be removed from those
+        // again. disown() would do exactly that, and List.remove rewrites head
+        // and tail from a node that is no longer a member.
         fn closeList(self: *Self, list: List(Conn(WSH))) void {
             var conn = list.head;
             while (conn) |c| {
                 conn = c.next;
                 c.close();
-                self.disown(c);
+                self.len -= 1;
+                self.http_conn_pool.release(c.protocol.http);
+                self.conn_mem_pool.destroy(c);
             }
         }
 
