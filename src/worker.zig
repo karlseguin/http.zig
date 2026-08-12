@@ -1578,7 +1578,7 @@ pub fn Conn(comptime WSH: type) type {
 
         pub fn acquireProcessing(self: *Self) bool {
             // returns true if it was previously false
-            return @atomicRmw(bool, &self.processing, .Xchg, true, .monotonic) == false;
+            return @atomicRmw(bool, &self.processing, .Xchg, true, .acquire) == false;
         }
 
         pub fn releaseProcessing(self: *Self) void {

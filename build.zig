@@ -31,6 +31,7 @@ pub fn build(b: *std.Build) !void {
         const test_filter = b.option([]const []const u8, "test-filter", "Filters for test: specify multiple times for multiple filters");
         const tests = b.addTest(.{
             .root_module = httpz_module,
+            .use_llvm = true,
             .filters = test_filter orelse &.{},
             .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
         });
