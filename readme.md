@@ -429,6 +429,17 @@ while (it.next()) |kv| {
 }
 ```
 
+A key can appear multiple times (e.g. `?tag=a&tag=b`). `get` returns the first value. To get every value for a key, use `getAll`:
+
+```zig
+var it = (try req.query()).getAll("tag");
+while (it.next()) |tag| {
+  // tag is []const u8
+}
+```
+
+`getAll` is available on headers, the query string, form data and multipart form data.
+
 ## Body
 
 The body of the request, if any, can be accessed using `req.body()`. This returns a `?[]const u8`.
@@ -502,13 +513,25 @@ The original casing of both the key and the name are preserved.
 To iterate over all fields, use:
 
 ```zig
-var it = req.multiFormData.iterator();
+var it = (try req.multiFormData()).iterator();
 while (it.next()) |kv| {
   // kv.key
   // kv.value.value
   // kv.value.filename (optional)
 }
 ```
+
+When the same field name appears multiple times, such as from an `<input type=file name=files multiple>`, `get` only returns the first. Use `getAll` to iterate through every value for the field:
+
+```zig
+var it = (try req.multiFormData()).getAll("files");
+while (it.next()) |file| {
+  // file.value
+  // file.filename (optional)
+}
+```
+
+Note that each uploaded file counts towards `request.max_multiform_count`.
 
 Once this function is called, `req.formData()` will no longer work (because the body is assumed parsed).
 

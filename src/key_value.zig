@@ -60,6 +60,18 @@ fn KeyValue(V: type, hashFn: fn (key: []const u8) callconv(.@"inline") u8) type 
             return null;
         }
 
+        pub fn getAll(self: *const Self, key: []const u8) ValueIterator {
+            const len = self.len;
+            return .{
+                .pos = 0,
+                .key = key,
+                .hash = hashFn(key),
+                .keys = self.keys[0..len],
+                .values = self.values[0..len],
+                .hashes = self.hashes[0..len],
+            };
+        }
+
         pub fn has(self: *const Self, key: []const u8) bool {
             return self.get(key) != null;
         }
@@ -98,6 +110,32 @@ fn KeyValue(V: type, hashFn: fn (key: []const u8) callconv(.@"inline") u8) type 
                     .key = self.keys[pos],
                     .value = self.values[pos],
                 };
+            }
+        };
+
+        pub const ValueIterator = struct {
+            pos: usize,
+            hash: u8,
+            key: []const u8,
+            keys: [][]const u8,
+            values: []V,
+            hashes: []u8,
+
+            pub fn next(self: *ValueIterator) ?V {
+                const key = self.key;
+                const hash = self.hash;
+                const keys = self.keys;
+                var pos = self.pos;
+                while (pos < keys.len) {
+                    const i = pos;
+                    pos += 1;
+                    if (self.hashes[i] == hash and std.mem.eql(u8, keys[i], key)) {
+                        self.pos = pos;
+                        return self.values[i];
+                    }
+                }
+                self.pos = pos;
+                return null;
             }
         };
     };
@@ -170,6 +208,69 @@ test "KeyValue: ignores beyond max" {
         }
         try t.expectEqual(null, it.next());
     }
+}
+
+test "KeyValue: getAll" {
+    var kv = try StringKeyValue.init(t.allocator, 5);
+    defer kv.deinit(t.allocator);
+
+    {
+        var it = kv.getAll("tag");
+        try t.expectEqual(null, it.next());
+    }
+
+    var k1 = "tag".*;
+    var k2 = "other".*;
+    kv.add(&k1, "a");
+    kv.add(&k2, "x");
+    kv.add(&k1, "b");
+    kv.add(&k1, "c");
+
+    try t.expectEqual("a", kv.get("tag").?);
+
+    {
+        var it = kv.getAll("tag");
+        try t.expectString("a", it.next().?);
+        try t.expectString("b", it.next().?);
+        try t.expectString("c", it.next().?);
+        try t.expectEqual(null, it.next());
+        try t.expectEqual(null, it.next());
+    }
+
+    {
+        var it = kv.getAll("other");
+        try t.expectString("x", it.next().?);
+        try t.expectEqual(null, it.next());
+    }
+
+    {
+        var it = kv.getAll("nope");
+        try t.expectEqual(null, it.next());
+    }
+}
+
+test "MultiFormKeyValue: getAll" {
+    var kv = try MultiFormKeyValue.init(t.allocator, 3);
+    defer kv.deinit(t.allocator);
+
+    var k1 = "files".*;
+    var k2 = "name".*;
+    kv.add(&k1, .{ .value = "c1", .filename = "f1.txt" });
+    kv.add(&k2, .{ .value = "leto" });
+    kv.add(&k1, .{ .value = "c2", .filename = "f2.txt" });
+
+    var it = kv.getAll("files");
+    {
+        const f = it.next().?;
+        try t.expectString("c1", f.value);
+        try t.expectString("f1.txt", f.filename.?);
+    }
+    {
+        const f = it.next().?;
+        try t.expectString("c2", f.value);
+        try t.expectString("f2.txt", f.filename.?);
+    }
+    try t.expectEqual(null, it.next());
 }
 
 test "MultiFormKeyValue: get" {

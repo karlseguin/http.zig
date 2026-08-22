@@ -2025,6 +2025,39 @@ test "body: multiFormData valid" {
     }
 
     {
+        // repeated field names (e.g. <input type=file multiple>)
+        var r = try testParse(buildRequest(&.{ "POST /upload HTTP/1.1", "Content-Type: multipart/form-data; boundary=XYZ" }, &.{ "--XYZ\r\n", "Content-Disposition: form-data; name=\"name\"\r\n\r\n", "leto\r\n", "--XYZ\r\n", "Content-Disposition: form-data; name=\"files\"; filename=\"a.txt\"\r\n\r\n", "content a\r\n", "--XYZ\r\n", "Content-Disposition: form-data; name=\"files\"; filename=\"b.txt\"\r\n\r\n", "content b\r\n", "--XYZ\r\n", "Content-Disposition: form-data; name=\"files\"; filename=\"c.txt\"\r\n\r\n", "content c\r\n", "--XYZ--\r\n" }), .{ .max_multiform_count = 5 });
+
+        const formData = try r.multiFormData();
+        try t.expectEqual(4, formData.len);
+
+        // get returns the first
+        try t.expectString("a.txt", formData.get("files").?.filename.?);
+
+        var it = formData.getAll("files");
+        {
+            const f = it.next().?;
+            try t.expectString("a.txt", f.filename.?);
+            try t.expectString("content a", f.value);
+        }
+        {
+            const f = it.next().?;
+            try t.expectString("b.txt", f.filename.?);
+            try t.expectString("content b", f.value);
+        }
+        {
+            const f = it.next().?;
+            try t.expectString("c.txt", f.filename.?);
+            try t.expectString("content c", f.value);
+        }
+        try t.expectEqual(null, it.next());
+
+        var name_it = formData.getAll("name");
+        try t.expectString("leto", name_it.next().?.value);
+        try t.expectEqual(null, name_it.next());
+    }
+
+    {
         // enforce limit
         var r = try testParse(buildRequest(&.{ "GET /something HTTP/1.1", "Content-Type: multipart/form-data; boundary=----99900AB" }, &.{ "------99900AB\r\n", "Content-Type: text/plain; charset=utf-8\r\n", "Content-Disposition: form-data; name=\"fie\\\" \\?l\\d\"\r\n\r\n", "Value - 1\r\n", "------99900AB\r\n", "Content-Disposition: form-data; filename=another; name=field2\r\n\r\n", "Value - 2\r\n", "------99900AB--\r\n" }), .{ .max_multiform_count = 1 });
 

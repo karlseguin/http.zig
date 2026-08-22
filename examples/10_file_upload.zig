@@ -10,6 +10,7 @@ const PORT = 8810;
 // 2. Access uploaded file content and metadata
 // 3. Save uploaded files to disk
 // 4. Handle both file and regular form fields
+// 5. Handle multiple files uploaded under a single field name (<input multiple>)
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -19,6 +20,7 @@ pub fn main(init: std.process.Init) !void {
         .request = .{
             // Configure the maximum number of multipart form fields
             // This must be > 0 to use req.multiFormData()
+            // Note: each file in a multi-file upload counts as a field
             .max_multiform_count = 10,
 
             // Set a reasonable max body size for file uploads (10MB in this example)
@@ -49,6 +51,7 @@ fn index(_: *httpz.Request, res: *httpz.Response) !void {
         \\  <p>Description: <textarea name=description>A test file upload</textarea></p>
         \\  <p>File: <input type=file name=file required></p>
         \\  <p>File 2 (optional): <input type=file name=file2></p>
+        \\  <p>Attachments (optional, select many): <input type=file name=attachments multiple></p>
         \\  <p><button type=submit>Upload</button></p>
         \\</form>
     ;
@@ -116,6 +119,29 @@ fn upload(req: *httpz.Request, res: *httpz.Response) !void {
         try writer.writeAll("<h2>Second File Upload:</h2><ul>");
         try writer.print("<li><strong>Filename:</strong> {s}</li>", .{f.filename orelse "no filename provided"});
         try writer.print("<li><strong>Size:</strong> {} bytes</li>", .{f.value.len});
+        try writer.writeAll("</ul>");
+    }
+
+    // Handle a multi-file input (<input type=file multiple>). The browser
+    // sends one part per selected file, all sharing the same field name.
+    // form_data.get("attachments") would only return the first one; use
+    // getAll() to iterate over every file uploaded under that name.
+    {
+        try writer.writeAll("<h2>Attachments:</h2><ul>");
+        var count: usize = 0;
+        var attachments = form_data.getAll("attachments");
+        while (attachments.next()) |f| {
+            // Browsers submit an empty part with no filename when the
+            // input is left blank, so skip those.
+            if (f.value.len == 0 and (f.filename == null or f.filename.?.len == 0)) {
+                continue;
+            }
+            count += 1;
+            try writer.print("<li><strong>{s}</strong> ({} bytes)</li>", .{ f.filename orelse "no filename provided", f.value.len });
+        }
+        if (count == 0) {
+            try writer.writeAll("<li><em>none</em></li>");
+        }
         try writer.writeAll("</ul>");
     }
 
