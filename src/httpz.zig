@@ -1035,6 +1035,60 @@ test "httpz: shutdown without listen" {
     server.deinit();
 }
 
+// https://github.com/karlseguin/http.zig/issues/223
+// A handler that's still in-flight when the server is stopped completes during
+// deinit (thread_pool.stop() joins it), which puts its conn in handover_list
+// with the event loop already gone - so processSignal never applies the
+// handover. Shutting that list down has to respect the handover, or we close a
+// socket the application already owns (and here, already closed): .BADF, which
+// posix.close treats as unreachable.
+test "httpz: disowned connection still in handover at shutdown" {
+    const H = ShutdownDisownHandler;
+    H.in_handler.store(false, .release);
+    H.may_finish.store(false, .release);
+
+    var server = try Server(H).init(t.io, t.allocator, .{ .address = .localhost(6994) }, H{});
+    const thrd = try server.listenInNewThread();
+
+    {
+        const stream = testStream(6994);
+        defer stream.close(t.io);
+        var writer = stream.writer(t.io, &.{});
+        try writer.interface.writeAll("GET / HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+
+        while (H.in_handler.load(.acquire) == false) {
+            try t.io.sleep(.fromMilliseconds(5), .awake);
+        }
+
+        // The handler is parked inside the request. Stop the server out from
+        // under it, then let it finish and disown.
+        server.stop();
+        H.may_finish.store(true, .release);
+    }
+
+    thrd.join();
+    server.deinit();
+}
+
+const ShutdownDisownHandler = struct {
+    var in_handler: std.atomic.Value(bool) = .init(false);
+    var may_finish: std.atomic.Value(bool) = .init(false);
+
+    pub fn handle(_: ShutdownDisownHandler, _: *Request, res: *Response) void {
+        in_handler.store(true, .release);
+        while (may_finish.load(.acquire) == false) {
+            t.io.sleep(.fromMilliseconds(5), .awake) catch unreachable;
+        }
+
+        const socket = res.conn.stream.socket.handle;
+        res.disown() catch unreachable;
+
+        // We're the owner now, so we're the one that closes it. httpz must not
+        // close it again during shutdown.
+        posix.close(socket);
+    }
+};
+
 test "httpz: invalid request" {
     const stream = testStream(5992);
     defer stream.close(t.io);
