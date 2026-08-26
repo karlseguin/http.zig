@@ -11,7 +11,34 @@ pub const AF = posix.AF;
 pub const SO = posix.SO;
 pub const SOL = posix.SOL;
 pub const SOCK = posix.SOCK;
-pub const TCP = posix.TCP;
+pub const TCP = switch (builtin.os.tag) {
+    // Zig doesn't expose these /shrug
+    .freebsd, .dragonfly => struct {
+        pub const NODELAY = 1;
+        pub const KEEPIDLE = 256;
+        pub const KEEPINTVL = 512;
+        pub const KEEPCNT = 1024;
+    },
+    .netbsd => struct {
+        pub const NODELAY = 1;
+        pub const KEEPIDLE = 3;
+        pub const KEEPINTVL = 5;
+        pub const KEEPCNT = 6;
+    },
+    .openbsd => struct {
+        pub const NODELAY = 1;
+    },
+    .illumos => struct {
+        pub const NODELAY = 1;
+        pub const KEEPIDLE = 0x22;
+        pub const KEEPCNT = 0x23;
+        pub const KEEPINTVL = 0x24;
+    },
+    .haiku => struct {
+        pub const NODELAY = 1;
+    },
+    else => if (posix.TCP == void) struct {} else posix.TCP,
+};
 pub const fd_t = posix.fd_t;
 pub const socket_t = posix.socket_t;
 pub const timeval = posix.timeval;
