@@ -1,9 +1,7 @@
 # An HTTP/1.1 server for Zig.
 
 ## Zig Version
-This is for Zig 0.16.0. Use the [zig-0.15](https://github.com/karlseguin/http.zig/tree/zig-0.15) branch for Zig 0.15 or the [dev](https://github.com/karlseguin/http.zig/tree/dev) branch which may or may not be up to date with zig dev.
-
-This ZIG 0.16 version is not well tested. Like Zig 0.16 itself, consider it experimental!
+This is for Zig 0.17.0. See the various branches for versions pinned to older versions.
 
 ## Example
 ```zig
@@ -81,7 +79,7 @@ listening http://localhost:8800/
    ```bash
    zig fetch --save "git+https://github.com/karlseguin/http.zig#master"
    ```
-   The library will track Zig master. If you're using a specific version of Zig, use the appropriate branch.
+   The `master` branch tracks the latest stable release of Zig. If you're using a different version of Zig, use the appropriate branch.
 
 2. In your `build.zig`, add the `httpz` module as a dependency to your program:
    ```zig
@@ -164,14 +162,16 @@ Beyond sharing state, your custom handler can be used to control how httpz behav
 
 ```zig
 const App = struct {
+  io: std.Io,
+
   pub fn dispatch(self: *App, action: httpz.Action(*App), req: *httpz.Request, res: *httpz.Response) !void {
-    var timer = try std.time.Timer.start();
+    const start = std.Io.Timestamp.now(self.io, .awake);
 
     // your `dispatch` doesn't _have_ to call the action
     try action(self, req, res);
 
-    const elapsed = timer.lap() / 1000; // ns -> us
-    std.log.info("{} {s} {d}", .{req.method, req.url.path, elapsed});
+    const elapsed = start.untilNow(self.io, .awake);
+    std.log.info("{} {s} {d}", .{req.method, req.url.path, elapsed.toMicroseconds()});
   }
 };
 ```
@@ -292,7 +292,7 @@ fn getUser(req: *httpz.Request, res: *httpz.Response) !void {
 
     // The json helper will automatically set the res.content_type = httpz.ContentType.JSON;
     // Here we're passing an inferred anonymous structure, but you can pass anytype
-    // (so long as it can be serialized using std.json.stringify)
+    // (so long as it can be serialized using std.json.Stringify)
 
     try res.json(.{.id = req.param("id").?, .name = "Teg"}, .{});
 }
@@ -328,7 +328,7 @@ fn arenaExample(req: *httpz.Request, res: *httpz.Response) !void {
 fn writerExample(req: *httpz.Request, res: *httpz.Response) !void {
     const query = try req.query();
     const name = query.get("name") orelse "stranger";
-    try std.fmt.format(res.writer(&.{}), "Hello {s}", .{name});
+    try res.writer().print("Hello {s}", .{name});
 }
 ```
 
@@ -336,7 +336,7 @@ Alternatively, you can explicitly call `res.write()`. Once `res.write()` returns
 
 `res.arena` is actually a configurable-sized thread-local buffer that falls back to an `std.heap.ArenaAllocator`. In other words, it's fast so it should be your first option for data that needs to live only until your action exits.
 
-To align the `Response.writer()` with the new `*std.Io.Writer` interface (Zig 0.15), a buffer must be provided. For the most part, you should pass in an empty buffer (`&.{}`) as httpz does its own buffering (as I expect most network applications would do). Still, it appears that some parts of std require a writer buffer. This seems like a really bad design to me, but if you find yourself using code that requires a writer buffer, then, of course, you'll have to provide one when creating the `response.writer(...)`.
+`res.writer()` returns a `*std.Io.Writer` which writes into httpz's own buffered response body.
 
 # httpz.Request
 
@@ -346,7 +346,7 @@ The following fields are the most useful:
 - `method_string` - Only set if `method == .OTHER`, else empty. Used when using custom methods.
 - `arena` - A fast thread-local buffer that falls back to an ArenaAllocator, same as `res.arena`.
 - `url.path` - the path of the request (`[]const u8`)
-- `address` - the std.net.Address of the client
+- `address` - the `std.Io.net.IpAddress` of the client
 
 If you give your route a `data` configuration, the value can be retrieved from the optional `route_data` field of the request.
 
@@ -454,14 +454,14 @@ if (try req.json(User)) |user| {
 }
 ```
 
-### JsonValueTree Body
+### JsonValue Body
 
-The `req.jsonValueTree()` function is a wrapper around the `body()` function which will call `std.json.Parse` on the body, returning a `!?std.jsonValueTree`. This function does not consider the content-type of the request and will try to parse any body.
+The `req.jsonValue()` function is a wrapper around the `body()` function which will parse the body into a `std.json.Value`, returning a `!?std.json.Value`. This function does not consider the content-type of the request and will try to parse any body.
 
 ```zig
-if (try req.jsonValueTree()) |t| {
+if (try req.jsonValue()) |v| {
     // probably want to be more defensive than this
-    const product_type = r.root.Object.get("type").?.String;
+    const product_type = v.object.get("type").?.string;
     //...
 }
 ```
@@ -473,7 +473,7 @@ The even more specific `jsonObject()` function will return an `std.json.ObjectMa
 ```zig
 if (try req.jsonObject()) |t| {
     // probably want to be more defensive than this
-    const product_type = t.get("type").?.String;
+    const product_type = t.get("type").?.string;
     //...
 }
 ```
@@ -603,20 +603,19 @@ Memory allocated with `res.arena` will exist until the response is sent.
 
 ## io.Writer
 
-`res.writer()` returns a Writer. Its `interface` field exposes an `std.Io.Writer`. Various types support writing to an io.Writer. For example, the built-in JSON stream writer can use this writer:
+`res.writer()` returns a `*std.Io.Writer`. Various types support writing to an `std.Io.Writer`. For example, the built-in JSON stream writer can use this writer:
 
 ```zig
-var writer = res.writer();
-var ws = std.json.writeStream(&writer.interface, 4);
+var ws: std.json.Stringify = .{ .writer = res.writer() };
 try ws.beginObject();
 try ws.objectField("name");
-try ws.emitString(req.param("name").?);
+try ws.write(req.param("name").?);
 try ws.endObject();
 ```
 
 ## JSON
 
-The `res.json` function will set the content_type to `httpz.ContentType.JSON` and serialize the provided value using `std.json.stringify`. The 2nd argument to the json function is the `std.json.StringifyOptions` to pass to the `stringify` function.
+The `res.json` function will set the content_type to `httpz.ContentType.JSON` and serialize the provided value using `std.json.Stringify`. The 2nd argument to the json function is the `std.json.Stringify.Options` to use.
 
 This function uses `res.writer()` explained above.
 
@@ -683,7 +682,7 @@ pub fn info(app: *MyApp, _: *httpz.Request, res: *httpz.Response) !void {
 
 # Router
 
-You get an instance of the router by calling `server.route(.{})`. Currently, the configuration takes a single parameter:
+You get an instance of the router by calling `server.router(.{})`. Currently, the configuration takes a single parameter:
 
 - `middlewares` - A list of middlewares to apply to each request. These middleware will be executed even for requests with no matching route (i.e. not found). An individual route can opt-out of these middleware, see the `middleware_strategy` route configuration.
 
@@ -716,7 +715,7 @@ The last parameter to the various `router` methods is a route configuration. In 
 
 - `dispatcher` - The dispatch method to use. This overrides the default dispatcher, which is either httpz built-in dispatcher or [your handler's `dispatch` method](#custom-dispatch).
 - `handler` - The handler instance to use. The default handler is the 3rd parameter passed to `Server(H).init` but you can override this on a route-per-route basis.
-- `middlewares` - A list of [middlewares](#middlewares) to run. By default, no middlewares are run. By default, this list of middleware is appended to the list given to `server.route(.{.middlewares = .{....})`.
+- `middlewares` - A list of [middlewares](#middlewares) to run. By default, no middlewares are run. By default, this list of middleware is appended to the list given to `server.router(.{.middlewares = .{....})`.
 - `middleware_strategy` - How the given middleware should be merged with the global middlewares. Defaults to `.append`, can also be `.replace`.
 - `data` - Arbitrary data (`*const anyopaque`) to make available to `req.route_data`. This must be a `const`.
 
@@ -951,7 +950,7 @@ In addition to a bit of overhead, at a minimum, httpz will use:
 Possible values, along with their default, are:
 
 ```zig
-try httpz.listen(allocator, &router, .{
+var server = try httpz.Server(void).init(io, allocator, .{
     // Listen on a localhost port.
     .address = .localhost(5882),
 
@@ -961,8 +960,8 @@ try httpz.listen(allocator, &router, .{
     // unix socket to listen on (mutually exclusive with host&port)
     // .address = .{ .unix = "http.sock" },
 
-    // Listen on a std.net.Address.
-    // .address = .{ .addr = .initIp4(.{ 0, 0, 0, 0 }, 5882) },
+    // Listen on a std.Io.net.IpAddress.
+    // .address = .{ .ip = .{ .ip4 = .{ .bytes = .{ 0, 0, 0, 0 }, .port = 5882 } } },
 
     // configure the workers which are responsible for:
     // 1 - accepting connections
@@ -1019,48 +1018,48 @@ try httpz.listen(allocator, &router, .{
         // Maximum request body size that we'll process. We can allocate up
         // to this much memory per request for the body. Internally, we might
         // keep this memory around for a number of requests as an optimization.
-        .max_body_size: usize = 1_048_576,
+        .max_body_size = 1_048_576,
 
         // When set, if request body is larger than this value, the body won't be
         // eagerly read. The application can use `req.reader()` to create a reader
         // to read the body. Prevents loading large bodies completely in memory.
         // When set, max_body_size is ignored.
-        .lazy_read_size: ?usize = null,
+        .lazy_read_size = null,
 
         // This memory is allocated upfront. The request header _must_ fit into
         // this space, else the request will be rejected.
-        .buffer_size: usize = 4_096,
+        .buffer_size = 4_096,
 
         // Maximum number of headers to accept.
         // Additional headers will be silently ignored.
-        .max_header_count: usize = 32,
+        .max_header_count = 32,
 
         // Maximum number of URL parameters to accept.
         // Additional parameters will be silently ignored.
-        .max_param_count: usize = 10,
+        .max_param_count = 10,
 
         // Maximum number of query string parameters to accept.
         // Additional parameters will be silently ignored.
-        .max_query_count: usize = 32,
+        .max_query_count = 32,
 
         // Maximum number of x-www-form-urlencoded fields to support.
         // Additional parameters will be silently ignored. This must be
         // set to a value greater than 0 (the default) if you're going
         // to use the req.formData() method.
-        .max_form_count: usize = 0,
+        .max_form_count = 0,
 
         // Maximum number of multipart/form-data fields to support.
         // Additional parameters will be silently ignored. This must be
         // set to a value greater than 0 (the default) if you're going
         // to use the req.multiFormData() method.
-        .max_multiform_count: usize = 0,
+        .max_multiform_count = 0,
     },
 
     // options for tweaking response object
     .response = .{
         // The maximum number of headers to accept.
         // Additional headers will be silently ignored.
-        .max_header_count: usize = 16,
+        .max_header_count = 16,
     },
 
     .timeout = .{
@@ -1068,26 +1067,26 @@ try httpz.listen(allocator, &router, .{
         .keepalive = null,
 
         // Time in seconds that a connection has to send a complete request
-        .request = null
+        .request = null,
 
         // Maximum number of a requests allowed on a single keepalive connection
         .request_count = null,
     },
     .websocket = .{
         // refer to https://github.com/karlseguin/websocket.zig#config
-        max_message_size: ?usize = null,
-        small_buffer_size: ?usize = null,
-        small_buffer_pool: ?usize = null,
-        large_buffer_size: ?usize = null,
-        large_buffer_pool: ?u16 = null,
-        compression: bool = false,
-        compression_retain_writer: bool = true,
+        .max_message_size = null,
+        .small_buffer_size = null,
+        .small_buffer_pool = null,
+        .large_buffer_size = null,
+        .large_buffer_pool = null,
+        .compression = false,
+        .compression_retain_writer = true,
         // if compression is true, and this is null, then
         // we accept compressed messaged from the client, but never send
         // compressed messages
-        compression_write_treshold: ?usize = null,
+        .compression_write_treshold = null,
     },
-});
+}, {});
 ```
 
 ## Blocking Mode
@@ -1128,7 +1127,7 @@ If you're running httpz on Windows (or, more generally, where <code>httpz.blocki
 
 # Metrics
 
-A few basic metrics are collected using [metrics.zig](https://github.com/karlseguin/metrics.zig), a prometheus-compatible library. These can be written to an `std.io.Writer` using `try httpz.writeMetrics(writer)`. As an example:
+A few basic metrics are collected using [metrics.zig](https://github.com/karlseguin/metrics.zig), a prometheus-compatible library. These can be written to an `std.Io.Writer` using `try httpz.writeMetrics(writer)`. As an example:
 
 ```zig
 pub fn metrics(_: *httpz.Request, res: *httpz.Response) !void {
@@ -1242,7 +1241,7 @@ Or, you can retrieve a `std.json.Value` object by calling `getJson`:
 
 ```zig
 const json = try web_test.getJson();
-try std.testing.expectEqual(@as(i64, 9000), json.Object.get("over").?.Integer);
+try std.testing.expectEqual(@as(i64, 9000), json.object.get("over").?.integer);
 ```
 
 For more advanced validation, use the `parseResponse` function to return a structure representing the parsed response:
@@ -1261,23 +1260,26 @@ This implementation may never be fully HTTP/1.1 compliant, as it is built with t
 
 # Server Side Events
 
-Server Side Events can be enabled by calling `res.startEventStream()`. This method takes an arbitrary context and a function pointer. The provided function will be executed in a new thread, receiving the provided context and an `std.net.Stream`. Headers can be added (via `res.headers.add`) before calling `startEventStream()`. `res.body` must not be set (directly or indirectly).
+Server Side Events can be enabled by calling `res.startEventStream()`. This method takes an arbitrary context and a function pointer. The provided function will be executed in a new thread, receiving the provided context and an `std.Io.net.Stream`. Headers can be added (via `res.headers.add`) before calling `startEventStream()`. `res.body` must not be set (directly or indirectly).
 
 Calling `startEventStream()` automatically sets the `Content-Type`, `Cache-Control` and `Connection` header.
 
 ```zig
-fn handler(_: *Request, res: *Response) !void {
-    try res.startEventStream(StreamContext{}, StreamContext.handle);
+fn handler(app: *App, _: *httpz.Request, res: *httpz.Response) !void {
+    try res.startEventStream(StreamContext{ .io = app.io }, StreamContext.handle);
 }
 
 const StreamContext = struct {
-    fn handle(self: StreamContext, stream: std.net.Stream) void {
+    io: std.Io,
+
+    fn handle(self: StreamContext, stream: std.Io.net.Stream) void {
+        var w = stream.writer(self.io, &.{});
         while (true) {
             // some event loop
-            stream.writeAll("event: ....") catch return;
+            w.interface.writeAll("event: ....") catch return;
         }
     }
-}
+};
 ```
 
 # Websocket
