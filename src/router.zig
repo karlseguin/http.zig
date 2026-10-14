@@ -543,7 +543,7 @@ test "route: root" {
 
     // test "all" route
     inline for (@typeInfo(httpz.Method).@"enum".field_values) |fvalue| {
-        const m = @as(httpz.Method, @enumFromInt(fvalue));
+        const m = @as(httpz.Method, @fromBackingInt(@intCast(fvalue)));
         if (m == .OTHER) {
             try t.expectEqual(null, router.route(m, "", urls[2], &params));
         } else {

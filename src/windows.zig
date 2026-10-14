@@ -23,7 +23,7 @@ pub fn unexpectedWSAError(err: ws2_32.WinsockError) UnexpectedError {
     // enum value". ws2_32.WinsockError is its own exhaustive enum that does have
     // tags for these codes, so format it directly.
     if (std.options.unexpected_error_tracing) {
-        std.debug.print("error.Unexpected: WSAGetLastError({d}): {t}\n", .{ @intFromEnum(err), err });
+        std.debug.print("error.Unexpected: WSAGetLastError({d}): {t}\n", .{ @backingInt(err), err });
         std.debug.dumpCurrentStackTrace(.{ .first_address = @returnAddress() });
     }
     return error.Unexpected;
@@ -77,7 +77,7 @@ fn WSAStartup(majorVersion: u8, minorVersion: u8) !ws2_32.WSADATA {
     var wsadata: ws2_32.WSADATA = undefined;
     return switch (ws2_32.WSAStartup((@as(WORD, minorVersion) << 8) | majorVersion, &wsadata)) {
         0 => wsadata,
-        else => |err_int| switch (@as(ws2_32.WinsockError, @enumFromInt(@as(u16, @intCast(err_int))))) {
+        else => |err_int| switch (@as(ws2_32.WinsockError, @fromBackingInt(@intCast(@as(u16, @intCast(err_int)))))) {
             .WSASYSNOTREADY => return error.SystemNotAvailable,
             .WSAVERNOTSUPPORTED => return error.VersionNotSupported,
             .WSAEINPROGRESS => return error.BlockingOperationInProgress,

@@ -1365,8 +1365,13 @@ fn parseHex(str: []const u8) ?usize {
 // be re-worked when networking is fully working in Zig.
 fn zig016HackRead(source: anytype, buf: []u8) !usize {
     if (@TypeOf(source) == posix.socket_t) {
-        return posix.read(source, buf);
+        const n = try posix.read(source, buf);
+        if (n == 0) {
+            return error.ConnectionClosed;
+        }
+        return n;
     }
+
     // source is a reader
     var vecs: [1][]u8 = .{buf};
     return source.readVec(&vecs);

@@ -94,7 +94,7 @@ pub const Response = struct {
     }
 
     pub fn setStatus(self: *Response, status: std.http.Status) void {
-        self.status = @intFromEnum(status);
+        self.status = @backingInt(status);
     }
 
     pub fn setCookie(self: *Response, name: []const u8, value: []const u8, opts: CookieOpts) !void {

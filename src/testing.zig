@@ -192,7 +192,7 @@ pub const Testing = struct {
     }
 
     pub fn expectStatusCode(self: *const Testing, expected: std.http.Status) !void {
-        const code = @intFromEnum(expected);
+        const code = @backingInt(expected);
         try t.expectEqual(code, self.res.status);
     }
 
