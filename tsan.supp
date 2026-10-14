@@ -1,0 +1,9 @@
+# ThreadSanitizer suppressions, used by `zig build test -Dtsan=true`.
+#
+# processWebsocketData releases `processing` and then re-arms the socket with
+# epoll_ctl(EPOLL_CTL_MOD, ..., EPOLLONESHOT). Another worker can only receive
+# the connection after that re-arm, so the kernel orders the two threads. TSan
+# only treats EPOLL_CTL_ADD as a release (not MOD), so it can't see this and
+# reports races between rearmRead and whatever the next worker does with the
+# connection (acquireProcessing, close, freeing the HandlerConn).
+race:rearmRead
