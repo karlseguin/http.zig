@@ -165,7 +165,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 var node = self.connections.head;
                 while (node) |n| {
                     node = n.next;
-                    posix.close(n.socket);
+                    posix.shutdown(n.socket, .both) catch {};
                 }
             }
             thread_pool.stop();

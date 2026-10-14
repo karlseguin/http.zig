@@ -42,9 +42,9 @@ pub fn build(b: *std.Build) !void {
             tests.root_module.addOptions("build", options);
         }
         {
-            // const options = b.addOptions();
-            // options.addOption(bool, "websocket_blocking", force_blocking);
-            // websocket_module.addOptions("build", options);
+            const options = b.addOptions();
+            options.addOption(bool, "websocket_blocking", force_blocking);
+            websocket_module.addOptions("build", options);
         }
 
         tests.root_module.addImport("metrics", metrics_module);
