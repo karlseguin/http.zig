@@ -622,6 +622,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                                     // impossible to fail when false is passed
                                     http_conn.requestDone(self.retain_allocated_bytes, false) catch unreachable;
+                                    self.loop.remove(conn);
                                     conn.close();
                                     self.disown(conn);
                                     if (self.full) self.enableListener(listener);
@@ -808,6 +809,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                         if (comptime WSH == httpz.DummyWebsocketHandler) {
                             std.debug.print("Your httpz handler must have a `WebsocketHandler` declaration. This must be the same type passed to `httpz.upgradeWebsocket`. Closing the connection.\n", .{});
                             closed_bool.* = true;
+                            loop.remove(conn);
                             conn.close();
                             self.release(conn, http_conn); // not disown! self.handover was already cleared
                             continue;
@@ -821,6 +823,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                         loop.switchToOneShot(conn) catch {
                             metrics.internalError();
                             closed_bool.* = true;
+                            loop.remove(conn);
                             conn.close();
                             self.websocket.cleanupConn(hc);
                             self.len -= 1;
@@ -1000,6 +1003,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             var conn = list.head;
             while (conn) |c| {
                 conn = c.next;
+                self.loop.remove(c);
                 c.close();
                 self.release(c, c.protocol.http);
             }
