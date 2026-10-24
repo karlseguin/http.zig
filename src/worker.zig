@@ -598,7 +598,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                         .signal => has_signal = true,
                         .recv => |conn| switch (conn.protocol) {
                             .http => |http_conn| {
-                                switch (http_conn.getState()) {
+                                switch (http_conn.getSettledState(io)) {
                                     .request, .keepalive => {},
                                     .active, .handover => {
                                         // we need to finish whatever we're doing
@@ -1758,6 +1758,15 @@ pub const HTTPConn = struct {
 
     pub fn getState(self: *const HTTPConn) State {
         return @atomicLoad(State, &self._state, .acquire);
+    }
+
+    // swapList holds `_mut` from the moment it takes the connection out of its old list until the connection is in the new list and
+    // its state is set. A state read without that lock can name a list the connection has not been put into yet, and the event
+    // loop would then take it out of a list it is not in. Waiting for the lock means the state read names the list it is in.
+    pub fn getSettledState(self: *HTTPConn, io: Io) State {
+        self._mut.lockUncancelable(io);
+        defer self._mut.unlock(io);
+        return self._state;
     }
 
     pub fn setState(self: *HTTPConn, state: State) void {
