@@ -581,10 +581,10 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 // connections) until the whole event batch is drained. epoll can
                 // return a .signal and a .recv for the same connection in one
                 // batch; processing the signal first would free the connection,
-                // and the later .recv would then dereference freed memory in
-                // getState(). By deferring, every .recv runs while its connection
-                // is still alive, sees the .handover state set before the signal,
-                // and skips it; the free happens safely afterward.
+                // and the later .recv would then dereference freed memory. By
+                // deferring, every .recv runs while its connection is still
+                // alive, sees the .handover state set before the signal, and
+                // skips it; the free happens safely afterward.
                 var has_signal = false;
 
                 while (it.next()) |event| {
@@ -679,7 +679,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 .handover => self.handover_list.remove(io, conn),
             }
 
-            http_conn.setState(new_state);
+            http_conn._state = new_state;
 
             switch (new_state) {
                 .active => self.active_list.insert(io, conn),
@@ -873,10 +873,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     // here, on a worker thread, raced epoll_wait: the fd could
                     // stay armed past the point where disown() recycled the Conn,
                     // so a later batch delivered a .recv carrying a pointer to
-                    // freed memory (getState on a null/recycled HTTPConn). The
-                    // signal-vs-recv-in-one-batch case this used to guard against
-                    // is now handled by deferring signal processing to the end of
-                    // the event batch plus the getState() .handover check in recv.
+                    // freed memory.
                 },
                 .websocket, .disown => {},
             }
@@ -1675,7 +1672,6 @@ pub const HTTPConn = struct {
 
     io: Io,
 
-    // can be concurrently accessed, use getState
     _state: State,
 
     _mut: Io.Mutex,
@@ -1760,21 +1756,10 @@ pub const HTTPConn = struct {
         };
     }
 
-    pub fn getState(self: *const HTTPConn) State {
-        return @atomicLoad(State, &self._state, .acquire);
-    }
-
-    // swapList holds `_mut` from the moment it takes the connection out of its old list until the connection is in the new list and
-    // its state is set. A state read without that lock can name a list the connection has not been put into yet, and the event
-    // loop would then take it out of a list it is not in. Waiting for the lock means the state read names the list it is in.
     pub fn getSettledState(self: *HTTPConn, io: Io) State {
         self._mut.lockUncancelable(io);
         defer self._mut.unlock(io);
         return self._state;
-    }
-
-    pub fn setState(self: *HTTPConn, state: State) void {
-        return @atomicStore(State, &self._state, state, .release);
     }
 
     pub fn deinit(self: *HTTPConn, allocator: Allocator) void {
