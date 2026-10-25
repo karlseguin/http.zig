@@ -28,7 +28,6 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
     return struct {
         io: Io,
         server: S,
-        mut: Io.Mutex,
         config: *const Config,
         allocator: Allocator,
         buffer_pool: *BufferPool,
@@ -38,15 +37,8 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
         timeout_keepalive: ?Timeout,
         timeout_write_error: Timeout,
         retain_allocated_bytes_keepalive: usize,
-        connections: List(ConnNode),
-        conn_node_pool: std.heap.MemoryPool(ConnNode),
+        sockets: TrackedSockets,
         thread_pool: ThreadPool(Self.handleConnection),
-
-        const ConnNode = struct {
-            next: ?*ConnNode,
-            prev: ?*ConnNode,
-            socket: posix.fd_t,
-        };
 
         const Timeout = struct {
             sec: u32,
@@ -109,10 +101,9 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
 
             return .{
                 .io = io,
-                .mut = .init,
                 .server = server,
                 .config = config,
-                .connections = .{},
+                .sockets = .{},
                 .allocator = allocator,
                 .websocket = websocket,
                 .buffer_pool = buffer_pool,
@@ -121,7 +112,6 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 .timeout_request = timeout_request,
                 .timeout_keepalive = timeout_keepalive,
                 .timeout_write_error = Timeout.init(5),
-                .conn_node_pool = .empty,
                 .retain_allocated_bytes_keepalive = retain_allocated_bytes_keepalive,
             };
         }
@@ -134,7 +124,6 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
             allocator.destroy(self.websocket);
 
             self.http_conn_pool.deinit();
-            self.conn_node_pool.deinit(allocator);
 
             self.buffer_pool.deinit();
             allocator.destroy(self.buffer_pool);
@@ -159,15 +148,8 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                 thread_pool.spawnOne(.{ self, socket, address });
             }
 
-            {
-                self.mut.lockUncancelable(io);
-                defer self.mut.unlock(io);
-                var node = self.connections.head;
-                while (node) |n| {
-                    node = n.next;
-                    posix.shutdown(n.socket, .both) catch {};
-                }
-            }
+            // wake any connection blocked in a read
+            self.sockets.shutdownAll(io);
             thread_pool.stop();
         }
 
@@ -180,38 +162,25 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
         // we are free to use as needed.
         pub fn handleConnection(self: *Self, socket: posix.socket_t, address: posix.Address, thread_buf: []u8) void {
             const io = self.io;
-            const connection_node = blk: {
-                self.mut.lockUncancelable(io);
-                defer self.mut.unlock(io);
-                const node = self.conn_node_pool.create(self.allocator) catch |err| {
-                    log.err("Failed to initialize connection node: {}", .{err});
-                    return;
-                };
-                node.* = .{
-                    .next = null,
-                    .prev = null,
-                    .socket = socket,
-                };
-                self.connections.insert(node);
-                break :blk node;
-            };
 
-            defer {
-                self.mut.lockUncancelable(io);
-                defer self.mut.unlock(io);
-                self.connections.remove(connection_node);
-                self.conn_node_pool.destroy(connection_node);
-            }
+            // Lives for as long as this function, which is how long we own the socket.
+            var tracked: TrackedSocket = .{ .socket = socket, .owner = &self.sockets };
+            self.sockets.add(io, &tracked);
+            // no-op if the socket already left the list (closed, disowned or handed to websocket)
+            defer tracked.remove(io);
 
             var conn = self.http_conn_pool.acquire() catch |err| {
                 log.err("Failed to initialize connection: {}", .{err});
+                tracked.close(io);
                 return;
             };
 
             const ip_address = address.toIOAddress();
             conn.address = ip_address;
             conn.handover = .unknown;
+            conn.tracked = &tracked;
             conn.stream = .{ .socket = .{ .handle = socket, .address = ip_address } };
+            defer conn.tracked = null;
 
             var is_keepalive = false;
             while (true) {
@@ -221,13 +190,16 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                         conn.requestDone(self.retain_allocated_bytes_keepalive, false) catch unreachable;
                     },
                     .close, .unknown => {
-                        posix.close(socket);
+                        tracked.close(io);
                         // impossible for this to fail in blocking mode
                         conn.requestDone(self.retain_allocated_bytes_keepalive, false) catch unreachable;
                         self.http_conn_pool.release(conn);
                         return;
                     },
                     .websocket => |ptr| {
+                        // The websocket worker owns the socket now: it closes it,
+                        // and shuts it down on stop.
+                        tracked.remove(io);
                         const hc: *ws.HandlerConn(WSH) = @ptrCast(@alignCast(ptr));
                         // impossible for this to fail in blocking mode
                         conn.requestDone(self.retain_allocated_bytes_keepalive, false) catch unreachable;
@@ -288,8 +260,7 @@ pub fn Blocking(comptime S: type, comptime WSH: type) type {
                         else => {},
                     }
                     requestError(conn, err) catch {};
-                    posix.close(socket);
-                    return .disown;
+                    return .close;
                 };
 
                 if (done) {
@@ -1093,6 +1064,64 @@ pub fn List(comptime T: type) type {
     };
 }
 
+// The blocking worker's open sockets, so that listen() can shutdown() them on
+// stop to wake threads blocked in a read. A socket must leave the list before it
+// is closed or handed to a new owner, under the same lock that shutdownAll holds:
+// otherwise shutdownAll can hit a closed (EBADF, which posix.shutdown treats as
+// unreachable) or reused fd.
+const TrackedSockets = struct {
+    mut: Io.Mutex = .init,
+    list: List(TrackedSocket) = .{},
+
+    fn add(self: *TrackedSockets, io: Io, node: *TrackedSocket) void {
+        self.mut.lockUncancelable(io);
+        defer self.mut.unlock(io);
+        self.list.insert(node);
+        node.in_list = true;
+    }
+
+    fn shutdownAll(self: *TrackedSockets, io: Io) void {
+        self.mut.lockUncancelable(io);
+        defer self.mut.unlock(io);
+        var node = self.list.head;
+        while (node) |n| {
+            node = n.next;
+            posix.shutdown(n.socket, .both) catch {};
+        }
+    }
+};
+
+const TrackedSocket = struct {
+    next: ?*TrackedSocket = null,
+    prev: ?*TrackedSocket = null,
+    socket: posix.fd_t,
+    owner: *TrackedSockets,
+    in_list: bool = false,
+
+    // Safe to call more than once.
+    fn remove(self: *TrackedSocket, io: Io) void {
+        const owner = self.owner;
+        owner.mut.lockUncancelable(io);
+        defer owner.mut.unlock(io);
+        self.removeLocked();
+    }
+
+    fn close(self: *TrackedSocket, io: Io) void {
+        const owner = self.owner;
+        owner.mut.lockUncancelable(io);
+        defer owner.mut.unlock(io);
+        self.removeLocked();
+        posix.close(self.socket);
+    }
+
+    fn removeLocked(self: *TrackedSocket) void {
+        if (self.in_list) {
+            self.owner.list.remove(self);
+            self.in_list = false;
+        }
+    }
+};
+
 pub fn ConcurrentList(comptime T: type) type {
     return struct {
         inner: List(T) = .{},
@@ -1723,6 +1752,10 @@ pub const HTTPConn = struct {
     // thread), we store the loop's FD which is more opaque.
     loop: i32,
 
+    // Blocking mode only: the socket's entry in the worker's list of open
+    // sockets, which disown() has to take the socket out of.
+    tracked: ?*TrackedSocket = null,
+
     fn init(io: Io, allocator: Allocator, buffer_pool: *BufferPool, ws_worker: *anyopaque, loop: i32, config: *const Config) !HTTPConn {
         const conn_arena = try allocator.create(std.heap.ArenaAllocator);
         errdefer allocator.destroy(conn_arena);
@@ -1782,6 +1815,9 @@ pub const HTTPConn = struct {
         self.handover = .disown;
 
         if (comptime httpz.blockingMode()) {
+            // The new owner may close the socket at any point, so it has to
+            // leave the list now, or listen() could shutdown() a closed fd.
+            if (self.tracked) |tracked| tracked.remove(self.io);
             return;
         }
 
