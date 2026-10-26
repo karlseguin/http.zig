@@ -328,7 +328,12 @@ pub const Response = struct {
             if (self.chunked) break :blk "Transfer-Encoding: chunked\r\n";
             if (self.content_type == .EVENTS) break :blk "\r\n";
             if (headers.has("Content-Length")) break :blk "\r\n";
-            break :blk "Content-Length: 0\r\n\r\n";
+            switch (self.status) {
+                // A 1xx or 204 response can't have a Content-Length (RFC 9110 8.6), and
+                // a 304's Content-Length would be the length of the 200 response.
+                100...199, 204, 304 => break :blk "\r\n",
+                else => break :blk "Content-Length: 0\r\n\r\n",
+            }
         };
 
         const end = pos + fin.len;
@@ -505,6 +510,26 @@ test "response: write" {
         res.body = "hello";
         try res.write();
         try ctx.expect("HTTP/1.1 200 \r\nContent-Length: 5\r\n\r\nhello");
+    }
+}
+
+test "response: no Content-Length for 204 and 304" {
+    var ctx = t.Context.init(.{});
+    defer ctx.deinit();
+
+    {
+        var res = ctx.response();
+        res.status = 204;
+        try res.write();
+        try ctx.expect("HTTP/1.1 204 \r\n\r\n");
+    }
+
+    {
+        var res = ctx.response();
+        res.status = 304;
+        res.header("ETag", "\"abc\"");
+        try res.write();
+        try ctx.expect("HTTP/1.1 304 \r\nETag: \"abc\"\r\n\r\n");
     }
 }
 
