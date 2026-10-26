@@ -971,6 +971,9 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             var conn = list.head;
             while (conn) |c| {
                 conn = c.next;
+                // A partial request can time out before processHTTPData resets it.
+                // Clear its parser and arena before another client reuses it.
+                c.protocol.http.requestDone(self.retain_allocated_bytes, false) catch unreachable;
                 self.loop.remove(c);
                 c.close();
                 self.release(c, c.protocol.http);

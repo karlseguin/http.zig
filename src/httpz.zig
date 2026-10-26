@@ -1151,6 +1151,55 @@ const HeldSocketHandler = struct {
     }
 };
 
+test "httpz: request timeout resets pooled parser state" {
+    if (comptime blockingMode()) return error.SkipZigTest;
+
+    // Force the next client to reuse the timed-out client's HTTPConn.
+    var server = try Server(void).init(t.io, t.allocator, .{
+        .address = .localhost(6996),
+        .workers = .{ .count = 1, .min_conn = 1, .max_conn = 1 },
+        .thread_pool = .{ .count = 1 },
+        .timeout = .{ .request = 1, .keepalive = 1 },
+    }, {});
+    var router = try server.router(.{});
+    router.post("/echo", TestDummyHandler.echoBody, .{});
+    const thrd = try server.listenInNewThread();
+    defer {
+        server.stop();
+        thrd.join();
+        server.deinit();
+    }
+
+    const timeout = std.mem.toBytes(posix.timeval{ .sec = 3, .usec = 0 });
+    for ([_][]const u8{
+        "GET /old HTTP/1.1\r\nHost: old\r\n",
+        "POST /echo HTTP/1.1\r\nContent-Length: 8\r\n\r\nab",
+    }) |partial| {
+        {
+            const stream = testStream(6996);
+            defer stream.close(t.io);
+            try posix.setsockopt(stream.socket.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeout);
+            var writer = stream.writer(t.io, &.{});
+            try writer.interface.writeAll(partial);
+
+            // Wait for the server's timeout close, rather than relying on a sleep.
+            var byte: [1]u8 = undefined;
+            try t.expectEqual(0, try posix.read(stream.socket.handle, &byte));
+        }
+
+        const stream = testStream(6996);
+        defer stream.close(t.io);
+        try posix.setsockopt(stream.socket.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeout);
+        var writer = stream.writer(t.io, &.{});
+        try writer.interface.writeAll("POST /echo HTTP/1.1\r\nContent-Length: 5\r\nConnection: close\r\n\r\nfresh");
+
+        var res = testReadParsed(stream);
+        defer res.deinit();
+        try t.expectEqual(200, res.status);
+        try t.expectString("fresh", res.body);
+    }
+}
+
 test "httpz: invalid request" {
     const stream = testStream(5992);
     defer stream.close(t.io);
