@@ -613,6 +613,10 @@ pub const State = struct {
     // URL, if we've parsed it
     url: ?[]u8,
 
+    // The authority of an absolute-form request target (GET http://host/path),
+    // which replaces the Host header
+    authority: ?[]const u8,
+
     // Method, if we've parsed it
     method: ?http.Method,
 
@@ -683,6 +687,7 @@ pub const State = struct {
             .pos = 0,
             .len = 0,
             .url = null,
+            .authority = null,
             .body = null,
             .body_pos = 0,
             .body_len = 0,
@@ -716,6 +721,7 @@ pub const State = struct {
         self.pos = 0;
         self.len = 0;
         self.url = null;
+        self.authority = null;
         self.method = null;
         self.unread_body = 0;
         self.chunked = null;
@@ -900,7 +906,45 @@ pub const State = struct {
                 len = 2;
                 self.url = buf[0..1];
             },
-            // TODO: Support absolute-form target (e.g. http://....)
+            'h', 'H' => {
+                // absolute-form, e.g. GET http://example.com/path?q. A server MUST
+                // accept it (RFC 9112 section 3.2.2). The path and query become the
+                // url, and the authority replaces the Host header (see
+                // checkHeaderValidity).
+                const end_index = std.mem.indexOfAnyPos(u8, buf, 0, " \r\n") orelse return false;
+                if (buf[end_index] != ' ') return error.InvalidRequestTarget;
+                len = end_index + 1;
+                const target = buf[0..end_index];
+
+                const scheme_end = std.mem.indexOf(u8, target, "://") orelse return error.InvalidRequestTarget;
+                const scheme = target[0..scheme_end];
+                if (!std.ascii.eqlIgnoreCase(scheme, "http") and !std.ascii.eqlIgnoreCase(scheme, "https")) {
+                    return error.InvalidRequestTarget;
+                }
+
+                var authority_start = scheme_end + 3;
+                const authority_end = std.mem.indexOfAnyPos(u8, target, authority_start, "/?") orelse target.len;
+                const authority_len = authority_end - authority_start;
+                if (!isValidAuthority(target[authority_start..authority_end])) {
+                    return error.InvalidRequestTarget;
+                }
+
+                var path_start = authority_end;
+                if (path_start == target.len or target[path_start] == '?') {
+                    // An empty path is "/". Move the authority one byte to the left,
+                    // over the second slash of "://", to make room for it.
+                    std.mem.copyForwards(u8, buf[authority_start - 1 .. authority_end - 1], buf[authority_start..authority_end]);
+                    authority_start -= 1;
+                    path_start -= 1;
+                    buf[path_start] = '/';
+                }
+
+                const url = buf[path_start..end_index];
+                const authority = buf[authority_start .. authority_start + authority_len];
+                if (!Url.isValid(url)) return error.InvalidRequestTarget;
+                self.url = url;
+                self.authority = authority;
+            },
             else => return error.InvalidRequestTarget,
         }
 
@@ -1032,18 +1076,47 @@ pub const State = struct {
     // returns the Content-Length
     fn checkHeaderValidity(self: *State) !?[]const u8 {
         var content_length: ?[]const u8 = null;
-        var host_seen: bool = false;
-        var it = self.headers.iterator();
-        while (it.next()) |kv| {
-            if (std.mem.eql(u8, kv.key, "content-length")) {
+        var host_index: ?usize = null;
+        const headers = &self.headers;
+        for (headers.keys[0..headers.len], headers.values[0..headers.len], 0..) |key, value, i| {
+            if (std.mem.eql(u8, key, "content-length")) {
                 if (content_length != null) return error.InvalidContentLength;
-                content_length = kv.value;
-            } else if (std.mem.eql(u8, kv.key, "host")) {
-                if (host_seen) return error.InvalidHost;
-                host_seen = true;
+                content_length = value;
+            } else if (std.mem.eql(u8, key, "host")) {
+                if (host_index != null) return error.InvalidHost;
+                host_index = i;
+            }
+        }
+
+        if (self.authority) |authority| {
+            // With an absolute-form request target, the Host header is ignored
+            // and the target's authority is used instead (RFC 9112 section 3.2.2).
+            if (host_index) |i| {
+                headers.values[i] = authority;
+            } else {
+                // add is a no-op when the headers are full, which would leave
+                // the request without a Host
+                if (headers.len == headers.keys.len) return error.InvalidHost;
+                headers.add("host", authority);
             }
         }
         return content_length;
+    }
+
+    // The authority of an absolute-form target: host[:port], where host is a
+    // reg-name, IPv4 address or IP-literal (RFC 3986 section 3.2). Userinfo
+    // (user@host) is an error (RFC 9110 section 4.2.4) and so is an empty host
+    // (RFC 9110 section 4.2.1). Since '#' isn't allowed, a fragment is rejected.
+    fn isValidAuthority(authority: []const u8) bool {
+        if (authority.len == 0 or authority[0] == ':') return false;
+        for (authority) |c| {
+            switch (c) {
+                'a'...'z', 'A'...'Z', '0'...'9' => {},
+                '-', '.', '_', '~', '%', '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=', ':', '[', ']' => {},
+                else => return false,
+            }
+        }
+        return true;
     }
 
     // we've finished reading the header
@@ -1521,7 +1594,16 @@ test "request: parse request target" {
     {
         try expectParseError(error.InvalidRequestTarget, "GET NOPE", .{});
         try expectParseError(error.InvalidRequestTarget, "GET nope ", .{});
-        try expectParseError(error.InvalidRequestTarget, "GET http://www.pondzpondz.com/test ", .{}); // this should be valid
+        try expectParseError(error.InvalidRequestTarget, "GET ftp://www.pondzpondz.com/test ", .{});
+        try expectParseError(error.InvalidRequestTarget, "GET http:/www.pondzpondz.com/test ", .{});
+        try expectParseError(error.InvalidRequestTarget, "GET http:///test ", .{});
+        try expectParseError(error.InvalidRequestTarget, "GET http://user@www.pondzpondz.com/test ", .{});
+        try expectParseError(error.InvalidRequestTarget, "GET http://:8080/test ", .{});
+        try expectParseError(error.InvalidRequestTarget, "GET http://evil.com#good.com ", .{});
+        try expectParseError(error.InvalidRequestTarget, "GET http://evil.com#good.com/test ", .{});
+        try expectParseError(error.InvalidRequestTarget, "GET http://a\"b<c>/ ", .{});
+        try expectParseError(error.InvalidRequestTarget, "GET http://a\\b/ ", .{});
+        try expectParseError(error.InvalidRequestTarget, "TEA HTTP/1.1\r\n", .{});
         try expectParseError(error.InvalidRequestTarget, "PUT hello ", .{});
         try expectParseError(error.InvalidRequestTarget, "POST  /hello ", .{});
         try expectParseError(error.InvalidRequestTarget, "POST *hello ", .{});
@@ -1545,6 +1627,43 @@ test "request: parse request target" {
     {
         const r = try testParse("PUT * HTTP/1.1\r\n\r\n", .{});
         try t.expectString("*", r.url.raw);
+    }
+
+    {
+        // absolute-form: the authority replaces the Host header
+        const r = try testParse("GET http://www.pondzpondz.com/test?a=1 HTTP/1.1\r\nHost: other.com\r\n\r\n", .{});
+        try t.expectString("/test?a=1", r.url.raw);
+        try t.expectString("/test", r.url.path);
+        try t.expectString("a=1", r.url.query);
+        try t.expectString("www.pondzpondz.com", r.header("host").?);
+    }
+
+    {
+        // an empty path is "/", and a missing Host header is added
+        const r = try testParse("GET HTTPS://pondzpondz.com:8443?a=1 HTTP/1.1\r\n\r\n", .{});
+        try t.expectString("/?a=1", r.url.raw);
+        try t.expectString("/", r.url.path);
+        try t.expectString("pondzpondz.com:8443", r.header("host").?);
+    }
+
+    {
+        // no room left to add the Host
+        try expectParseError(error.InvalidHost, "GET http://pondzpondz.com/ HTTP/1.1\r\nA: 1\r\nB: 2\r\n\r\n", .{ .max_header_count = 2 });
+        const r = try testParse("GET http://pondzpondz.com/ HTTP/1.1\r\nA: 1\r\nHost: other.com\r\n\r\n", .{ .max_header_count = 2 });
+        try t.expectString("pondzpondz.com", r.header("host").?);
+    }
+
+    {
+        // IP-literal with a port
+        const r = try testParse("GET http://[::1]:8080/x HTTP/1.1\r\n\r\n", .{});
+        try t.expectString("/x", r.url.raw);
+        try t.expectString("[::1]:8080", r.header("host").?);
+    }
+
+    {
+        const r = try testParse("OPTIONS http://pondzpondz.com HTTP/1.1\r\nHost: pondzpondz.com\r\n\r\n", .{});
+        try t.expectString("/", r.url.raw);
+        try t.expectString("pondzpondz.com", r.header("host").?);
     }
 }
 
