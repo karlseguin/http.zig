@@ -925,8 +925,7 @@ pub const State = struct {
                 var authority_start = scheme_end + 3;
                 const authority_end = std.mem.indexOfAnyPos(u8, target, authority_start, "/?") orelse target.len;
                 const authority_len = authority_end - authority_start;
-                // a userinfo component (user@host) is an error (RFC 9110 section 4.2.4)
-                if (authority_len == 0 or std.mem.indexOfScalar(u8, target[authority_start..authority_end], '@') != null) {
+                if (!isValidAuthority(target[authority_start..authority_end])) {
                     return error.InvalidRequestTarget;
                 }
 
@@ -942,7 +941,7 @@ pub const State = struct {
 
                 const url = buf[path_start..end_index];
                 const authority = buf[authority_start .. authority_start + authority_len];
-                if (!Url.isValid(url) or !Url.isValid(authority)) return error.InvalidRequestTarget;
+                if (!Url.isValid(url)) return error.InvalidRequestTarget;
                 self.url = url;
                 self.authority = authority;
             },
@@ -1077,32 +1076,47 @@ pub const State = struct {
     // returns the Content-Length
     fn checkHeaderValidity(self: *State) !?[]const u8 {
         var content_length: ?[]const u8 = null;
-        var host_seen: bool = false;
-        var it = self.headers.iterator();
-        while (it.next()) |kv| {
-            if (std.mem.eql(u8, kv.key, "content-length")) {
+        var host_index: ?usize = null;
+        const headers = &self.headers;
+        for (headers.keys[0..headers.len], headers.values[0..headers.len], 0..) |key, value, i| {
+            if (std.mem.eql(u8, key, "content-length")) {
                 if (content_length != null) return error.InvalidContentLength;
-                content_length = kv.value;
-            } else if (std.mem.eql(u8, kv.key, "host")) {
-                if (host_seen) return error.InvalidHost;
-                host_seen = true;
+                content_length = value;
+            } else if (std.mem.eql(u8, key, "host")) {
+                if (host_index != null) return error.InvalidHost;
+                host_index = i;
             }
         }
 
         if (self.authority) |authority| {
             // With an absolute-form request target, the Host header is ignored
             // and the target's authority is used instead (RFC 9112 section 3.2.2).
-            const headers = &self.headers;
-            for (headers.keys[0..headers.len], 0..) |key, i| {
-                if (std.mem.eql(u8, key, "host")) {
-                    headers.values[i] = authority;
-                    break;
-                }
+            if (host_index) |i| {
+                headers.values[i] = authority;
             } else {
+                // add is a no-op when the headers are full, which would leave
+                // the request without a Host
+                if (headers.len == headers.keys.len) return error.InvalidHost;
                 headers.add("host", authority);
             }
         }
         return content_length;
+    }
+
+    // The authority of an absolute-form target: host[:port], where host is a
+    // reg-name, IPv4 address or IP-literal (RFC 3986 section 3.2). Userinfo
+    // (user@host) is an error (RFC 9110 section 4.2.4) and so is an empty host
+    // (RFC 9110 section 4.2.1). Since '#' isn't allowed, a fragment is rejected.
+    fn isValidAuthority(authority: []const u8) bool {
+        if (authority.len == 0 or authority[0] == ':') return false;
+        for (authority) |c| {
+            switch (c) {
+                'a'...'z', 'A'...'Z', '0'...'9' => {},
+                '-', '.', '_', '~', '%', '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=', ':', '[', ']' => {},
+                else => return false,
+            }
+        }
+        return true;
     }
 
     // we've finished reading the header
@@ -1584,6 +1598,11 @@ test "request: parse request target" {
         try expectParseError(error.InvalidRequestTarget, "GET http:/www.pondzpondz.com/test ", .{});
         try expectParseError(error.InvalidRequestTarget, "GET http:///test ", .{});
         try expectParseError(error.InvalidRequestTarget, "GET http://user@www.pondzpondz.com/test ", .{});
+        try expectParseError(error.InvalidRequestTarget, "GET http://:8080/test ", .{});
+        try expectParseError(error.InvalidRequestTarget, "GET http://evil.com#good.com ", .{});
+        try expectParseError(error.InvalidRequestTarget, "GET http://evil.com#good.com/test ", .{});
+        try expectParseError(error.InvalidRequestTarget, "GET http://a\"b<c>/ ", .{});
+        try expectParseError(error.InvalidRequestTarget, "GET http://a\\b/ ", .{});
         try expectParseError(error.InvalidRequestTarget, "TEA HTTP/1.1\r\n", .{});
         try expectParseError(error.InvalidRequestTarget, "PUT hello ", .{});
         try expectParseError(error.InvalidRequestTarget, "POST  /hello ", .{});
@@ -1625,6 +1644,20 @@ test "request: parse request target" {
         try t.expectString("/?a=1", r.url.raw);
         try t.expectString("/", r.url.path);
         try t.expectString("pondzpondz.com:8443", r.header("host").?);
+    }
+
+    {
+        // no room left to add the Host
+        try expectParseError(error.InvalidHost, "GET http://pondzpondz.com/ HTTP/1.1\r\nA: 1\r\nB: 2\r\n\r\n", .{ .max_header_count = 2 });
+        const r = try testParse("GET http://pondzpondz.com/ HTTP/1.1\r\nA: 1\r\nHost: other.com\r\n\r\n", .{ .max_header_count = 2 });
+        try t.expectString("pondzpondz.com", r.header("host").?);
+    }
+
+    {
+        // IP-literal with a port
+        const r = try testParse("GET http://[::1]:8080/x HTTP/1.1\r\n\r\n", .{});
+        try t.expectString("/x", r.url.raw);
+        try t.expectString("[::1]:8080", r.header("host").?);
     }
 
     {
