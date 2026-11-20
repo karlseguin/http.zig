@@ -602,6 +602,18 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
 
                                 if (done == false) {
                                     self.swapList(conn, .request);
+                                    // One-shot (monitorRead): wait for the
+                                    // rest of the request.
+                                    self.loop.rearmRead(conn) catch |err| {
+                                        log.err("Failed to re-arm a connection: {}", .{err});
+                                        metrics.internalError();
+                                        // cannot fail when false is passed
+                                        http_conn.requestDone(self.retain_allocated_bytes, false) catch unreachable;
+                                        self.loop.remove(conn);
+                                        conn.close();
+                                        self.disown(conn);
+                                        if (self.full) self.enableListener(listener);
+                                    };
                                     continue;
                                 }
 
@@ -635,6 +647,38 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     self.enableListener(listener);
                 }
             }
+        }
+
+        /// swapList(conn, .keepalive) and the re-arm in one step, for a pool
+        /// thread done with a request (processHTTPData), under the keepalive
+        /// list's lock. The timeout sweep (prepareToWait) takes that lock to
+        /// collect timed-out connections, and this one's timeout may have
+        /// passed while its handler ran: without the lock, the sweep could
+        /// close and free it before it is re-armed. It is .keepalive before
+        /// the re-arm, so once armed, the event loop never sees it .active
+        /// (and skips it, spending the one shot).
+        fn rearmKeepalive(self: *Self, conn: *Conn(WSH)) !void {
+            const io = self.io;
+            const http_conn = conn.protocol.http;
+            const list = &self.keepalive_list;
+            // Locked in swapList's order. The defers are deliberately in the
+            // same order as the locks, so they unlock the connection first:
+            // once the list is unlocked, the sweep may free the connection,
+            // its mutex included.
+            http_conn._mut.lockUncancelable(io);
+            list.mut.lockUncancelable(io);
+            defer list.mut.unlock(io);
+            defer http_conn._mut.unlock(io);
+            std.debug.assert(http_conn._state == .active);
+            self.active_list.remove(io, conn);
+            http_conn._state = .keepalive;
+            list.inner.insert(conn);
+            self.loop.rearmRead(conn) catch |err| {
+                list.inner.remove(conn);
+                http_conn._state = .active;
+                self.active_list.insert(io, conn);
+                return err;
+            };
         }
 
         fn swapList(self: *Self, conn: *Conn(WSH), new_state: HTTPConn.State) void {
@@ -833,9 +877,20 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             };
 
             switch (handover) {
-                .keepalive => {
+                .keepalive => keepalive: {
                     http_conn.timeout = now + self.timeout_keepalive;
-                    self.swapList(conn, .keepalive);
+                    // One-shot (monitorRead): the event loop hears from the
+                    // connection again once it is re-armed. A request that
+                    // arrived meanwhile is still buffered, and reported at
+                    // once.
+                    self.rearmKeepalive(conn) catch |err| {
+                        log.err("Failed to re-arm a keepalive connection: {}", .{err});
+                        metrics.internalError();
+                        // Still .active: closed by processSignal, on the event
+                        // loop's thread.
+                        http_conn.handover = .close;
+                        break :keepalive;
+                    };
                     return;
                 },
                 .close, .unknown => {
@@ -1211,7 +1266,8 @@ fn KQueue(comptime WSH: type) type {
         }
 
         fn monitorRead(self: *Self, conn: *Conn(WSH)) !void {
-            try self.change(conn.getSocket(), @intFromPtr(conn), posix.system.EVFILT.READ, posix.system.EV.ADD | posix.system.EV.ENABLE, 0);
+            // EV_DISPATCH, as rearmRead re-adds it: see EPoll's monitorRead.
+            try self.change(conn.getSocket(), @intFromPtr(conn), posix.system.EVFILT.READ, posix.system.EV.ADD | posix.system.EV.DISPATCH, 0);
         }
 
         fn remove(self: *Self, conn: *Conn(WSH)) void {
@@ -1387,9 +1443,14 @@ fn EPoll(comptime WSH: type) type {
         }
 
         fn monitorRead(self: *Self, conn: *Conn(WSH)) !void {
+            // One-shot, so a connection whose request is being handled
+            // (.active) isn't reported on every epoll_wait while it stays
+            // readable (more data, or the client gone: EPOLLRDHUP).
+            // The loop re-arms it when it is ready for more (rearmRead).
+            // Prevents a situation where a core can get stuck in a spin lock
             var event = linux.epoll_event{
                 .data = .{ .ptr = @intFromPtr(conn) },
-                .events = linux.EPOLL.IN | linux.EPOLL.RDHUP,
+                .events = linux.EPOLL.IN | linux.EPOLL.RDHUP | linux.EPOLL.ONESHOT,
             };
             return posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, conn.getSocket(), &event);
         }
