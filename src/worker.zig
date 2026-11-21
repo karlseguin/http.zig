@@ -571,7 +571,16 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                             .http => |http_conn| {
                                 switch (http_conn.getSettledState(io)) {
                                     .request, .keepalive => {},
-                                    .active, .handover => {
+                                    .active => {
+                                        // Connection has activity while we're processing it.
+                                        // We can't process it now, but if we don't do something
+                                        // it'll keep being repoted. Disarm it, and flag this
+                                        // for the active worker to deal with
+                                        // https://github.com/karlseguin/http.zig/issues/233
+                                        self.disarmActive(conn);
+                                        continue;
+                                    },
+                                    .handover => {
                                         // we need to finish whatever we're doing
                                         // before we can process more data (i.e. if
                                         // the connection is being upgrade to websocket,
@@ -635,6 +644,40 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                     self.enableListener(listener);
                 }
             }
+        }
+
+        // Called on the event loop thread. See the .active branch of run().
+        fn disarmActive(self: *Self, conn: *Conn(WSH)) void {
+            const io = self.io;
+            const http_conn = conn.protocol.http;
+            http_conn._mut.lockUncancelable(io);
+            defer http_conn._mut.unlock(io);
+
+            // check the state again under lock
+            if (http_conn._state != .active or http_conn._disarmed) {
+                return;
+            }
+            self.loop.remove(conn);
+            http_conn._disarmed = true;
+        }
+
+        // Called from a pool thread, when the request is done and the
+        // connection should go back to waiting for the next one.
+        fn swapToKeepalive(self: *Self, conn: *Conn(WSH)) !void {
+            const io = self.io;
+            const http_conn = conn.protocol.http;
+            http_conn._mut.lockUncancelable(io);
+            defer http_conn._mut.unlock(io);
+
+            if (http_conn._disarmed) {
+                try self.loop.rearm(conn);
+                http_conn._disarmed = false;
+            }
+
+            std.debug.assert(http_conn._state == .active);
+            self.active_list.remove(io, conn);
+            http_conn._state = .keepalive;
+            self.keepalive_list.insert(io, conn);
         }
 
         fn swapList(self: *Self, conn: *Conn(WSH), new_state: HTTPConn.State) void {
@@ -706,6 +749,7 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                 const http_conn = try self.http_conn_pool.acquire();
                 http_conn.request_count = 1;
                 http_conn._state = .request;
+                http_conn._disarmed = false;
                 http_conn.handover = .unknown;
                 http_conn._io_mode = .nonblocking;
                 http_conn.address = ip_address;
@@ -786,12 +830,14 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
                             continue;
                         }
 
+                        const disarmed = http_conn._disarmed;
+                        http_conn._disarmed = false;
                         self.http_conn_pool.release(http_conn);
 
                         const hc: *ws.HandlerConn(WSH) = @ptrCast(@alignCast(ptr));
                         conn.protocol = .{ .websocket = hc };
 
-                        loop.switchToOneShot(conn) catch {
+                        (if (disarmed) loop.addOneShot(conn) else loop.switchToOneShot(conn)) catch {
                             metrics.internalError();
                             closed_bool.* = true;
                             loop.remove(conn);
@@ -833,9 +879,16 @@ pub fn NonBlocking(comptime S: type, comptime WSH: type) type {
             };
 
             switch (handover) {
-                .keepalive => {
+                .keepalive => keepalive: {
                     http_conn.timeout = now + self.timeout_keepalive;
-                    self.swapList(conn, .keepalive);
+                    self.swapToKeepalive(conn) catch |err| {
+                        log.err("Failed to re-add a keepalive connection: {}", .{err});
+                        metrics.internalError();
+                        // Still .active: closed by processSignal, on the event
+                        // loop thread.
+                        http_conn.handover = .close;
+                        break :keepalive;
+                    };
                     return;
                 },
                 .close, .unknown => {
@@ -1214,6 +1267,25 @@ fn KQueue(comptime WSH: type) type {
             try self.change(conn.getSocket(), @intFromPtr(conn), posix.system.EVFILT.READ, posix.system.EV.ADD | posix.system.EV.ENABLE, 0);
         }
 
+        // monitorRead, for a connection that was removed (disarmActive). Called
+        // from a pool thread, so can't use change_buffer.
+        fn rearm(self: *Self, conn: *Conn(WSH)) !void {
+            _ = try posix.kevent(self.fd, &.{.{
+                .ident = @intCast(conn.getSocket()),
+                .filter = posix.system.EVFILT.READ,
+                .flags = posix.system.EV.ADD | posix.system.EV.ENABLE,
+                .fflags = 0,
+                .data = 0,
+                .udata = @intFromPtr(conn),
+            }}, &.{}, null);
+        }
+
+        // switchToOneShot, for a connection that was removed (disarmActive).
+        // There's nothing to delete first.
+        fn addOneShot(self: *Self, conn: *Conn(WSH)) !void {
+            try self.change(conn.getSocket(), @intFromPtr(conn), posix.system.EVFILT.READ, posix.system.EV.ADD | posix.system.EV.DISPATCH, 0);
+        }
+
         fn remove(self: *Self, conn: *Conn(WSH)) void {
             _ = posix.kevent(self.fd, &.{.{
                 .ident = @intCast(conn.getSocket()),
@@ -1390,6 +1462,21 @@ fn EPoll(comptime WSH: type) type {
             var event = linux.epoll_event{
                 .data = .{ .ptr = @intFromPtr(conn) },
                 .events = linux.EPOLL.IN | linux.EPOLL.RDHUP,
+            };
+            return posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, conn.getSocket(), &event);
+        }
+
+        // monitorRead, for a connection that was removed (disarmActive).
+        // Called from a pool thread: epoll_ctl is thread-safe.
+        fn rearm(self: *Self, conn: *Conn(WSH)) !void {
+            return self.monitorRead(conn);
+        }
+
+        // switchToOneShot, for a connection that was removed (disarmActive).
+        fn addOneShot(self: *Self, conn: *Conn(WSH)) !void {
+            var event = linux.epoll_event{
+                .data = .{ .ptr = @intFromPtr(conn) },
+                .events = linux.EPOLL.IN | linux.EPOLL.RDHUP | linux.EPOLL.ONESHOT,
             };
             return posix.epoll_ctl(self.fd, linux.EPOLL.CTL_ADD, conn.getSocket(), &event);
         }
@@ -1708,6 +1795,8 @@ pub const HTTPConn = struct {
 
     _mut: Io.Mutex,
 
+    _disarmed: bool,
+
     _io_mode: IOMode,
 
     handover: Handover,
@@ -1777,6 +1866,7 @@ pub const HTTPConn = struct {
             .timeout = 0,
             ._mut = .init,
             ._state = .request,
+            ._disarmed = false,
             .handover = .unknown,
             .stream = undefined,
             .address = undefined,
@@ -1823,6 +1913,19 @@ pub const HTTPConn = struct {
             if (self.tracked) |tracked| tracked.remove(self.io);
             return;
         }
+
+        // The event loop may have already removed it (disarmActive), in which
+        // case removing it again would fail. Held through the removal, so the
+        // event loop can't remove it between the check and our removal.
+        self._mut.lockUncancelable(self.io);
+        defer self._mut.unlock(self.io);
+        if (self._disarmed) {
+            return;
+        }
+        // Once disowned, the new owner may close the socket, and the fd may be
+        // reused by a new connection. An event for this one that's already in
+        // the event loop's current batch must not make it remove that fd.
+        defer self._disarmed = true;
 
         const loop = self.loop;
         const socket = self.stream.socket.handle;

@@ -1206,6 +1206,138 @@ test "httpz: request timeout resets pooled parser state" {
     }
 }
 
+// https://github.com/karlseguin/http.zig/issues/233
+test "httpz: event loop does not spin while a handler runs" {
+    if (comptime blockingMode()) return error.SkipZigTest;
+
+    const H = ParkedHandler;
+    var server = try Server(H).init(t.io, t.allocator, .{ .address = .localhost(6997) }, H{});
+    const thrd = try server.listenInNewThread();
+    defer {
+        H.release();
+        server.stop();
+        thrd.join();
+        server.deinit();
+    }
+
+    var buf: [1024]u8 = undefined;
+
+    // The client gives up (closes) while the handler is still running, as a
+    // reverse proxy does when an upstream request times out.
+    {
+        H.reset();
+        const stream = testStream(6997);
+        var writer = stream.writer(t.io, &.{});
+        try writer.interface.writeAll("GET /park HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+        try H.waitParked();
+
+        stream.close(t.io);
+        try expectIdleCpu("client closed");
+
+        H.release();
+        try H.waitDone();
+    }
+
+    // The client sends a second (pipelined) request while the first one is
+    // still being handled.
+    {
+        H.reset();
+        const stream = testStream(6997);
+        defer stream.close(t.io);
+        var writer = stream.writer(t.io, &.{});
+        try writer.interface.writeAll("GET /park HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+        try H.waitParked();
+
+        try writer.interface.writeAll("GET /fast HTTP/1.1\r\nContent-Length: 0\r\n\r\n");
+        try expectIdleCpu("pipelined request");
+
+        H.release();
+        try H.waitDone();
+
+        // The first response must arrive. What follows depends on the server's
+        // policy: the pipelined request is answered, or the connection is
+        // closed. Either way, it must not hang.
+        const timeout = std.mem.toBytes(posix.timeval{ .sec = 2, .usec = 0 });
+        try posix.setsockopt(stream.socket.handle, posix.SOL.SOCKET, posix.SO.RCVTIMEO, &timeout);
+        var pos: usize = 0;
+        while (pos < buf.len) {
+            const n = posix.read(stream.socket.handle, buf[pos..]) catch |err| switch (err) {
+                error.ConnectionResetByPeer => break,
+                error.WouldBlock => return error.ConnectionHung,
+                else => return err,
+            };
+            if (n == 0) break;
+            pos += n;
+            if (std.mem.endsWith(u8, buf[0..pos], "fast")) break;
+        }
+        const data = buf[0..pos];
+        try t.expectEqual(true, std.mem.startsWith(u8, data, "HTTP/1.1 200 \r\n"));
+        try t.expectEqual(true, std.mem.indexOf(u8, data, "parked") != null);
+        std.debug.print("\n  pipelined request answered: {}\n", .{std.mem.indexOf(u8, data, "fast") != null});
+    }
+}
+
+// Process-wide CPU time over a window in which the only thing the server has to
+// do is wait. The other test servers are idle, as is this thread (sleeping).
+fn expectIdleCpu(label: []const u8) !void {
+    const window_ms = 500;
+    const start = cpuMicros();
+    try t.io.sleep(.fromMilliseconds(window_ms), .awake);
+    const used_ms = @divTrunc(cpuMicros() - start, 1000);
+    std.debug.print("\n  {s}: {d}ms CPU over {d}ms\n", .{ label, used_ms, window_ms });
+    if (used_ms > window_ms / 4) return error.EventLoopSpinning;
+}
+
+fn cpuMicros() i64 {
+    const ru = std.posix.getrusage(std.posix.rusage.SELF);
+    return (ru.utime.sec + ru.stime.sec) * 1_000_000 + ru.utime.usec + ru.stime.usec;
+}
+
+const ParkedHandler = struct {
+    var parked: std.atomic.Value(bool) = .init(false);
+    var may_finish: std.atomic.Value(bool) = .init(false);
+    var done: std.atomic.Value(bool) = .init(false);
+
+    fn reset() void {
+        parked.store(false, .release);
+        may_finish.store(false, .release);
+        done.store(false, .release);
+    }
+
+    fn release() void {
+        may_finish.store(true, .release);
+    }
+
+    fn waitParked() !void {
+        return waitFor(&parked);
+    }
+
+    fn waitDone() !void {
+        return waitFor(&done);
+    }
+
+    fn waitFor(flag: *std.atomic.Value(bool)) !void {
+        var i: usize = 0;
+        while (flag.load(.acquire) == false) : (i += 1) {
+            if (i == 400) return error.Timeout;
+            try t.io.sleep(.fromMilliseconds(5), .awake);
+        }
+    }
+
+    pub fn handle(_: ParkedHandler, req: *Request, res: *Response) void {
+        if (std.mem.eql(u8, req.url.path, "/fast")) {
+            res.body = "fast";
+            return;
+        }
+        parked.store(true, .release);
+        while (may_finish.load(.acquire) == false) {
+            t.io.sleep(.fromMilliseconds(5), .awake) catch unreachable;
+        }
+        res.body = "parked";
+        done.store(true, .release);
+    }
+};
+
 test "httpz: invalid request" {
     const stream = testStream(5992);
     defer stream.close(t.io);

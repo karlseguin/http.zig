@@ -113,6 +113,7 @@ pub const Context = struct {
             .io = io,
             ._mut = .init,
             ._state = .request,
+            ._disarmed = false,
             .handover = .close,
             .stream = server,
             .address = .{ .ip4 = .{ .bytes = [_]u8{ 127, 0, 0, 200 }, .port = 0 } },
