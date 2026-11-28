@@ -75,7 +75,14 @@ pub fn ThreadPool(comptime F: anytype) type {
                     }
                     self.head = head;
                     self.mutex.unlock();
-                    if (ready.len == 1) self.read_cond.signal() else self.read_cond.broadcast();
+                    if (ready.len <= 4) {
+                        // For a few jobs, wake only as many workers as we have jobs
+                        // rather than having every idle worker wake up, fight over
+                        // the mutex and go back to sleep.
+                        for (0..ready.len) |_| self.read_cond.signal();
+                    } else {
+                        self.read_cond.broadcast();
+                    }
                     if (ready.len == pending.len) {
                         break;
                     }
@@ -388,6 +395,12 @@ test "ThreadPool: a long job does not hold up the jobs behind it" {
     testQuickCount = 0;
     var tp = try ThreadPool(testBlockOrCount).init(t.arena.allocator(), .{ .count = 4, .backlog = 64, .buffer_size = 512 });
     defer tp.deinit();
+    // Runs before deinit, including when an expectation fails: release the
+    // blocked worker and join every thread before the arena is freed.
+    defer {
+        testBlockerRelease.post();
+        tp.stop();
+    }
 
     // One worker is busy for as long as the test likes
     tp.spawnOne(.{true});
@@ -400,9 +413,6 @@ test "ThreadPool: a long job does not hold up the jobs behind it" {
         std.Thread.sleep(std.time.ns_per_ms);
     }
     try t.expectEqual(32, @atomicLoad(u64, &testQuickCount, .monotonic));
-
-    testBlockerRelease.post();
-    tp.stop();
 }
 
 var testBlockerRelease: Thread.Semaphore = .{};
