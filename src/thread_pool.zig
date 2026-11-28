@@ -18,20 +18,121 @@ pub fn ThreadPool(comptime F: anytype) type {
     // and FullArgs would be our 3 args....
     const FullArgs = std.meta.ArgsTuple(@TypeOf(F));
     const Args = SpawnArgs(FullArgs);
-
     return struct {
         stopped: bool,
         threads: []Thread,
-        worker_index: usize,
-        workers: []Worker(F),
         arena: std.heap.ArenaAllocator,
 
-        // we queue jobs here before batching them to a worker. We do this
+        // One queue for every worker thread. With a queue per worker, a job put on the
+        // queue of a worker that is running a long job waits for that job to end, however
+        // many other workers are idle.
+        shared: *Shared,
+
+        // we queue jobs here before batching them to the workers. We do this
         // to minimze the amount of locking we need to do.
         batch: [BATCH_SIZE]Args,
         batch_size: usize,
 
         const Self = @This();
+
+        const Shared = struct {
+            io: Io,
+            // position in queue to read from
+            tail: usize,
+            // position in the queue to write to
+            head: usize,
+            // pending jobs
+            queue: []Args,
+            stopped: bool,
+            mutex: Io.Mutex,
+            read_cond: Io.Condition,
+            write_cond: Io.Condition,
+
+            fn push(self: *Shared, args: []const Args) void {
+                const io = self.io;
+                var pending = args;
+                var capacity: usize = 0;
+
+                const queue = self.queue;
+                const queue_end = queue.len - 1;
+
+                while (true) {
+                    self.mutex.lockUncancelable(io);
+                    var head = self.head;
+                    var tail = self.tail;
+                    while (true) {
+                        capacity = if (head < tail) tail - head - 1 else queue_end - head + tail;
+                        if (capacity > 0) {
+                            break;
+                        }
+                        self.write_cond.waitUncancelable(io, &self.mutex);
+                        head = self.head;
+                        tail = self.tail;
+                    }
+
+                    const ready = if (capacity >= pending.len) pending else pending[0..capacity];
+                    for (ready) |a| {
+                        queue[head] = a;
+                        head = if (head == queue_end) 0 else head + 1;
+                    }
+                    self.head = head;
+                    self.mutex.unlock(io);
+                    if (ready.len <= 4) {
+                        // For a few jobs, wake only as many workers as we have jobs
+                        // rather than having every idle worker wake up, fight over
+                        // the mutex and go back to sleep.
+                        for (0..ready.len) |_| self.read_cond.signal(io);
+                    } else {
+                        self.read_cond.broadcast(io);
+                    }
+                    if (ready.len == pending.len) {
+                        break;
+                    }
+                    pending = pending[ready.len..];
+                }
+            }
+
+            fn getNext(self: *Shared) ?Args {
+                const io = self.io;
+                const queue = self.queue;
+                const queue_end = queue.len - 1;
+
+                self.mutex.lockUncancelable(io);
+                while (self.tail == self.head) {
+                    if (self.stopped) {
+                        self.mutex.unlock(io);
+                        return null;
+                    }
+                    self.read_cond.waitUncancelable(io, &self.mutex);
+                }
+
+                const tail = self.tail;
+                const args = queue[tail];
+                self.tail = if (tail == queue_end) 0 else tail + 1;
+                self.mutex.unlock(io);
+                self.write_cond.signal(io);
+                return args;
+            }
+
+            // Having a re-usable buffer per thread is the most efficient way
+            // we can do any dynamic allocations. As far as a worker thread is
+            // concerned, it has a chunk of memory (buffer) which it'll pass
+            // to the callback function to do with as it wants.
+            fn run(self: *Shared, buffer: []u8) void {
+                while (true) {
+                    const args = self.getNext() orelse return;
+
+                    // convert Args to FullArgs, i.e. inject buffer as the last argument
+                    var full_args: FullArgs = undefined;
+                    const ARG_COUNT = std.meta.fields(FullArgs).len - 1;
+                    full_args[ARG_COUNT] = buffer;
+                    inline for (0..ARG_COUNT) |i| {
+                        full_args[i] = args[i];
+                    }
+                    @call(.auto, F, full_args);
+                }
+            }
+        };
 
         // we expect allocator to be an Arena
         pub fn init(io: Io, allocator: Allocator, opts: Opts) !Self {
@@ -41,27 +142,37 @@ pub fn ThreadPool(comptime F: anytype) type {
             const aa = arena.allocator();
 
             const threads = try aa.alloc(Thread, opts.count);
-            const workers = try aa.alloc(Worker(F), opts.count);
-
-            var started: usize = 0;
-            errdefer for (0..started) |i| {
-                workers[i].stop();
-                threads[i].join();
+            const shared = try aa.create(Shared);
+            shared.* = .{
+                .io = io,
+                .tail = 0,
+                .head = 0,
+                .queue = try aa.alloc(Args, if (opts.backlog == 0 or opts.backlog == 1) 2 else opts.backlog),
+                .stopped = false,
+                .mutex = .init,
+                .read_cond = .init,
+                .write_cond = .init,
             };
 
-            for (0..workers.len) |i| {
-                workers[i] = try Worker(F).init(io, aa, &workers[@mod(i + i, workers.len)], opts);
+            var started: usize = 0;
+            errdefer {
+                shared.mutex.lockUncancelable(io);
+                shared.stopped = true;
+                shared.mutex.unlock(io);
+                shared.read_cond.broadcast(io);
+                for (0..started) |i| threads[i].join();
             }
-            for (0..workers.len) |i| {
-                threads[i] = try Thread.spawn(.{}, Worker(F).run, .{&workers[i]});
+
+            for (0..threads.len) |i| {
+                const buffer = try aa.alloc(u8, opts.buffer_size);
+                threads[i] = try Thread.spawn(.{}, Shared.run, .{ shared, buffer });
                 started += 1;
             }
 
             return .{
                 .arena = arena,
-                .worker_index = 0,
                 .stopped = false,
-                .workers = workers,
+                .shared = shared,
                 .threads = threads,
                 .batch = undefined,
                 .batch_size = 0,
@@ -77,8 +188,13 @@ pub fn ThreadPool(comptime F: anytype) type {
                 return;
             }
 
-            for (self.workers, self.threads) |*worker, *thread| {
-                worker.stop();
+            const shared = self.shared;
+            const io = shared.io;
+            shared.mutex.lockUncancelable(io);
+            shared.stopped = true;
+            shared.mutex.unlock(io);
+            shared.read_cond.broadcast(io);
+            for (self.threads) |*thread| {
                 thread.join();
             }
         }
@@ -96,192 +212,20 @@ pub fn ThreadPool(comptime F: anytype) type {
         }
 
         pub fn spawnOne(self: *Self, args: Args) void {
-            const worker_index = self.worker_index +% 1;
-            self.worker_index = worker_index;
-            const workers = self.workers;
-            workers[@mod(worker_index, workers.len)].spawn(&.{args});
+            self.shared.push(&.{args});
         }
 
         pub fn flush(self: *Self, batch_size: usize) void {
             self.batch_size = 0;
-
-            const worker_index = self.worker_index +% 1;
-            self.worker_index = worker_index;
-            const workers = self.workers;
-            workers[@mod(worker_index, workers.len)].spawn(self.batch[0..batch_size]);
+            self.shared.push(self.batch[0..batch_size]);
         }
 
         pub fn empty(self: *Self) bool {
-            for (self.workers) |*w| {
-                if (w.empty() == false) {
-                    return false;
-                }
-            }
-            return true;
-        }
-    };
-}
-
-fn Worker(comptime F: anytype) type {
-    // When the worker thread calls F, it'll inject its static buffer.
-    // So F would be: handle(server: *Server, conn: *Conn, buf: []u8)
-    // and FullArgs would be our 3 args....
-    const FullArgs = std.meta.ArgsTuple(@TypeOf(F));
-    const Args = SpawnArgs(FullArgs);
-
-    return struct {
-        io: Io,
-
-        // position in queue to read from
-        tail: usize,
-
-        // position in the queue to write to
-        head: usize,
-
-        // pending jobs
-        queue: []Args,
-
-        buffer: []u8,
-
-        stopped: bool,
-        mutex: Io.Mutex,
-        read_cond: Io.Condition,
-        write_cond: Io.Condition,
-        peer: *Worker(F),
-
-        const Self = @This();
-
-        // we expect allocator to be an Arena
-        pub fn init(io: Io, allocator: Allocator, peer: *Worker(F), opts: Opts) !Self {
-            const queue = try allocator.alloc(Args, if (opts.backlog == 0 or opts.backlog == 1) 2 else opts.backlog);
-            const buffer = try allocator.alloc(u8, opts.buffer_size);
-
-            return .{
-                .io = io,
-                .tail = 0,
-                .head = 0,
-                .peer = peer,
-                .mutex = .init,
-                .stopped = false,
-                .queue = queue,
-                .read_cond = .init,
-                .write_cond = .init,
-                .buffer = buffer,
-            };
-        }
-
-        pub fn stop(self: *Self) void {
-            const io = self.io;
-            {
-                // allow stop to be called as part of server.stop()
-                // but also in server.deinit(), or in both.
-                self.mutex.lockUncancelable(io);
-                defer self.mutex.unlock(io);
-                if (self.stopped) {
-                    return;
-                }
-                self.stopped = true;
-            }
-            self.read_cond.broadcast(io);
-        }
-
-        pub fn empty(self: *Self) bool {
-            const io = self.io;
-            self.mutex.lockUncancelable(io);
-            defer self.mutex.unlock(io);
-            return self.head == self.tail;
-        }
-
-        pub fn spawn(self: *Self, args: []const Args) void {
-            const io = self.io;
-            var pending = args;
-            var capacity: usize = 0;
-
-            const queue = self.queue;
-            const queue_end = queue.len - 1;
-
-            while (true) {
-                self.mutex.lockUncancelable(io);
-                var head = self.head;
-                var tail = self.tail;
-                while (true) {
-                    capacity = if (head < tail) tail - head - 1 else queue_end - head + tail;
-                    if (capacity > 0) {
-                        break;
-                    }
-                    self.write_cond.waitUncancelable(io, &self.mutex);
-                    head = self.head;
-                    tail = self.tail;
-                }
-
-                const ready = if (capacity >= pending.len) pending else pending[0..capacity];
-                for (ready) |a| {
-                    queue[head] = a;
-                    head = if (head == queue_end) 0 else head + 1;
-                }
-                self.head = head;
-                self.mutex.unlock(io);
-                self.read_cond.signal(io);
-                if (ready.len == pending.len) {
-                    break;
-                }
-                pending = pending[ready.len..];
-            }
-        }
-
-        // Having a re-usable buffer per thread is the most efficient way
-        // we can do any dynamic allocations. We'll pair this later with
-        // a FallbackAllocator. The main issue is that some data must outlive
-        // the worker thread (in nonblocking mode), but this isn't something
-        // we need to worry about here. As far as this worker thread is
-        // concerned, it has a chunk of memory (buffer) which it'll pass
-        // to the callback function to do with as it wants.
-        fn run(self: *Self) void {
-            const buffer = self.buffer;
-            while (true) {
-                const args = self.getNext(true) orelse return;
-
-                // convert Args to FullArgs, i.e. inject buffer as the last argument
-                var full_args: FullArgs = undefined;
-                const ARG_COUNT = std.meta.fields(FullArgs).len - 1;
-                full_args[ARG_COUNT] = buffer;
-                inline for (0..ARG_COUNT) |i| {
-                    full_args[i] = args[i];
-                }
-                @call(.auto, F, full_args);
-            }
-        }
-
-        fn getNext(self: *Self, block: bool) ?Args {
-            const io = self.io;
-            const queue = self.queue;
-            const queue_end = queue.len - 1;
-
-            self.mutex.lockUncancelable(io);
-            while (self.tail == self.head) {
-                if (block == false or self.stopped) {
-                    self.mutex.unlock(io);
-                    return null;
-                }
-
-                self.mutex.unlock(io);
-                if (self.peer.getNext(false)) |args| {
-                    return args;
-                }
-                self.mutex.lockUncancelable(io);
-                if (self.tail == self.head) {
-                    self.read_cond.waitUncancelable(io, &self.mutex);
-                } else {
-                    break;
-                }
-            }
-
-            const tail = self.tail;
-            const args = queue[tail];
-            self.tail = if (tail == queue_end) 0 else tail + 1;
-            self.mutex.unlock(io);
-            self.write_cond.signal(io);
-            return args;
+            const shared = self.shared;
+            const io = shared.io;
+            shared.mutex.lockUncancelable(io);
+            defer shared.mutex.unlock(io);
+            return shared.head == shared.tail;
         }
     };
 }
@@ -441,4 +385,44 @@ fn testIncr(c: u64, buf: []u8) void {
     }
     // let the threadpool queue get backed up
     t.io.sleep(.fromMicroseconds(20), .awake) catch unreachable;
+}
+
+test "ThreadPool: a long job does not hold up the jobs behind it" {
+    defer t.reset();
+
+    testBlockerRelease = .{};
+    testBlockerStarted = .{};
+    testQuickCount = 0;
+    var tp = try ThreadPool(testBlockOrCount).init(t.io, t.arena.allocator(), .{ .count = 4, .backlog = 64, .buffer_size = 512 });
+    defer tp.deinit();
+    // Runs before deinit, including when an expectation fails: release the
+    // blocked worker and join every thread before the arena is freed.
+    defer {
+        testBlockerRelease.post(t.io);
+        tp.stop();
+    }
+
+    // One worker is busy for as long as the test likes
+    tp.spawnOne(.{true});
+    testBlockerStarted.waitUncancelable(t.io);
+
+    // Every other job is done meanwhile, whichever worker it would once have been queued behind
+    for (0..32) |_| tp.spawnOne(.{false});
+    var waited_ms: u64 = 0;
+    while (@atomicLoad(u64, &testQuickCount, .monotonic) < 32 and waited_ms < 5_000) : (waited_ms += 1) {
+        try t.io.sleep(.fromMilliseconds(1), .awake);
+    }
+    try t.expectEqual(32, @atomicLoad(u64, &testQuickCount, .monotonic));
+}
+
+var testBlockerRelease: Io.Semaphore = .{};
+var testBlockerStarted: Io.Semaphore = .{};
+var testQuickCount: u64 = 0;
+fn testBlockOrCount(block: bool, _: []u8) void {
+    if (block) {
+        testBlockerStarted.post(t.io);
+        testBlockerRelease.waitUncancelable(t.io);
+    } else {
+        _ = @atomicRmw(u64, &testQuickCount, .Add, 1, .monotonic);
+    }
 }
